@@ -1,6 +1,6 @@
 # Cross-Mission Altimetry MCP Server — Design Spec
 
-**Status:** draft / hackweek scope
+**Status:** draft / hackweek scope — **Appendix D (Slices 1–3) built and verified on real data 2026-08-25**; build notes are marked *Build note (2026-08-25)* throughout, measured results in B.10.
 **One-line:** An MCP server that answers cross-mission elevation questions over GLAS, IceBridge, and ICESat-2 — co-registering samples to a common ITRF frame and epoch so plate motion doesn't misalign footprints, with per-sample provenance — by fetching only the data chunks a question needs, accumulating them into a local persistent Parquet lake, and computing answers locally with DuckDB.
 
 ---
@@ -201,7 +201,7 @@ Steps that can silently corrupt — the `within_chunk_predicate` (drop neighbors
 | `native_lon`, `native_lat` | double | as delivered |
 | `native_height` | double | ellipsoidal, as delivered |
 | `height_ref` | enum | source vertical reference (e.g. WGS84 ellipsoid) — **not reconciled**, recorded |
-| `native_frame` | enum | e.g. ITRF2014 (ICESat-2), ITRF2000/2005-era (GLAS), campaign-specific (IceBridge) |
+| `native_frame` | enum | e.g. ITRF2014 (ICESat-2), **ITRF2008 (GLAS release 34; NSIDC lists EPSG:5332)**, campaign-specific (IceBridge) |
 | `native_epoch` | date | observation date — drives co-registration |
 | `t` | timestamp | observation time (UTC) |
 | `coreg_lon`, `coreg_lat` | double | **materialized** ITRF@common-epoch, §7.4 (nullable until materialized) |
@@ -282,6 +282,8 @@ The point of surfacing this per-answer is that the corrections *not* applied are
 7. **Double-correction** if a native product is already at a common epoch. Guard: trust `native_frame/native_epoch` as delivered; verify per product before materializing.
 8. **Hand-rolled decode diverges from reference** on some filter pipeline → silently corrupt values that look like science. Guard: use library codecs by default; any hand-rolled primitive validated byte-identical against the reference library before trust (§6.3–6.4).
 9. **Stale source reprocess** → index byte-ranges point at superseded bytes. Guard: `source_etag/version` on index rows; a version bump invalidates addressing *and* any GeoParquet built from it (§5.7).
+10. *Build note (2026-08-25)* — **Order-statistic Δh estimator is blind to the misregistration it is meant to reveal.** A median of the ~10³ photons within the co-location disc moves by zero or one rank step when the disc shifts 30 cm, so the per-pair artifact comes out exactly 0.0 regardless of slope. Guard: estimate the surface height *at the footprint centre* with a local along-track linear fit (continuous in position; its response to a shift `ds` is `slope_along × ds`, which is the effect being measured). ATL06 already ships this quantity.
+11. *Build note (2026-08-25)* — **Frame-step vertical component leaks into the "slope artifact".** The ITRF2008→ITRF2014 Helmert has a ~2 mm translation whose vertical projection at 70°N is ~2 mm; taken through the per-pair difference it produced a tight, non-zero "artifact" (−0.23 cm, MAD 0.03 cm) that was entirely this term — plausible-looking and wrong. Guard: compute the artifact from co-registered *positions* with *native* heights, and report the frame's vertical shift as its own number (`frame_vertical_shift_m`). Treat any tight non-zero artifact with suspicion until decomposed.
 
 ---
 
@@ -327,13 +329,17 @@ If the week tightens, ship **Stage 1 correctly on two clean-key missions** and d
 - **Decode** — fastest available primitive at each stage, libraries welcome; the win is the pre-baked chunk manifest (no per-query file parsing), not dependency-freeness. Library codecs by default; hand-roll only profile-guided, never filter pipelines. §6.3.
 - **Index key v1** — H3 for both the addressable cell and (v1) the row-group sort. SFC (Hilbert/S2) for row-group ordering is a gated, time-boxed benchmark with H3 as the fallback. §5.6.
 - **IceBridge** — ILATM2 V2 only, materialize-only (no byte-range tier); BLATM2 out. §6.1–6.2.
+- *Build note (2026-08-25)* — **Common epoch / anchor frame:** ITRF2014 at a fixed common epoch, **default 2005.0** (configurable per call; re-epoching is a recompute). Chosen so the ICESat-2 cloud is the one that moves (B.3). Every measurement is propagated from its *own* observation epoch with the ITRF2014-PMM NOAM Euler vector (PROJ `helmert` with rate terms, position-vector convention); GLAS is first moved ITRF2008→ITRF2014 as a separate, inverted 4-D step evaluated at the observation epoch (PROJ's `ITRF2014:ITRF2008` init entry is 2014→2008 *forward*).
+- *Build note (2026-08-25)* — **Colocation radius default: 35 m** (half the GLAS footprint), with Δh taken from a local along-track fit of ATL03 photons evaluated at the GLAS footprint centre (§9 item 10). Per-surface-type tuning remains open; footprint-mismatch note stands.
+- *Build note (2026-08-25)* — **Products pinned:** ATL03 **v007** (v006 is no longer cloud-hosted under NSIDC_CPRD), GLAH06 **v034** (cloud-hosted, ~4 MB granules → bulk download beats remote open). Toolchain: Python 3.13 (earthaccess 0.18 has no 3.14 wheels), `mcp` 2.x (`MCPServer`; the `FastMCP` import is gone), pyproj 3.7.2 / PROJ 9.5, deck.gl 9.3 via script tag.
+- *Build note (2026-08-25)* — **GLAS vertical handling:** heights converted TOPEX/Poseidon→WGS84 with the product's own `d_deltaEllip` (0.712 m at the EGIG box) and the saturation correction `d_satElevCorr` applied (it is *not* applied in `d_elev`). Recorded in every comparability block as `ellipsoid_correction_applied`; geoid/tide/GIA/firn and GLAS intercampaign bias remain `unresolved`. `dynamic_ice_flag` is `null` with a note until a velocity field exists — `false` would be an overclaim.
 
 ### Open
 - **SourceAdapter fetch mechanism** — per-mission S3 range-read + auth (earthaccess/S3 direct). Still the concrete piece behind Tier-1; spec codes against the interface. The index's addressing role *is* most of what a fetch layer needs, but auth/credentialing and the actual range-GET client are unwritten.
 - **Chunk-index extraction cost per mission** — index-build (§6.1) must read HDF5 chunk-info efficiently at scale; confirm `h5py` chunk-info throughput is acceptable over S3, or whether a faster path (bulk b-tree read, C binding) is needed. This is the one place a library *could* be the bottleneck and hand-rolling *might* pay — settle by benchmark, not assumption.
 - **H3 resolution R** — empirical, per-mission; trades addressing granularity (fetch waste when cell ≪ chunk) against index size (when cell ≫ chunk).
-- **Common epoch / anchor frame** — ICESat-2 ITRF2014 (day-job-aligned) vs. neutral frame. Decide before Stage 1 materialization; baked into the compute path.
-- **Colocation radius default** — per surface type; interacts with footprint-size mismatch (GLAS ~70 m, ICESat-2 micro-footprint, IceBridge swath).
+- ~~**Common epoch / anchor frame**~~ — decided, see above (ITRF2014 @ 2005.0, configurable).
+- **Colocation radius default** — 35 m for the demo (decided above); per-surface-type tuning and the IceBridge swath case still open.
 - **ILATM2 V2 CSV header** — confirm whether it exposes a per-record sequence number that would harden the IceBridge row key (§7.3).
 - **Whether NASA reference files exist for the target products** — if DMR++/kerchunk sidecars exist for ATL03/GLAS at the versions wanted, index-build could *validate against* them even if we don't consume them; worth a check before writing the chunk-info extractor.
 - **GIA / geoid / tide** — out of scope now; comparability block reserves space to surface and later apply them.
@@ -461,6 +467,8 @@ A 3D scene in the agent UI:
 - **Toggle to ON:** the ICESat-2 cloud **animates** into alignment (the plate-motion vector removed by the ITRF+epoch transform, §7.4) over ~1 s. As it moves, the histogram **collapses toward zero** in the same animation. Readout updates: "median Δh ≈ 1 cm (residual)".
 - The *motion* is the payload: the viewer sees plate motion being removed and a fake elevation signal vanishing with it. Slope is what converts the horizontal snap into the vertical histogram collapse — so the demo also teaches *why* co-registration matters exactly where the science is (sloped, dynamic margins).
 
+> *Build note (2026-08-25)* — **The histogram does not collapse on real data, and cannot.** The plate-motion artifact is `slope × (along-beam component of the 30 cm shift)`: sub-millimetre at 0.2°, ~1 cm at 2°, ~3 cm at 5° — against decimetre photon noise and metre-scale real change over 15 years. The built widget therefore shows the OFF/ON Δh histograms *and* a separate per-pair artifact panel (Δh at co-registered positions minus Δh at native positions, native heights), which is a tight peak whose offset from zero *is* the artifact. The on-screen wording is "plate-motion artifact removed: X cm", never "missions agree". See B.10 for measured numbers.
+
 ### B.4 Why this proves the architecture (not just "we have points")
 - **Co-registration (§7.4)** is the visible actor — OFF/ON is literally native vs. `coreg_*` coordinates.
 - **The comparability block (§7.5)** renders as the histogram + readout + the honest labels; the "artifact" vs "residual" language is the `unresolved`/`plate_motion_corrected` fields made visual.
@@ -469,6 +477,8 @@ A reviewer sees the difference between the naive comparison (script that skips c
 
 ### B.5 The exaggeration must be labeled — non-negotiable
 Plate motion is 15-30 cm over the GLAS↔ICESat-2 span: real, above the noise floor (§7.4), but invisible at glacier scale without exaggeration. The horizontal offset (and possibly vertical) is **exaggerated to be seen**, and the scene must carry a persistent on-screen label: e.g. "Horizontal offset exaggerated ×500 for visibility; true displacement ≈ 22 cm." 
+
+*Build note (2026-08-25):* at a 76 km scene, ×500 (150 m) is sub-pixel; the widget auto-picks the factor that makes the shift ~3 % of the scene span (×7000 on the EGIG box), rounds it to one significant figure, and prints it in the label together with the true displacement.
 
 This is a hard requirement, not polish: the demo whose entire thesis is "don't let a visual mislead you about elevation" **must not itself cheat**. An unlabeled exaggeration hands a sharp reviewer the exact weapon the comparability ethos exists to remove. Labeled, the demo is unimpeachable; unlabeled, it refutes its own point. The true (un-exaggerated) numbers appear in the readout alongside the exaggerated geometry.
 
@@ -490,6 +500,23 @@ First touch of a cold cell pays the full Tier-1 read + materialize synchronously
 
 ### B.9 Failure mode for the demo itself
 The one way this demo lies: if the "residual" (ON) histogram is near-zero because the region was *chosen* to make it so, it could imply co-registration fixes everything — when in truth firn/GIA/geoid remain (§7.5). Guard: keep the `unresolved` list visible even in the ON state, and pick a region where the residual is small **because co-registration genuinely dominates the artifact there**, not because all signals happen to cancel. The demo shows co-registration removing *the plate-motion artifact*, not "making the missions agree" — the on-screen language must say the former.
+
+### B.10 Measured on real data (build note, 2026-08-25)
+Placeholder region: EGIG west flank box (−45, 69.8, −43, 70.2); ATL03 v007, 8 granules, 12–21 March 2020, strong beams, land-ice confidence ≥ 3 → 5.36 M signal photons (298 k rendered); GLAH06 v034, all 278 granules over the box, 19 campaigns L1A–L2F → 38.4 k usable shots (38 cloud returns dropped by a cross-campaign neighbour test).
+
+| Quantity | Value |
+|---|---|
+| Plate-motion displacement, ICESat-2 2020.22 → 2005.0 | 32.2 cm (SE; independently checked against ω × r with the NOAM Euler vector: 2.13 cm/yr toward NW) |
+| GLAS 2005.87 → 2005.0 | 3.0 cm |
+| Relative shift between clouds | **30.5 cm**, vector (+0.22 E, −0.21 N) in EPSG:3413 local |
+| Regional slope (plane over all photons) / along-beam slope at pairs | 0.23° / 0.13° |
+| Co-located pairs (35 m) | 572 native, 568 co-registered, 0 gross (> 50 m) |
+| Δh ICESat-2 − GLAS, median (MAD) | **−1.31 m** (0.23 m) — real change + unresolved terms |
+| Per-pair plate-motion artifact, median (MAD) | **+0.03 cm** (0.06 cm) — consistent with 0.13° × along-beam shift |
+| ITRF2008→ITRF2014 vertical shift of GLAS heights | −1.7 mm (reported separately, not in the artifact) |
+| Live co-registration compute (5.4 M photons, pyproj) | 6–8 s; cached thereafter |
+
+Reading: the artifact is ~4000× smaller than the real signal on this box. That is the honest physics for a 0.2° interior flank, not a bug — the collaborator's region choice (several degrees of slope, slow flow, GLAS coverage) is what makes the reveal visible. Two wrong numbers were produced and caught on the way here (§9 items 10–11): a disc-median estimator that returned exactly zero artifact, and a −0.23 cm "artifact" that was the frame step's vertical component.
 
 ---
 
@@ -576,6 +603,7 @@ Most of this spec (§0–§11, Appendix A) describes the **full proposed system*
 - Transform: `pyproj` (ITRF frame + epoch propagation).
 - Widget: **deck.gl** (`PointCloudLayer`/`ScatterplotLayer`, 3D orbit view), with a **fallback to plotly 3D scatter** if deck.gl is not rendering real points by the end of Slice 1's widget block. The two-mission story matters more than the renderer — do not let deck.gl ramp consume Slice 2.
 - ICESat-2 product: **ATL03 v006** (or latest available; pin whichever is used). GLAS product: **GLAH06** (40 Hz group).
+  *Build note (2026-08-25):* pinned **ATL03 v007** (v006 not cloud-hosted) and **GLAH06 v034**; Python 3.13, `mcp` 2.x; widget is deck.gl (plotly fallback not needed).
 
 ---
 
@@ -601,6 +629,8 @@ The subset is a scientific decision with real visual consequences; the wrong sub
 
 **Non-goals this slice:** no GLAS, no co-registration, no index, no real MCP server, no histogram.
 
+**Status (2026-08-25): done.** Photon slices are located from the 20 m segment index (`ph_index_beg`/`segment_ph_cnt`) so only in-bbox bytes are read (~18 s per beam-granule over HTTPS). Real MCP server exists after all (`show_photons`, `add_glas`, `coregister`, `check_coverage`, `list_regions`) since Claude Desktop is the agent UI; the stdio transport was verified with a scripted client.
+
 ---
 
 ### Slice 2 — Add ICESat-1 (GLAS)
@@ -616,6 +646,8 @@ The subset is a scientific decision with real visual consequences; the wrong sub
 **Sharp edges:** GLAS is HDF5 but the **40 Hz group** holds the shot-level data, with different variable names than ATL03 (`i_rec_ndx`, `i_shot_count` for identity; separate lat/lon/elev vars); GLAS coverage is **campaign-intermittent** — confirm the chosen region actually has GLAS shots before committing (this is part of region validation, below); watch the 1 Hz vs 40 Hz group structure.
 
 **Non-goals this slice:** no transform yet, no histogram, no third mission.
+
+**Status (2026-08-25): done.** Additional sharp edges found: r34 is ITRF2008; `d_lon` is 0–360; `d_satElevCorr` is *not* applied in `d_elev`; `d_deltaEllip` gives the T/P→WGS84 offset directly; usable-shot filter `elev_use_flg == 0 && sat_corr_flg <= 2`; granules are ~4 MB, so bulk download (parallel) beats per-file remote opens; cloud returns appear as vertical stacks and are removed by a cross-campaign neighbour-median test (no plane extrapolation — that wrongly drops real shots near curved margins).
 
 ---
 
@@ -638,6 +670,8 @@ The subset is a scientific decision with real visual consequences; the wrong sub
 
 **Non-goals:** no IceBridge, no third mission, no real index/lake behind the compute — a shim that runs pyproj and caches is sufficient.
 
+**Status (2026-08-25): done; measured results in B.10.** Additional sharp edges found: (1) PROJ's `helmert` evaluates rates as `dP × (t − t_epoch)` with `t` from the 4th coordinate — **omit the time argument and the transform is a silent identity**, no error; the code asserts non-zero displacement and a test proves the trap. (2) `Transformer.from_crs` never infers plate motion, even with the `ITRF2014@2005.0` syntax — the pipeline must be written by hand (`cart → helmert +drx +dry +drz +t_epoch=<obs epoch> +convention=position_vector → inv cart`, 4th coordinate = target epoch). (3) The Δh estimator must be a local fit, not a disc median (§9 item 10), and the frame step's vertical component must be kept out of the artifact (§9 item 11).
+
 ---
 
 ### Candidate demo regions (Greenland) — TO BE VALIDATED BY SCIENCE COLLABORATOR
@@ -651,7 +685,7 @@ The subset is a scientific decision with real visual consequences; the wrong sub
 | # | Candidate region | Why it fits | Validation flags for collaborator |
 |---|---|---|---|
 | 1 | **Near Summit Station** (~72.6°N, 38.5°W, ~3250 m) | Gentle divide-region topography; unmatched ground-truth pedigree (continuous kinematic GPS since 2007, sub-1 cm ICESat-2 bias established); interior = minimal true elevation change | Slope may be *too* gentle to show artifact without heavy exaggeration — check slope is non-trivial over the box; confirm GLAS campaign coverage |
-| 2 | **EGIG line, central-west traverse** (~70°N, transecting the west flank) | Classic glaciological traverse; spans interior-to-flank so slope is tunable by box placement; historical measurement density | Pick a box on the moderate-slope flank, not the steep margin; confirm both missions cross it |
+| 2 | **EGIG line, central-west traverse** (~70°N, transecting the west flank) | Classic glaciological traverse; spans interior-to-flank so slope is tunable by box placement; historical measurement density | Pick a box on the moderate-slope flank, not the steep margin; confirm both missions cross it. *Measured (2026-08-25) for the placeholder box (−45, 69.8, −43, 70.2): coverage excellent (38 ATL03 granules Mar–May 2020; GLAS in all 19 campaigns) but slope 0.23° → artifact 0.03 cm vs Δh −1.31 m: **too flat**; move the box downslope (west) toward the margin.* |
 | 3 | **K-transect / west flank near Kangerlussuaq region** (~67°N, west margin, *upstream* of the fast zone) | Well-studied ablation/percolation transect; real slope; extensive literature | Stay upstream of dynamic/ablation-dominated zone or real thinning contaminates the artifact; verify flow is slow enough |
 | 4 | **NE interior flank, upstream of NEGIS** (~75–77°N, interior side) | N/NE basins show best cross-mission agreement (simpler terrain, well-sampled) — clean artifact isolation; some slope on the flank | Stay well upstream of NEGIS fast flow; confirm slope is enough to show effect |
 | 5 | **North-central interior flank** (~76°N, NW-NO basin) | NW/NO basins are the best-agreeing, best-sampled, simplest-terrain regions — lowest confound risk | Lowest confound but possibly lowest slope — validate slope is sufficient; confirm GLAS coverage |
