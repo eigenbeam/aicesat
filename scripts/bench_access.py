@@ -18,32 +18,36 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--methods", default="index,legacy,download")
-ap.add_argument("--region", default="egig_west_flank")
-ap.add_argument("--granules", type=int, default=8)
-ap.add_argument("--keep-raw", action="store_true")
-ap.add_argument("--out", default="data/bench/results.json")
-args = ap.parse_args()
+def _setup():
+    global args, BENCH_DIR, bbox, window, granules, names, sizes_mb, out_path, results, log
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--methods", default="index,legacy,download")
+    ap.add_argument("--region", default="egig_west_flank")
+    ap.add_argument("--granules", type=int, default=8)
+    ap.add_argument("--keep-raw", action="store_true")
+    ap.add_argument("--out", default="data/bench/results.json")
+    args = ap.parse_args()
 
-BENCH_DIR = Path("data/bench").resolve()
-os.environ["AICESAT_DATA_DIR"] = str(BENCH_DIR / "lake_run")  # fresh index + lake so 'cold' is honest
+    BENCH_DIR = Path("data/bench").resolve()
+    os.environ["AICESAT_DATA_DIR"] = str(BENCH_DIR / "lake_run")  # fresh index + lake so 'cold' is honest
 
-from aicesat import atl03, auth, coverage, regions  # noqa: E402  (after env)
+    global atl03, auth, coverage, regions
+    from aicesat import atl03, auth, coverage, regions  # noqa: E402  (after env)
 
-logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
-for noisy in ("fsspec", "urllib3", "earthaccess"):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
-log = logging.getLogger("bench")
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
+    for noisy in ("fsspec", "urllib3", "earthaccess"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    log = logging.getLogger("bench")
 
-bbox = regions.resolve_bbox(args.region)
-window = regions.DEFAULT_ATL03_WINDOW
-auth.login()
-granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[: args.granules]
-names = [g["meta"]["native-id"] for g in granules]
-sizes_mb = {g["meta"]["native-id"]: float(g.size()) for g in granules}
-out_path = Path(args.out)
-results = json.loads(out_path.read_text()) if out_path.exists() else {}
+    bbox = regions.resolve_bbox(args.region)
+    window = regions.DEFAULT_ATL03_WINDOW
+    auth.login()
+    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[: args.granules]
+    names = [g["meta"]["native-id"] for g in granules]
+    sizes_mb = {g["meta"]["native-id"]: float(g.size()) for g in granules}
+    out_path = Path(args.out)
+    results = json.loads(out_path.read_text()) if out_path.exists() else {}
+
 
 
 def record(method: str, **kw):
@@ -65,7 +69,17 @@ def subset_with_h5py(f, bbox) -> int:
             d = atl03._extract_beam(f, b, bbox)
             if d is not None:
                 n += int(d["lon"].size)
+                CHECK["lat"] += float(d["lat"].sum()); CHECK["h"] += float(d["h"].sum())
     return n
+
+
+CHECK = {"lat": 0.0, "h": 0.0}  # cross-arm agreement: sums of the returned subset (spike: agree before timing counts)
+
+
+def checksum():
+    c = {"lat_sum": round(CHECK["lat"], 1), "h_sum": round(CHECK["h"], 0)}
+    CHECK["lat"] = CHECK["h"] = 0.0
+    return c
 
 
 # ----------------------------------------------------------------------------- C. index + byte-range + lake
@@ -86,6 +100,10 @@ def run_index():
            wall_s=round(t_index + t_fetch + t_query, 1), phases={"index_build_s": round(t_index, 1), "fetch_materialize_s": round(t_fetch, 1), "query_s": round(t_query, 2)},
            requests=st["requests"], bytes=st["bytes"], hdf5_opens=len(idx["built"]), structure_parses=len(idx["built"]),
            hdf5_opens_at_query_time=0, granules_touched=st["granules_touched"], chunks=st["chunks_fetched"], photons=int(q["lon"].size),
+           spans=st.get("spans"), gap_bytes=st.get("gap_bytes"), dataset_ranges=st.get("chunks"),
+           fetch_seconds=st.get("fetch_seconds"), decode_materialize_seconds=st.get("decode_materialize_seconds"),
+           chunks_pruned_by_boxes=st.get("chunks_pruned_by_boxes"),
+           checksum={"lat_sum": round(float(q["lat"].sum()), 1), "h_sum": round(float(q["h"].sum()), 0)},
            notes="index build opens each granule once (amortized over all future queries); query-time path never opens HDF5. "
                  "Photon count uses the exact per-photon bbox predicate over whole chunks.")
     # warm: everything already materialized
@@ -127,7 +145,7 @@ def run_legacy():
     record("legacy_remote_h5py", label="earthaccess.open + h5py over fsspec (block cache), segment-index slicing",
            wall_s=round(t_open + t_read, 1), phases={"open_s": round(t_open, 1), "read_s": round(t_read, 1)},
            requests=counter["requests"], bytes=counter["bytes"], hdf5_opens=len(files), structure_parses=len(files), hdf5_opens_at_query_time=len(files),
-           granules_touched=len(files), photons=n,
+           granules_touched=len(files), photons=n, checksum=checksum(),
            notes="every query re-opens and re-parses each granule; bytes counted at fsspec block-cache misses (block size chosen by earthaccess)")
 
 
@@ -150,7 +168,7 @@ def run_download():
     record("download_whole_granule", label="download whole granules (8 threads) + local h5py, segment-index slicing",
            wall_s=round(t_dl + t_read, 1), phases={"download_s": round(t_dl, 1), "local_read_s": round(t_read, 1)},
            requests=len(paths) * 2, bytes=nbytes, hdf5_opens=len(paths), structure_parses=len(paths), hdf5_opens_at_query_time=len(paths),
-           granules_touched=len(paths), photons=n, granule_sizes_mb=sizes_mb,
+           granules_touched=len(paths), photons=n, granule_sizes_mb=sizes_mb, checksum=checksum(),
            notes="requests = 1 auth redirect + 1 GET per granule; bytes = full files on disk")
     if not args.keep_raw:
         for p in paths:
@@ -210,7 +228,7 @@ def run_harmony():
     record("harmony_subset", label="NSIDC Harmony trajectory subsetter (async job, spatial subset, HDF5 back) + local h5py",
            wall_s=round(t_proc + t_dl + t_read, 1), phases={"submit_to_done_s": round(t_proc, 1), "download_s": round(t_dl, 1), "local_read_s": round(t_read, 1)},
            requests=len(files) + 2, bytes=nbytes, hdf5_opens=len(files), structure_parses=len(files), hdf5_opens_at_query_time=len(files),
-           granules_touched=len(files), photons=n, files=[Path(f).name for f in files],
+           granules_touched=len(files), photons=n, files=[Path(f).name for f in files], checksum=checksum(),
            notes="server-side subsetting is opaque; latency is queue + processing. Subset files carry all variables (no variable subsetting for ATL03).")
     if not args.keep_raw:
         for f in files:
@@ -218,12 +236,15 @@ def run_harmony():
 
 
 RUNNERS = {"index": run_index, "legacy": run_legacy, "download": run_download, "sliderule": run_sliderule, "harmony": run_harmony}
-for m in args.methods.split(","):
-    log.info("=== %s ===", m)
-    RUNNERS[m]()
 
-# ----------------------------------------------------------------------------- table
-print(f"\nAccess-method comparison — {args.region} {list(bbox)}, {len(names)} ATL03 v007 granules, measured {datetime.now():%Y-%m-%d}\n")
-print(f"{'method':<26}{'granules':>9}{'HDF5 opens':>12}{'requests':>10}{'MB':>10}{'wall s':>9}{'photons':>12}")
-for k, r in results.items():
-    print(f"{k:<26}{r.get('granules_touched', ''):>9}{r.get('hdf5_opens_at_query_time', r.get('hdf5_opens', '')):>12}{r['requests']:>10}{r['bytes'] / 1e6:>10.0f}{r['wall_s']:>9}{r.get('photons', ''):>12}")
+if __name__ == "__main__":  # guard: the index build spawns worker processes that re-import this file
+    _setup()
+    for m in args.methods.split(","):
+        log.info("=== %s ===", m)
+        RUNNERS[m]()
+
+    # ----------------------------------------------------------------------------- table
+    print(f"\nAccess-method comparison — {args.region} {list(bbox)}, {len(names)} ATL03 v007 granules, measured {datetime.now():%Y-%m-%d}\n")
+    print(f"{'method':<26}{'granules':>9}{'HDF5 opens':>12}{'requests':>10}{'MB':>10}{'wall s':>9}{'photons':>12}")
+    for k, r in results.items():
+        print(f"{k:<26}{r.get('granules_touched', ''):>9}{r.get('hdf5_opens_at_query_time', r.get('hdf5_opens', '')):>12}{r['requests']:>10}{r['bytes'] / 1e6:>10.0f}{r['wall_s']:>9}{r.get('photons', ''):>12}")

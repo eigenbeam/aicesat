@@ -68,6 +68,30 @@ Measured on the EGIG box, 8 granules: index 110 s (one-time); 120 chunks → 608
 photons / 476 MB; query 5.36 M photons in 2.3 s; second run 0 fetches, 2.4 s. The old `earthaccess.open + h5py`
 path is kept as `atl03.extract_legacy` for the access-method comparison.
 
+## Techniques adopted from NSIDC's `open-altimetry` ATL24 chunk-map spike
+
+Reviewed `nsidc/open-altimetry@worktree-atl24-sampling-spike` (`tools/atl24-sample`, `docs/plans/atl24-on-demand-reads.md`,
+`docs/reference/chunkmap-architecture.tex`). Same problem — HDF5 chunk map captured once, ranged HTTPS via the EDL→303→
+CloudFront chain, no HDF5 library on the read path — with a careful nine-arm benchmark. What transferred:
+- **Range coalescing with a gap threshold, not one giant GET** (`chunkmap.plan`; their sweep found a 256 KB gap optimum
+  and that a single merged request is *slower*): `access.coalesce`, gap 256 KB, span cap 64 MB, gap bytes counted.
+- **Concurrency is the bigger lever than coalescing** (their ATL24 arm: 7.3× from 1→32 in flight; coalescing ≤ 25 %):
+  groups of (granule, beam) are fetched concurrently on top of per-span threads.
+- **Per-chunk bounding boxes for fetch selection** (their precision sweep: two boxes 0.98, H3 r7 0.53, r5 0.12): the
+  index now stores each chunk's segment box; the planner prunes chunks whose box misses the query even when their H3
+  cell overlaps it. Cells remain the partition key.
+- **Retry policy** for NSIDC/CloudFront transient 5xx/429 with `Retry-After` (they measured ~0.27 % transient 500s),
+  a 200-instead-of-206 guard, presign cache keyed per granule with re-resolve on 403, one presign per granule under
+  concurrency.
+- **Correctness gates at index time**: refuse filter ids other than deflate/shuffle and any chunking that splits the
+  trailing dimension (they do both); we additionally keep the per-chunk `filter_mask`, which their map omits.
+- **Process pool for the index build** (h5py's global lock: threads gave them 0×, processes 5–8×; opens ~2 s dominate).
+- **Cross-arm checksum agreement before timing** (`lat_sum`, `h_sum` per arm in `results.json`).
+
+Not adopted (yet): compressed-chunk LRU keyed (granule, dataset, chunk) — our lake persists decoded photons instead;
+per-chunk "interest" counts (signal ≥ 4) to answer "nothing here" with zero I/O; NDJSON streaming with display
+strides. Postgres bytea/TOAST and varint-delta findings do not transfer (Parquet encodings cover it).
+
 ## Access-method comparison (measured 2026-08-25, spec Appendix C.3)
 
 Same bbox (egig_west_flank [-45.0, 69.8, -43.0, 70.2]), the same 8 ATL03 v007 granules (2020-03-01..2020-05-31), the same
@@ -76,8 +100,8 @@ target subset (strong beams, land-ice confidence ≥ 3, clipped to the box). Run
 
 | Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
 |---|---|---|---|---|---|---|
-| H3 chunk index + byte-range GETs + Parquet lake, first touch | 8 | 0 (8 at index build, once) | 608 | 138 | 156.4 (110 index build + 27 fetch + 2 query) | 5,363,896 |
-| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.22 | 5,363,896 |
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 99 | 99 | 73.7 (47.0 index build + 24.5 fetch/materialize [7.0 s network] + 2.22 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.3 | 5,363,896 |
 | earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
 | download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
 | SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
@@ -87,19 +111,21 @@ Honest reading (spec C.3 / C.8):
 - **Granules opened and structure parses at query time** are the real win: the index path opens nothing and parses
   nothing per query; every other path re-opens and re-parses all 8 granules per query (SlideRule and Harmony do it
   server-side, where it is invisible to the client but still paid).
-- **Bytes**: the byte-range path moves 138 MB — 24× less than remote h5py through fsspec's block cache (3.4 GB), 161×
-  less than whole-granule download (22 GB), 5× less than Harmony's spatially-subsetted-but-all-variables files
+- **Bytes**: the byte-range path moves 99 MB — 34× less than remote h5py through fsspec's block cache (3.4 GB),
+  225× less than whole-granule download (22 GB), 7× less than Harmony's spatially-subsetted-but-all-variables files
   (721 MB). SlideRule returns only 99 MB of geoparquet because the *server* reads the source; what h5coro reads from
   S3 is not exposed, so that row is not a byte comparison at all.
-- **Wall-clock**: SlideRule wins outright (13 s) — a cluster in us-west-2 next to the data beats any client on a
-  laptop over HTTPS, and the spec's warning about beating a strawman applies in reverse: our cold time (156 s) is
-  dominated by the one-time index build (110 s); the *repeat* query is 3 s with zero traffic, which no server-side
-  path offers. Harmony's time is queue-dominated and varied 127–215 s between two runs.
+- **Requests**: 99 after coalescing adjacent chunks into spans (92 spans, 1.7 MB of gap bytes) and
+  pruning 35 of 120 candidate chunks by their own bounding boxes — down from 608 single-chunk GETs in the
+  first measurement. The network part of the cold fetch is now 7.0 s; the rest of the fetch phase is decode,
+  per-photon cell assignment, co-registration and Parquet writes (CPU).
+- **Wall-clock**: SlideRule still wins outright (13 s) — a cluster in us-west-2 next to the data beats any client on
+  a laptop over HTTPS. Our cold time (73.7 s, was 156 s before the spike-derived optimizations) is dominated by the
+  one-time index build (47.0 s for 8 granules with a 4-process pool); the *repeat* query is 3.3 s with
+  zero traffic, which no server-side path offers. Harmony's time is queue-dominated and varied 127–215 s.
 - **Subset fidelity**: the index path returns 801 more photons than segment-based slicing because it applies the exact
-  per-photon predicate to whole chunks. SlideRule's 4.40 M reflects its own defaults (`quality_ph`, segment-based
-  clipping) — a different subset, flagged as such.
-- **Requests**: 608 small range GETs vs 201 large block reads — round-trips are *not* a win for the index path on this
-  box (each chunk is a separate request; S3 does not support multi-range). Batching adjacent chunks would cut this.
+  per-photon predicate to whole chunks; box pruning changed nothing (same 5,363,896). SlideRule's 4.40 M reflects its
+  own defaults (`quality_ph`, segment-based clipping) — a different subset, flagged as such.
 
 ## Scripts (no MCP transport needed)
 

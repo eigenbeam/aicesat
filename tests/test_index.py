@@ -100,3 +100,54 @@ def test_cell_ids_survive_roundtrip_as_uint64():
     pairs = sorted(set(zip(ks.tolist(), cs.tolist())))
     assert pairs[0][1] == c
     assert pa.array([pairs[0][1]], type=pa.uint64())[0].as_py() == c
+
+
+def test_coalesce_merges_adjacent_and_small_gaps_only():
+    r = [(0, 100), (100, 50), (150, 10), (1000, 5), (1_000_000, 10), (1_000_010, 10)]
+    assert access.coalesce(r, max_gap=0) == [(0, 160), (1000, 5), (1_000_000, 20)]
+    assert access.coalesce(r, max_gap=1000) == [(0, 1005), (1_000_000, 20)]
+    assert access.coalesce([], 0) == []
+    # order of input does not matter; output is sorted
+    assert access.coalesce(list(reversed(r)), max_gap=0) == [(0, 160), (1000, 5), (1_000_000, 20)]
+
+
+def test_coalesce_respects_max_span():
+    r = [(i * 100, 100) for i in range(10)]
+    assert access.coalesce(r, max_gap=0, max_span=350) == [(0, 300), (300, 300), (600, 300), (900, 100)]
+
+
+def test_fetch_slices_spans_back_into_requested_ranges(monkeypatch):
+    data = bytes(range(256)) * 40  # 10240 bytes "file"
+    rd = access.RangeReader.__new__(access.RangeReader)
+    rd.threads, rd.max_gap, rd.stats, rd._presigned = 2, 64, access.AccessStats(), {}
+    import threading; rd._lock = threading.Lock()
+    rd.presigned = lambda url, refresh=False: url
+    calls = []
+    def fake_get(purl, off, size):
+        calls.append((off, size)); return data[off: off + size]
+    rd._get = fake_get
+    ranges = [(0, 100), (100, 100), (250, 10), (5000, 20), (5020, 5)]
+    out = rd.fetch("u", ranges)
+    assert [len(b) for b in out] == [100, 100, 10, 20, 5]
+    assert all(out[i] == data[o: o + s] for i, (o, s) in enumerate(ranges))
+    assert calls == [(0, 260), (5000, 25)]                       # 5 wanted ranges -> 2 GETs
+    assert rd.stats.requests == 2 and rd.stats.gap_bytes == 50 and rd.stats.chunks == 5
+
+
+def test_chunk_refs_prunes_by_chunk_boxes(tmp_path, monkeypatch):
+    """Cells are coarse; the per-chunk segment bounding box must drop chunks that miss the query bbox."""
+    import pyarrow as pa, pyarrow.parquet as pq, h3
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path)
+    cell = h3.str_to_int(h3.latlng_to_cell(70.0, -44.0, index.H3_RES))
+    base = {"granule": "G", "url": "u", "s3url": "", "revision": "1", "sc_orient": 1, "sdp_epoch": 1.0, "beam": "gt1r", "strong": True,
+            "cycle": 6, "rgt": 1, "ph_start": 0, "ph_end": 100}
+    for d in index.DATASETS:
+        base.update({f"{d}_offset": 0, f"{d}_size": 1, f"{d}_filters": "gzip", f"{d}_dtype": "f8", f"{d}_ncols": 1, f"{d}_mask": 0})
+    rows = [dict(base, chunk_index=0, h3_cell=cell, lat_min=69.95, lat_max=70.05, lon_min=-44.1, lon_max=-43.9),   # inside
+            dict(base, chunk_index=1, h3_cell=cell, lat_min=70.30, lat_max=70.40, lon_min=-44.1, lon_max=-43.9)]   # same cell, north of box
+    tbl = pa.table({k: pa.array([r[k] for r in rows], type=pa.uint64() if k == "h3_cell" else None) for k in rows[0]})
+    tbl = tbl.replace_schema_metadata({"aicesat_index_version": index.INDEX_SCHEMA_VERSION})
+    pq.write_table(tbl, tmp_path / "G.parquet")
+    assert index.chunk_refs([cell]).num_rows == 2
+    assert index.chunk_refs([cell], bbox=(-45, 69.8, -43, 70.2)).num_rows == 1
+    assert index.chunk_refs([cell], bbox=(-45, 69.8, -43, 70.2))["chunk_index"][0].as_py() == 0

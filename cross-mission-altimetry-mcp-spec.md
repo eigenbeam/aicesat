@@ -572,8 +572,8 @@ numbers it would be driven by. Same bbox (EGIG west flank), same 8 ATL03 v007 gr
 
 | Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
 |---|---|---|---|---|---|---|
-| H3 chunk index + byte-range GETs + Parquet lake, first touch | 8 | 0 (8 at index build, once) | 608 | 138 | 156.4 (110 index build + 27 fetch + 2 query) | 5,363,896 |
-| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.22 | 5,363,896 |
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 99 | 99 | 73.7 (47.0 index build + 24.5 fetch/materialize [7.0 s network] + 2.22 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.3 | 5,363,896 |
 | earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
 | download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
 | SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
@@ -581,11 +581,14 @@ numbers it would be driven by. Same bbox (EGIG west flank), same 8 ATL03 v007 gr
 
 What the numbers say, against C.3's predictions: the granule-open and structure-parse rows behave exactly as predicted
 (0 at query time vs 8 per query everywhere else). The byte row is *not* "close" as C.3 conservatively expected — the
-byte-range path moves 24× less than remote h5py because fsspec's block cache over-reads at 4–16 MB granularity, while
-whole-compressed-chunk reads (§5.3) are ~300 kB each. Round-trips are not a win here (608 chunk GETs vs 201 block
-reads); batching adjacent chunks is the obvious next step. The strong baseline (C.2) is SlideRule, which wins
-wall-clock outright (13 s) by running next to the data; the index's answer to that is the warm path — 3 s, zero
-traffic, no server — and an exact subset. Harmony's cost is queue latency and all-variable output.
+byte-range path moves 34× less than remote h5py because fsspec's block cache over-reads at 4–16 MB granularity, while
+whole-compressed-chunk reads (§5.3) are ~300 kB each. Round-trips: the first measurement issued 608 single-chunk GETs
+(more than the 201 block reads); after adopting the NSIDC ATL24 chunk-map spike's techniques — coalescing adjacent
+chunks into spans with a 256 KB gap threshold, per-chunk bounding boxes to prune what coarse H3 cells let through
+(35 of 120 chunks), and a process pool for the index build — it is 99 requests, 99 MB, and a 73.7 s cold
+touch of which 7.0 s is network. The strong baseline (C.2) is SlideRule, which wins wall-clock outright (13 s) by
+running next to the data; the index's answer to that is the warm path — 3 s, zero traffic, no server — and an exact
+subset. Harmony's cost is queue latency and all-variable output.
 
 ### C.6 Data path (tool call → render)
 1. Agent calls a query that resolves cells → byte-ranges (§5) and reads via Tier-1 (§6.2) — the right side is the **real** system, run live (it is fast and robust; it is the winning side).

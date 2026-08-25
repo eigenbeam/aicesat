@@ -62,14 +62,15 @@ def _materialize(out: dict) -> dict:
     return out
 
 
-def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None) -> dict:
+def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
     """Make the lake sufficient for (bbox|polygon, window): index missing granules, fetch missing chunks, materialize."""
     t0 = time.time()
     cells = cells_for_bbox(bbox, polygon=polygon)
     granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[:max_granules]
     names = [g["meta"]["native-id"] for g in granules]
     idx = index.ensure_index(granules)
-    refs = index.chunk_refs(cells, granules=names)
+    refs_cells = index.chunk_refs(cells, granules=names)
+    refs = index.chunk_refs(cells, granules=names, bbox=bbox)  # per-chunk boxes prune what the coarse cells let through
     rows = refs.to_pylist()
     have = set() if force else lake.ingested_chunks("ICESAT2", names)
     todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) not in have]
@@ -78,12 +79,24 @@ def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: in
     for r in todo:
         by_gb.setdefault((r["granule"], r["beam"]), []).append(r)
     n_written_cells = 0
-    for (gname, beam), rs in by_gb.items():
+
+    def fetch_group(item):
+        (gname, beam), rs = item
         ranges, keys = [], []
         for r in rs:
             for d in index.DATASETS:
                 ranges.append((r[f"{d}_offset"], r[f"{d}_size"])); keys.append((d, r["chunk_index"]))
-        raws = dict(zip(keys, reader.fetch(rs[0]["url"], ranges)))
+        return (gname, beam), rs, dict(zip(keys, reader.fetch(rs[0]["url"], ranges)))
+
+    # Fetch several (granule, beam) groups at once: after coalescing a group has only a handful of spans, so
+    # per-group parallelism alone would leave most connections idle. Decode/materialize stays sequential (CPU).
+    from concurrent.futures import ThreadPoolExecutor
+    t_f0 = time.time()
+    with ThreadPoolExecutor(group_parallel) as ex:
+        fetched = list(ex.map(fetch_group, by_gb.items()))
+    t_fetch = time.time() - t_f0
+    t_m0 = time.time()
+    for (gname, beam), rs, raws in fetched:
         ph = _materialize(_decode_photons(rs, raws, rs[0]["sdp_epoch"]))
         written = lake.write_photons("ICESAT2", gname, beam, ph)
         n_written_cells += len(written)
@@ -92,6 +105,8 @@ def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: in
         log.info("%s %s: %d chunks -> %d photons -> %d cell files", gname, beam, len(rs), ph["lon"].size, len(written))
     st = reader.stats.as_dict()
     st.update({"cells": len(cells), "granules": names, "index": idx, "chunk_refs": len(rows), "chunks_fetched": len(todo),
+               "chunk_refs_by_cells_only": refs_cells.num_rows, "chunks_pruned_by_boxes": refs_cells.num_rows - len(rows),
+               "fetch_seconds": round(t_fetch, 1), "decode_materialize_seconds": round(time.time() - t_m0, 1),
                "chunks_skipped_already_materialized": len(rows) - len(todo), "cell_files_written": n_written_cells,
                "wall_seconds": round(time.time() - t0, 1), "h3_res": index.H3_RES})
     return {"cells": cells, "granules": names, "stats": st}

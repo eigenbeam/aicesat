@@ -24,7 +24,7 @@ from . import auth, cache
 log = logging.getLogger(__name__)
 
 H3_RES = 6
-INDEX_SCHEMA_VERSION = "3"  # bump when index columns change; older files are rebuilt, never read
+INDEX_SCHEMA_VERSION = "4"  # v4: per-chunk lat/lon bounding boxes  # bump when index columns change; older files are rebuilt, never read
 DATASETS = ("lat_ph", "lon_ph", "h_ph", "signal_conf_ph", "delta_time")
 BEAMS = ("gt1l", "gt1r", "gt2l", "gt2r", "gt3l", "gt3r")
 INDEX_DIR = cache.DATA_DIR / "index"
@@ -75,7 +75,7 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
     s3 = (granule.data_links(access="direct") or [""])[0]
     t0 = time.time()
     rows = {k: [] for k in ("granule", "url", "s3url", "revision", "sc_orient", "sdp_epoch", "beam", "strong", "cycle", "rgt",
-                            "chunk_index", "ph_start", "ph_end", "h3_cell")}
+                            "chunk_index", "ph_start", "ph_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max")}
     for ds in DATASETS:
         for k in ("offset", "size", "filters", "dtype", "ncols", "mask"):
             rows[f"{ds}_{k}"] = []
@@ -95,6 +95,11 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
             nchunks = dsets["h_ph"].id.get_num_chunks()
             for d, ds in dsets.items():
                 assert ds.chunks[0] == C and ds.id.get_num_chunks() == nchunks, f"{beam}/{d}: chunking differs from h_ph"
+                if ds.ndim > 1 and ds.chunks[1] != ds.shape[1]:
+                    raise ValueError(f"{beam}/{d}: chunking splits the trailing dimension; refusing to index")
+                bad = [f for f in _filters(ds).split(",") if f and f not in ("gzip", "shuffle")]
+                if bad:
+                    raise ValueError(f"{beam}/{d}: unsupported HDF5 filters {bad}; refusing to index (spec §6.3)")
             manifests = {d: _chunk_manifest(ds) for d, ds in dsets.items()}
             meta = {d: (_filters(ds), str(ds.dtype), int(ds.shape[1]) if ds.ndim > 1 else 1) for d, ds in dsets.items()}
             # chunk -> cells via segments
@@ -105,6 +110,13 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
             k_lo, k_hi = s // C, np.maximum(s, e - 1) // C
             ks = np.concatenate([k_lo, k_hi[k_hi > k_lo]]).astype("i8")
             cs = np.concatenate([cells, cells[k_hi > k_lo]]).astype("u8")
+            # per-chunk bounding box of its segments (fetch-selection precision; cells stay the partition key)
+            seg_lat_ok, seg_lon_ok = seg_lat[ok], seg_lon[ok]
+            lat_all = np.concatenate([seg_lat_ok, seg_lat_ok[k_hi > k_lo]]); lon_all = np.concatenate([seg_lon_ok, seg_lon_ok[k_hi > k_lo]])
+            box = {}
+            for k in np.unique(ks):
+                m = ks == k
+                box[int(k)] = (float(lat_all[m].min()), float(lat_all[m].max()), float(lon_all[m].min()), float(lon_all[m].max()))
             # NB: never np.stack int64 with uint64 -> float64 silently destroys the low bits of the cell id
             pairs = sorted(set(zip(ks.tolist(), cs.tolist())))
             for k, cell in pairs:
@@ -115,6 +127,8 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
                 rows["cycle"].append(info["cycle"]); rows["rgt"].append(info["rgt"])
                 rows["chunk_index"].append(k); rows["ph_start"].append(k * C); rows["ph_end"].append(min((k + 1) * C, n_ph))
                 rows["h3_cell"].append(int(cell))
+                b = box[int(k)]
+                rows["lat_min"].append(b[0]); rows["lat_max"].append(b[1]); rows["lon_min"].append(b[2]); rows["lon_max"].append(b[3])
                 for d in DATASETS:
                     ci = manifests[d][k]
                     fl, dt, nc = meta[d]
@@ -143,35 +157,42 @@ def indexed_granules() -> set[str]:
     return out
 
 
-INDEX_TIMEOUT_S = 180  # a stalled remote open must not wedge a job: time out and retry once
+INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out and retry once
+INDEX_WORKERS = 4      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
 
 
-def ensure_index(granules) -> dict:
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
+    from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
 
     have = indexed_granules()
+    todo = [g for g in granules if g["meta"]["native-id"] not in have]
     built, t0 = [], time.time()
-    for g in granules:
-        name = g["meta"]["native-id"]
-        if name in have:
-            continue
-        for attempt in (1, 2):
-            ex = ThreadPoolExecutor(1)
+    for attempt in (1, 2):
+        if not todo:
+            break
+        failed = []
+        ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)))
+        futs = {ex.submit(build_granule_index, g): g for g in todo}
+        deadline = time.time() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
+        for f, g in futs.items():
+            name = g["meta"]["native-id"]
             try:
-                ex.submit(build_granule_index, g).result(timeout=INDEX_TIMEOUT_S)
-                break
+                f.result(timeout=max(1.0, deadline - time.time()))
+                built.append(name)
             except FutTimeout:
-                log.warning("index build of %s timed out after %ds (attempt %d)", name, INDEX_TIMEOUT_S, attempt)
-                if attempt == 2:
-                    raise TimeoutError(f"index build of {name} timed out twice")
-            finally:
-                ex.shutdown(wait=False)
-        built.append(name)
+                log.warning("index build of %s timed out (attempt %d)", name, attempt)
+                failed.append(g)
+        ex.shutdown(wait=False, cancel_futures=True)
+        todo = failed
+    if todo:
+        raise TimeoutError("index build timed out twice for: " + ", ".join(g["meta"]["native-id"] for g in todo))
     return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
 
 
-def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True) -> pa.Table:
-    """Distinct chunk references for a set of cells (one row per (granule, beam, chunk)); the addressing role of §5.1."""
+def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None) -> pa.Table:
+    """Distinct chunk references for a set of cells (one row per (granule, beam, chunk)); the addressing role of §5.1.
+    bbox (W,S,E,N) additionally prunes chunks whose own segment bounding box misses the query — cells are coarse
+    (a res-6 cell reaches ~3.7 km outside the box), per-chunk boxes are not."""
     if not ATL03_INDEX_DIR.exists() or not any(ATL03_INDEX_DIR.glob("*.parquet")):
         return pa.table({})
     con = duckdb.connect()
@@ -180,6 +201,9 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
         cond.append("granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
     if strong_only:
         cond.append("strong")
+    if bbox is not None:
+        w, s_, e, n = bbox
+        cond.append(f"lat_max >= {s_} AND lat_min <= {n} AND lon_max >= {w} AND lon_min <= {e}")
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
     q = f"""SELECT DISTINCT granule, url, beam, sdp_epoch, cycle, chunk_index, ph_start, ph_end, {cols}
             FROM read_parquet('{ATL03_INDEX_DIR}/*.parquet') WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
