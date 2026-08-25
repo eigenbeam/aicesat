@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo B — visual companion</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --card: #ffffff; --ink: #26251f; --muted: #6b6a63;
+    --hair: #e2e0d8; --blue: #378ADD; --coral: #D85A30; --teal: #1D9E75;
+    --amber: #BA7517; --red: #A32D2D; --green: #0F6E56;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a17; --card: #242420; --ink: #e8e6dd; --muted: #a3a199;
+      --hair: #3a3a34;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px; background: var(--bg); color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 24px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 18px; font-weight: 600; margin: 36px 0 4px; }
+  .lede { color: var(--muted); font-size: 15px; margin: 0 0 8px; }
+  .note { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .card {
+    background: var(--card); border: 1px solid var(--hair); border-radius: 12px;
+    padding: 14px; margin-top: 14px;
+  }
+  .q { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .stage {
+    background: var(--bg); border: 1px solid var(--hair); border-radius: 8px;
+    height: 260px; position: relative; overflow: hidden;
+  }
+  .pill {
+    position: absolute; font-size: 11px; padding: 2px 7px; border-radius: 6px;
+    background: var(--card); border: 1px solid var(--hair);
+  }
+  .legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--muted); align-items: center; flex-wrap: wrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .swatch { display: flex; align-items: center; gap: 5px; }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px;
+    border: 1px solid var(--hair); background: var(--card); color: var(--ink);
+    cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: var(--bg); }
+  .hbrow { display: flex; align-items: flex-end; gap: 3px; height: 56px; padding: 0 4px; }
+  .hb { flex: 1; background: var(--coral); border-radius: 2px 2px 0 0; transition: height .5s ease, background .5s ease; }
+  .s3grid { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin-top: 10px; }
+  #glasPts, #s3blue { transition: transform .6s ease; }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--hair); font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Demo B — visual companion</h1>
+  <p class="lede">The co-registration reveal, shown as three vertical slices. These are 2D schematics standing in for the real 3D deck.gl scene; numbers are illustrative placeholders. Not part of the Claude Code execution plan.</p>
+
+  <h2>Slice 1 — one mission on screen</h2>
+  <p class="note">Real ATL03 signal photons over the demo region, rendered from a plain question. Gate: a recognizable surface reads, not a noise cloud.</p>
+  <div class="card">
+    <div class="q">show me ICESat-2 photons over the demo region</div>
+    <div class="stage">
+      <svg width="100%" height="260" viewBox="0 0 640 260" preserveAspectRatio="xMidYMid slice" role="img" aria-label="One ICESat-2 point cloud tracing a sloped ice surface">
+        <g fill="#378ADD">
+          <circle cx="60" cy="105" r="1.6"/><circle cx="80" cy="109" r="1.6"/><circle cx="100" cy="108" r="1.6"/><circle cx="120" cy="113" r="1.6"/><circle cx="140" cy="116" r="1.6"/><circle cx="160" cy="114" r="1.6"/><circle cx="180" cy="120" r="1.6"/><circle cx="200" cy="123" r="1.6"/><circle cx="220" cy="126" r="1.6"/><circle cx="240" cy="124" r="1.6"/><circle cx="260" cy="130" r="1.6"/><circle cx="280" cy="134" r="1.6"/><circle cx="300" cy="136" r="1.6"/><circle cx="320" cy="140" r="1.6"/><circle cx="340" cy="143" r="1.6"/><circle cx="360" cy="146" r="1.6"/><circle cx="380" cy="144" r="1.6"/><circle cx="400" cy="150" r="1.6"/><circle cx="420" cy="153" r="1.6"/><circle cx="440" cy="156" r="1.6"/><circle cx="460" cy="154" r="1.6"/><circle cx="480" cy="160" r="1.6"/><circle cx="500" cy="163" r="1.6"/><circle cx="520" cy="166" r="1.6"/><circle cx="540" cy="170" r="1.6"/><circle cx="560" cy="173" r="1.6"/><circle cx="580" cy="176" r="1.6"/>
+          <circle cx="70" cy="112" r="1.4"/><circle cx="130" cy="120" r="1.4"/><circle cx="190" cy="117" r="1.4"/><circle cx="250" cy="133" r="1.4"/><circle cx="310" cy="132" r="1.4"/><circle cx="370" cy="149" r="1.4"/><circle cx="430" cy="151" r="1.4"/><circle cx="490" cy="157" r="1.4"/><circle cx="550" cy="168" r="1.4"/>
+          <circle cx="90" cy="103" r="1.4"/><circle cx="150" cy="111" r="1.4"/><circle cx="210" cy="129" r="1.4"/><circle cx="270" cy="127" r="1.4"/><circle cx="330" cy="137" r="1.4"/><circle cx="390" cy="141" r="1.4"/><circle cx="450" cy="159" r="1.4"/><circle cx="510" cy="161" r="1.4"/><circle cx="570" cy="171" r="1.4"/>
+        </g>
+        <circle cx="600" cy="36" r="16" fill="none" stroke="#888780" stroke-width="0.5"/><path d="M600 25 v22 M589 36 h22" stroke="#888780" stroke-width="0.5"/>
+      </svg>
+      <div class="pill" style="left:10px; bottom:8px; color:var(--muted);">ICESat-2 · strong beams · signal photons · ~now</div>
+    </div>
+    <div class="legend">
+      <span class="swatch"><span class="dot" style="background:#378ADD"></span>ICESat-2</span>
+      <span style="color:var(--muted)">orbit · zoom · pan</span>
+      <span style="margin-left:auto; color:var(--muted)">gate: real surface reads, not noise</span>
+    </div>
+  </div>
+
+  <h2>Slice 2 — add ICESat-1 (GLAS)</h2>
+  <p class="note">Second mission, same scene, native coordinates. The clouds sit slightly offset — that offset is the plate-motion artifact Slice 3 removes. Do not fix it here.</p>
+  <div class="card">
+    <div class="q">now add ICESat-1 over the same region</div>
+    <div class="stage">
+      <svg width="100%" height="260" viewBox="0 0 640 260" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Two point clouds, ICESat-2 and GLAS, slightly offset in native coordinates">
+        <g fill="#378ADD">
+          <circle cx="60" cy="105" r="1.6"/><circle cx="100" cy="108" r="1.6"/><circle cx="140" cy="116" r="1.6"/><circle cx="180" cy="120" r="1.6"/><circle cx="220" cy="126" r="1.6"/><circle cx="260" cy="130" r="1.6"/><circle cx="300" cy="136" r="1.6"/><circle cx="340" cy="143" r="1.6"/><circle cx="380" cy="144" r="1.6"/><circle cx="420" cy="153" r="1.6"/><circle cx="460" cy="154" r="1.6"/><circle cx="500" cy="163" r="1.6"/><circle cx="540" cy="170" r="1.6"/><circle cx="580" cy="176" r="1.6"/>
+          <circle cx="80" cy="109" r="1.4"/><circle cx="160" cy="114" r="1.4"/><circle cx="240" cy="124" r="1.4"/><circle cx="320" cy="140" r="1.4"/><circle cx="400" cy="150" r="1.4"/><circle cx="480" cy="160" r="1.4"/><circle cx="560" cy="173" r="1.4"/>
+        </g>
+        <g fill="#D85A30">
+          <circle cx="54" cy="92" r="1.6"/><circle cx="94" cy="95" r="1.6"/><circle cx="134" cy="103" r="1.6"/><circle cx="174" cy="107" r="1.6"/><circle cx="214" cy="113" r="1.6"/><circle cx="254" cy="117" r="1.6"/><circle cx="294" cy="123" r="1.6"/><circle cx="334" cy="130" r="1.6"/><circle cx="374" cy="131" r="1.6"/><circle cx="414" cy="140" r="1.6"/><circle cx="454" cy="141" r="1.6"/><circle cx="494" cy="150" r="1.6"/><circle cx="534" cy="157" r="1.6"/><circle cx="574" cy="163" r="1.6"/>
+          <circle cx="74" cy="96" r="1.4"/><circle cx="154" cy="101" r="1.4"/><circle cx="234" cy="111" r="1.4"/><circle cx="314" cy="127" r="1.4"/><circle cx="394" cy="137" r="1.4"/><circle cx="474" cy="147" r="1.4"/><circle cx="554" cy="160" r="1.4"/>
+        </g>
+        <circle cx="600" cy="36" r="16" fill="none" stroke="#888780" stroke-width="0.5"/><path d="M600 25 v22 M589 36 h22" stroke="#888780" stroke-width="0.5"/>
+      </svg>
+      <div class="pill" style="left:10px; bottom:8px; color:var(--red);">native coords — offset visible, do not fix</div>
+    </div>
+    <div class="legend">
+      <span class="swatch"><span class="dot" style="background:#378ADD"></span>ICESat-2 · now</span>
+      <span class="swatch"><span class="dot" style="background:#D85A30"></span>GLAS · ~2004</span>
+      <span style="margin-left:auto; color:var(--muted)">gate: two clouds, honest offset</span>
+    </div>
+  </div>
+
+  <h2>Slice 3 — the co-registration reveal</h2>
+  <p class="note">The demo. Toggle co-registration: the clouds snap into alignment and the Δh histogram collapses from a biased "artifact" to a near-zero "residual". The exaggeration label and the unresolved-corrections line stay visible in both states.</p>
+  <div class="card">
+    <div class="q">is the GLAS–ICESat-2 difference here real, or an artifact?</div>
+    <div class="stage" style="height:230px;">
+      <svg width="100%" height="230" viewBox="0 0 640 230" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Co-registration toggle aligning two point clouds while a difference histogram collapses">
+        <g id="glasPts" fill="#D85A30">
+          <circle cx="54" cy="82" r="1.6"/><circle cx="94" cy="85" r="1.6"/><circle cx="134" cy="93" r="1.6"/><circle cx="174" cy="97" r="1.6"/><circle cx="214" cy="103" r="1.6"/><circle cx="254" cy="107" r="1.6"/><circle cx="294" cy="113" r="1.6"/><circle cx="334" cy="120" r="1.6"/><circle cx="374" cy="121" r="1.6"/><circle cx="414" cy="130" r="1.6"/><circle cx="454" cy="131" r="1.6"/><circle cx="494" cy="140" r="1.6"/><circle cx="534" cy="147" r="1.6"/><circle cx="574" cy="153" r="1.6"/>
+          <circle cx="74" cy="86" r="1.4"/><circle cx="154" cy="91" r="1.4"/><circle cx="234" cy="101" r="1.4"/><circle cx="314" cy="117" r="1.4"/><circle cx="394" cy="127" r="1.4"/><circle cx="474" cy="137" r="1.4"/><circle cx="554" cy="150" r="1.4"/>
+        </g>
+        <g id="s3blue" fill="#378ADD">
+          <circle cx="60" cy="95" r="1.6"/><circle cx="100" cy="98" r="1.6"/><circle cx="140" cy="106" r="1.6"/><circle cx="180" cy="110" r="1.6"/><circle cx="220" cy="116" r="1.6"/><circle cx="260" cy="120" r="1.6"/><circle cx="300" cy="126" r="1.6"/><circle cx="340" cy="133" r="1.6"/><circle cx="380" cy="134" r="1.6"/><circle cx="420" cy="143" r="1.6"/><circle cx="460" cy="144" r="1.6"/><circle cx="500" cy="153" r="1.6"/><circle cx="540" cy="160" r="1.6"/><circle cx="580" cy="166" r="1.6"/>
+          <circle cx="80" cy="99" r="1.4"/><circle cx="160" cy="104" r="1.4"/><circle cx="240" cy="114" r="1.4"/><circle cx="320" cy="130" r="1.4"/><circle cx="400" cy="140" r="1.4"/><circle cx="480" cy="150" r="1.4"/><circle cx="560" cy="163" r="1.4"/>
+        </g>
+      </svg>
+      <div class="pill" style="left:10px; top:8px; color:var(--amber);">offset exaggerated ×500 · true ≈ 22 cm</div>
+      <div class="pill" id="s3state" style="right:10px; top:8px; font-weight:500; color:var(--red);">artifact: median Δh = 14 cm</div>
+    </div>
+    <div class="s3grid">
+      <div class="hbrow" id="hbrow">
+        <div class="hb" style="height:14%"></div><div class="hb" style="height:30%"></div><div class="hb" style="height:52%"></div><div class="hb" style="height:74%"></div><div class="hb" style="height:88%"></div><div class="hb" style="height:70%"></div><div class="hb" style="height:46%"></div><div class="hb" style="height:26%"></div><div class="hb" style="height:12%"></div>
+        <span style="font-size:10px; color:var(--muted); align-self:flex-end; margin-left:4px;">Δh dist.</span>
+      </div>
+      <button id="s3btn" onclick="s3toggle()">co-registration: off</button>
+    </div>
+    <div class="legend">
+      <span class="swatch"><span class="dot" style="background:#378ADD"></span>ICESat-2</span>
+      <span class="swatch"><span class="dot" style="background:#D85A30"></span>GLAS</span>
+      <span style="margin-left:auto; color:var(--muted)">still unresolved: firn · GIA · geoid</span>
+    </div>
+  </div>
+
+  <div class="footer">
+    Region selection is handled in the spec (Appendix D) against real published maps — no schematic here, because no single figure marks all five candidates and the honest artifact is a collaborator-annotated velocity basemap. See Appendix E of the spec for the reference-map list.
+  </div>
+</div>
+
+<script>
+  var s3on = false;
+  function s3toggle() {
+    s3on = !s3on;
+    var g = document.getElementById('glasPts');
+    var bars = document.querySelectorAll('#hbrow .hb');
+    var state = document.getElementById('s3state');
+    var btn = document.getElementById('s3btn');
+    if (s3on) {
+      g.setAttribute('transform', 'translate(6,13)');
+      var resid = [4,10,30,72,96,74,32,11,5];
+      bars.forEach(function(b,i){ b.style.height = resid[i]+'%'; b.style.background = '#1D9E75'; });
+      state.textContent = 'residual: median Δh ≈ 1 cm';
+      state.style.color = 'var(--green)';
+      btn.textContent = 'co-registration: on';
+    } else {
+      g.setAttribute('transform', 'translate(0,0)');
+      var arti = [14,30,52,74,88,70,46,26,12];
+      bars.forEach(function(b,i){ b.style.height = arti[i]+'%'; b.style.background = '#D85A30'; });
+      state.textContent = 'artifact: median Δh = 14 cm';
+      state.style.color = 'var(--red)';
+      btn.textContent = 'co-registration: off';
+    }
+  }
+</script>
+</body>
+</html>

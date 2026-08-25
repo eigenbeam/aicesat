@@ -1,0 +1,46 @@
+"""Candidate demo regions (spec Appendix D). bbox = (west, south, east, north) in degrees.
+
+All boxes are PLACEHOLDERS pending collaborator validation for slope / coverage / slow flow.
+"""
+from __future__ import annotations
+
+BBox = tuple[float, float, float, float]
+
+REGIONS: dict[str, dict] = {
+    "egig_west_flank": {
+        "bbox": (-45.0, 69.8, -43.0, 70.2),
+        "note": "Candidate 2: EGIG line, central-west flank (~70N). Tunable slope; confirm both missions cross.",
+    },
+    "k_transect_upstream": {
+        "bbox": (-48.5, 66.9, -46.5, 67.3),
+        "note": "Candidate 3: K-transect, upstream of the fast/ablation zone (~67N).",
+    },
+    "summit": {
+        "bbox": (-39.5, 72.4, -37.5, 72.8),
+        "note": "Candidate 1: near Summit Station. Cleanest interior; slope may be too gentle.",
+    },
+    "ne_flank_upstream_negis": {
+        "bbox": (-32.0, 75.5, -29.0, 76.0),
+        "note": "Candidate 4: NE interior flank, well upstream of NEGIS.",
+    },
+    "n_central_flank": {
+        "bbox": (-45.0, 75.8, -42.0, 76.2),
+        "note": "Candidate 5: north-central interior flank (least established site).",
+    },
+}
+
+DEFAULT_REGION = "egig_west_flank"
+
+# Default time windows (spec: GLAS 2003-2009 campaigns; ICESat-2 2018-). Narrow ICESat-2 to one
+# season so the demo's "epoch" is well defined; widen if coverage is thin.
+DEFAULT_ATL03_WINDOW = ("2020-03-01", "2020-05-31")
+DEFAULT_GLAS_WINDOW = ("2003-02-20", "2009-10-11")
+
+
+def resolve_bbox(region: str | None = None, bbox: BBox | None = None) -> BBox:
+    if bbox is not None:
+        w, s, e, n = map(float, bbox)
+        if not (w < e and s < n):
+            raise ValueError(f"bad bbox {bbox}: need west<east and south<north")
+        return (w, s, e, n)
+    return REGIONS[region or DEFAULT_REGION]["bbox"]
