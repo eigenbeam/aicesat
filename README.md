@@ -47,6 +47,27 @@ Restart Claude Desktop. The server also serves the widget at `http://127.0.0.1:8
 
 Tools: `list_regions`, `check_coverage`, `show_photons`, `add_glas`, `coregister`.
 
+## Index + byte-range access + Parquet lake (spec §4–§8, Stage 0)
+
+The ATL03 path no longer opens HDF5 files at query time. `scripts/ingest.py` runs the planner:
+
+1. **Index build, once per granule** (`index.py`): h5py walks each beam's chunk B-trees once and records, for every
+   100 000-photon chunk of `lat_ph / lon_ph / h_ph / signal_conf_ph / delta_time`, its byte offset, size, filter
+   pipeline and per-chunk `filter_mask`, plus the **H3 res-6 cells** the chunk touches (from the 20 m segment
+   geolocation). Stored as Parquet in `data/index/atl03/<granule>.parquet`, schema-versioned.
+2. **Tier-1 read** (`access.py`): bbox → overlapping cells → distinct chunk refs (DuckDB over the index) minus chunks
+   already materialized (`data/index/meta.duckdb` coverage table) → concurrent HTTPS `Range` GETs (EDL bearer token →
+   presigned CloudFront URL, reused) → zlib + byte-unshuffle in numpy (validated byte-identical to h5py).
+3. **Materialize** (`lake.py`): every decoded photon goes to the Parquet file of its *own* cell,
+   `data/lake/mission=ICESAT2/h3_cell=<id>/<granule>__<beam>.parquet`, with a deterministic `row_id`, provenance
+   (granule, beam, photon index, chunk index) and `coreg_lon/lat` materialized at the common epoch.
+4. **Query** (`lake.py`): DuckDB `read_parquet(..., hive_partitioning)` with cell + bbox + confidence predicates — the
+   residual filter that removes neighbours' photons from straddling chunks.
+
+Measured on the EGIG box, 8 granules: index 110 s (one-time); 120 chunks → 608 requests, 138 MB, 27 s; lake 12 M
+photons / 476 MB; query 5.36 M photons in 2.3 s; second run 0 fetches, 2.4 s. The old `earthaccess.open + h5py`
+path is kept as `atl03.extract_legacy` for the access-method comparison.
+
 ## Scripts (no MCP transport needed)
 
 ```bash
@@ -54,6 +75,9 @@ uv run scripts/check_coverage.py --region egig_west_flank        # granule count
 uv run scripts/make_scene.py egig_west_flank --max-granules 8 --glas --coreg   # full pipeline, prewarm
 uv run scripts/serve.py                                          # widget server only, for local testing
 uv run scripts/probe_glas.py                                     # dump GLAH06 40 Hz dataset layout
+uv run scripts/ingest.py egig_west_flank 8 [--force]             # index + byte-range ingest + lake query, prints access stats
+uv run scripts/probe_atl03_chunks.py                             # ATL03 chunk layout / filters / chunk-info throughput
+uv run scripts/probe_range_get.py                                # range GET + decode vs h5py, byte-identical check
 ```
 
 Data (`data/cache`, `data/raw`, `data/scenes`) is gitignored; delete it to force a re-fetch.

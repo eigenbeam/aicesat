@@ -203,6 +203,8 @@ function updateLabels() {
   if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(255,214,120)"></span>paired GLAS shots (n = ${coreg.pair_display_indices.GLAS.length}) — the only points behind the histograms</span>`);
   if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = ICESat-2 native position (ON state)</span>`);
   if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.note}</span>`);
+  const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
+  if (acc) items.push(`<span class="small">data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks} chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})</span>`);
   $('legend').innerHTML = items.join('');
   $('framenote').textContent = `Local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median; vertical ×${Z_EXAG}; scale bar and north arrow in-scene.`;
   if (coreg) {

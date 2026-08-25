@@ -75,7 +75,8 @@ def delta_time_to_utc(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.ndar
     return base + (gps_s * 1000).astype("timedelta64[ms]")
 
 
-def extract(bbox, window, max_granules: int = 3, max_photons: int = 20_000_000) -> tuple[dict[str, np.ndarray], dict]:
+def extract_legacy(bbox, window, max_granules: int = 3, max_photons: int = 20_000_000) -> tuple[dict[str, np.ndarray], dict]:
+    """Original path (kept for the access-method comparison): earthaccess.open + h5py over fsspec, segment-index slicing."""
     k = cache.key("atl03", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF, max_photons)
     hit = cache.load(k)
     if hit:
@@ -127,5 +128,30 @@ def extract(bbox, window, max_granules: int = 3, max_photons: int = 20_000_000) 
             "n_total_in_bbox": int(n), "n": int(arrays["lon"].size), "min_conf": MIN_CONF,
             "granules": prov, "beam_pairs": list(BEAM_PAIRS)}
     meta["cache_key"] = k
+    cache.save(k, arrays, meta)
+    return arrays, meta
+
+
+def extract(bbox, window, max_granules: int = 8, max_photons: int = 20_000_000, force: bool = False) -> tuple[dict[str, np.ndarray], dict]:
+    """Index-driven path (spec §4–§8): planner makes the lake sufficient, DuckDB answers. Same output contract as before."""
+    from . import lake, planner
+
+    k = cache.key("atl03-lake", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF)
+    hit = cache.load(k)
+    if hit and not force:
+        log.info("atl03 cache hit %s", k)
+        hit[1]["cache_key"] = k
+        return hit
+    plan = planner.ensure(bbox, window, max_granules=max_granules, force=force)
+    q = lake.query_photons(bbox, plan["cells"], MIN_CONF, granules=plan["granules"])
+    glist = q.pop("_granules")
+    arrays = {key: v for key, v in q.items()}
+    n = arrays["lon"].size
+    if n == 0:
+        raise RuntimeError("lake query returned no land-ice signal photons in bbox")
+    meta = {"mission": "ICESAT2", "product": f"ATL03 v{coverage.ATL03_VERSION}", "bbox": list(bbox), "window": list(window),
+            "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid", "n_total_in_bbox": int(n), "n": int(n), "min_conf": MIN_CONF,
+            "granules": [{"granule": g} for g in glist], "beam_pairs": list(BEAM_PAIRS), "access_path": "index+byte-range+lake",
+            "access": plan["stats"], "cache_key": k}
     cache.save(k, arrays, meta)
     return arrays, meta

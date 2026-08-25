@@ -10,6 +10,9 @@ dependencies = [
     "numpy>=2",
     "scipy>=1.14",
     "pyproj>=3.7",
+    "h3>=4.5.0",
+    "duckdb>=1.5.5",
+    "pyarrow>=25.0.1",
 ]
 
 [project.scripts]
