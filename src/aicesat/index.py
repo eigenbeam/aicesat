@@ -79,16 +79,30 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
     for ds in DATASETS:
         for k in ("offset", "size", "filters", "dtype", "ncols", "mask"):
             rows[f"{ds}_{k}"] = []
-    with h5py.File(earthaccess.open([granule], show_progress=False)[0], "r") as f:
+    # Open with 1 MB blocks: the metadata walk (superblock, groups, ~900 datasets, chunk B-trees) is many small reads,
+    # and earthaccess' default 16 MB blocks pull ~10x the bytes. The bulk geolocation arrays are then read through
+    # their own chunk map with coalesced range GETs (the NSIDC spike's technique), not through the block cache.
+    from .access import RangeReader, decode_chunk
+
+    reader = RangeReader(threads=8)
+    with h5py.File(earthaccess.open([granule], show_progress=False, open_kwargs={"block_size": 1 << 20})[0], "r") as f:
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
         strong = strong_beams(sc_orient)
+
+        def read_via_chunks(ds: h5py.Dataset) -> np.ndarray:
+            infos = _chunk_manifest(ds)
+            fl = _filters(ds)
+            raws = reader.fetch(url, [(int(ci.byte_offset), int(ci.size)) for ci in infos])
+            parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
+            return np.concatenate(parts)[: ds.shape[0]]
+
         for beam in BEAMS:
             if beam not in f or f"{beam}/heights/h_ph" not in f:
                 continue
             geo = f[f"{beam}/geolocation"]
-            seg_lat, seg_lon = geo["reference_photon_lat"][:], geo["reference_photon_lon"][:]
-            ph_beg, ph_cnt = geo["ph_index_beg"][:], geo["segment_ph_cnt"][:]
+            seg_lat, seg_lon = read_via_chunks(geo["reference_photon_lat"]), read_via_chunks(geo["reference_photon_lon"])
+            ph_beg, ph_cnt = read_via_chunks(geo["ph_index_beg"]), read_via_chunks(geo["segment_ph_cnt"])
             dsets = {d: f[f"{beam}/heights/{d}"] for d in DATASETS}
             C = dsets["h_ph"].chunks[0]
             n_ph = dsets["h_ph"].shape[0]
@@ -106,7 +120,11 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
             ok = ph_beg > 0
             s = ph_beg[ok] - 1
             e = s + ph_cnt[ok]
-            cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), res)) for la, lo in zip(seg_lat[ok], seg_lon[ok])], dtype="u8")
+            try:
+                from h3ronpy.vector import coordinates_to_cells
+                cells = np.asarray(coordinates_to_cells(seg_lat[ok].astype("f8"), seg_lon[ok].astype("f8"), res), dtype="u8")
+            except Exception:
+                cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), res)) for la, lo in zip(seg_lat[ok], seg_lon[ok])], dtype="u8")
             k_lo, k_hi = s // C, np.maximum(s, e - 1) // C
             ks = np.concatenate([k_lo, k_hi[k_hi > k_lo]]).astype("i8")
             cs = np.concatenate([cells, cells[k_hi > k_lo]]).astype("u8")
@@ -140,7 +158,8 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
     pq.write_table(tbl, ATL03_INDEX_DIR / f"{name}.parquet")
-    log.info("indexed %s: %d (chunk,cell) rows, %d beams, %.1fs", name, tbl.num_rows, len(set(rows["beam"])), time.time() - t0)
+    log.info("indexed %s: %d (chunk,cell) rows, %d beams, %.1fs (%d geolocation range GETs, %.1f MB)", name, tbl.num_rows,
+             len(set(rows["beam"])), time.time() - t0, reader.stats.requests, reader.stats.bytes / 1e6)
     return tbl
 
 
@@ -158,7 +177,7 @@ def indexed_granules() -> set[str]:
 
 
 INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out and retry once
-INDEX_WORKERS = 4      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
+INDEX_WORKERS = 8      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
 
 
 def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
@@ -207,4 +226,4 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
     q = f"""SELECT DISTINCT granule, url, beam, sdp_epoch, cycle, chunk_index, ph_start, ph_end, {cols}
             FROM read_parquet('{ATL03_INDEX_DIR}/*.parquet') WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
-    return con.execute(q).fetch_arrow_table()
+    return con.execute(q).to_arrow_table()

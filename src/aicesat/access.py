@@ -43,7 +43,11 @@ class AccessStats:
                 "hdf5_opens_at_query_time": self.hdf5_opens, "structure_parses_at_query_time": self.structure_parses}
 
 
-MAX_GAP_BYTES = 256 * 1024   # merge two wanted ranges into one GET if the unwanted gap between them is smaller than this
+# Coalescing gap: merge two wanted ranges into one GET if the unwanted gap between them is smaller than this.
+# The optimum depends on the bandwidth-delay product of the link: NSIDC measured 256 KB in-region (10-30 ms TTFB);
+# from a remote laptop (100-160 ms TTFB, ~40 MB/s) requests under ~6 MB are latency-bound, so a larger gap that builds
+# multi-MB spans wins. Override with AICESAT_COALESCE_GAP (bytes).
+MAX_GAP_BYTES = int(os.environ.get("AICESAT_COALESCE_GAP", 2 << 20))
 MAX_SPAN_BYTES = 64 << 20    # keep individual GETs bounded so threads still overlap
 
 
@@ -84,18 +88,27 @@ class RangeReader:
         self.stats = AccessStats()
         self._presigned: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
+        self._url_locks: dict[str, threading.Lock] = {}  # one lock per granule URL: presigns for different granules overlap
 
     def presigned(self, url: str, refresh: bool = False) -> str:
-        with self._lock:  # held across the resolve so concurrent callers never presign the same granule twice
+        with self._lock:
+            ulock = self._url_locks.setdefault(url, threading.Lock())
+        with ulock:  # per-URL: the same granule is never presigned twice concurrently, different granules proceed in parallel
             hit = self._presigned.get(url)
             if hit and not refresh and time.time() - hit[1] < PRESIGN_TTL_S:
                 return hit[0]
             r = self.session.get(url, headers={"Authorization": f"Bearer {self.token}", "Range": "bytes=0-0"}, allow_redirects=True, timeout=60)
             r.raise_for_status()
-            self._presigned[url] = (r.url, time.time())
-            self.stats.presigns += 1
-            self.stats.requests += 1
+            with self._lock:
+                self._presigned[url] = (r.url, time.time())
+                self.stats.presigns += 1
+                self.stats.requests += 1
             return r.url
+
+    def presign_all(self, urls) -> dict[str, str]:
+        """Resolve many granule URLs concurrently (each is an EDL round trip of ~1-2 s from outside the region)."""
+        with ThreadPoolExecutor(min(8, max(1, len(urls)))) as ex:
+            return dict(zip(urls, ex.map(self.presigned, urls)))
 
     def _get(self, purl: str, offset: int, size: int) -> bytes:
         r = self.session.get(purl, headers={"Range": f"bytes={offset}-{offset + size - 1}"}, timeout=120)

@@ -343,6 +343,7 @@ If the week tightens, ship **Stage 1 correctly on two clean-key missions** and d
 - **ILATM2 V2 CSV header** — confirm whether it exposes a per-record sequence number that would harden the IceBridge row key (§7.3).
 - **Whether NASA reference files exist for the target products** — if DMR++/kerchunk sidecars exist for ATL03/GLAS at the versions wanted, index-build could *validate against* them even if we don't consume them; worth a check before writing the chunk-info extractor.
 - **GIA / geoid / tide** — out of scope now; comparability block reserves space to surface and later apply them.
+- *Build note (2026-08-25)* — **Deploy the MCP server in us-west-2** — saved task, see `docs/tasks/aws-us-west-2-deploy.md`; motivated by the measured remote-vs-in-region latency (100–160 ms vs ~10–30 ms per GET).
 
 ---
 
@@ -572,8 +573,8 @@ numbers it would be driven by. Same bbox (EGIG west flank), same 8 ATL03 v007 gr
 
 | Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
 |---|---|---|---|---|---|---|
-| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 99 | 99 | 73.7 (47.0 index build + 24.5 fetch/materialize [7.0 s network] + 2.22 query) | 5,363,896 |
-| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.3 | 5,363,896 |
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 97 | 100 | 28.9 (15.8 index build + 12.3 fetch/materialize + 0.75 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 0.75 | 5,363,896 |
 | earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
 | download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
 | SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
@@ -585,8 +586,8 @@ byte-range path moves 34× less than remote h5py because fsspec's block cache ov
 whole-compressed-chunk reads (§5.3) are ~300 kB each. Round-trips: the first measurement issued 608 single-chunk GETs
 (more than the 201 block reads); after adopting the NSIDC ATL24 chunk-map spike's techniques — coalescing adjacent
 chunks into spans with a 256 KB gap threshold, per-chunk bounding boxes to prune what coarse H3 cells let through
-(35 of 120 chunks), and a process pool for the index build — it is 99 requests, 99 MB, and a 73.7 s cold
-touch of which 7.0 s is network. The strong baseline (C.2) is SlideRule, which wins wall-clock outright (13 s) by
+(35 of 120 chunks), and a process pool for the index build — it is 97 requests, 100 MB, and a 28.9 s cold
+touch (15.8 s of it the one-time index build; a warm query is 0.75 s). The strong baseline (C.2) is SlideRule, which wins wall-clock outright (13 s) by
 running next to the data; the index's answer to that is the warm path — 3 s, zero traffic, no server — and an exact
 subset. Harmony's cost is queue latency and all-variable output.
 

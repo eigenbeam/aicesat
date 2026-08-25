@@ -103,3 +103,22 @@ def test_colocate_drops_gross_pairs():
     ph = np.zeros_like(px)
     pairs, dh, gross, _ = coreg.colocate(gx, gy, gh, px, py, ph, 35.0)
     assert pairs.tolist() == [0] and gross == 1
+
+
+def test_numpy_propagation_matches_pyproj_to_sub_mm():
+    rng = np.random.default_rng(3)
+    n = 2000
+    lon = rng.uniform(-60, -20, n); lat = rng.uniform(60, 82, n); h = rng.uniform(0, 3300, n); t = rng.uniform(2018.8, 2026.5, n)
+    a = coreg.propagate(lon, lat, h, t, 2005.0, "ITRF2014", engine="pyproj")
+    b = coreg.propagate_numpy(lon, lat, h, t, 2005.0)
+    dh = coreg.horizontal_displacement_m(a[0], a[1], b[0], b[1])
+    assert dh.max() < 1e-4 and np.abs(a[2] - b[2]).max() < 1e-4   # < 0.1 mm horizontally and vertically
+    # and the propagation itself is not a no-op
+    assert coreg.horizontal_displacement_m(lon, lat, b[0], b[1]).min() > 0.1
+
+
+def test_ecef_roundtrip():
+    lon, lat, h = np.array([-44.0, 10.0]), np.array([70.0, -33.0]), np.array([2600.0, -50.0])
+    x, y, z = coreg._geodetic_to_ecef(lon, lat, h)
+    lo, la, hh = coreg._ecef_to_geodetic(x, y, z)
+    assert np.allclose(lo, lon, atol=1e-10) and np.allclose(la, lat, atol=1e-10) and np.allclose(hh, h, atol=1e-6)

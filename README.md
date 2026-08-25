@@ -92,6 +92,24 @@ Not adopted (yet): compressed-chunk LRU keyed (granule, dataset, chunk) — our 
 per-chunk "interest" counts (signal ≥ 4) to answer "nothing here" with zero I/O; NDJSON streaming with display
 strides. Postgres bytea/TOAST and varint-delta findings do not transfer (Parquet encodings cover it).
 
+## Performance work (2026-08-25, after the benchmark)
+Three changes, each aimed at a measured phase of the cold touch (index build 47 s, fetch 7 s network + 16 s CPU, query 2 s):
+1. **Materialize phase → worker processes.** Each (granule, beam) group is fetched, decoded, cell-assigned (`h3ronpy`,
+   vectorised), co-registered and written in its own process (`planner._process_group`); the parent presigns all
+   granules concurrently first (per-URL locks) and is the single DuckDB writer for coverage marks. The plate-motion
+   step has a numpy implementation (`coreg.propagate_numpy`, same maths as PROJ's helmert-with-rates, validated to
+   < 0.1 mm against pyproj in tests).
+2. **Index build.** 8 worker processes; the HDF5 metadata walk uses a 1 MB block open (earthaccess' default 16 MB blocks
+   pulled ~10× the bytes), and the geolocation arrays are read through *their own* chunk map with coalesced range
+   GETs instead of the block cache (the NSIDC spike's technique). `scripts/build_index.py` pre-builds the index for a
+   whole area/season offline so no query waits on it (spec §6.1: index-build is amortized, not on the query path).
+3. **Warm path.** CMR granule lists are cached on disk for 24 h (`coverage.search`; the search was ~1 s of every warm
+   query); lake files are written with 64k-row row groups in along-track order so DuckDB prunes row groups by lat/lon
+   statistics (`lake.ROW_GROUP_ROWS`; `scripts/relayout_lake.py` rewrites an existing lake once).
+Also from the throughput probe: the coalescing gap defaults to 2 MB (`AICESAT_COALESCE_GAP`) because from a remote
+link requests under the bandwidth-delay product (~6 MB at 40 MB/s × 150 ms) are latency-bound; in-region the spike's
+256 KB is right.
+
 ## Access-method comparison (measured 2026-08-25, spec Appendix C.3)
 
 Same bbox (egig_west_flank [-45.0, 69.8, -43.0, 70.2]), the same 8 ATL03 v007 granules (2020-03-01..2020-05-31), the same
@@ -100,8 +118,8 @@ target subset (strong beams, land-ice confidence ≥ 3, clipped to the box). Run
 
 | Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
 |---|---|---|---|---|---|---|
-| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 99 | 99 | 73.7 (47.0 index build + 24.5 fetch/materialize [7.0 s network] + 2.22 query) | 5,363,896 |
-| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.3 | 5,363,896 |
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 7 | 0 (8 at index build, once) | 97 | 100 | 28.9 (15.8 index build + 12.3 fetch/materialize + 0.75 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 0.75 | 5,363,896 |
 | earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
 | download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
 | SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
@@ -120,9 +138,10 @@ Honest reading (spec C.3 / C.8):
   first measurement. The network part of the cold fetch is now 7.0 s; the rest of the fetch phase is decode,
   per-photon cell assignment, co-registration and Parquet writes (CPU).
 - **Wall-clock**: SlideRule still wins outright (13 s) — a cluster in us-west-2 next to the data beats any client on
-  a laptop over HTTPS. Our cold time (73.7 s, was 156 s before the spike-derived optimizations) is dominated by the
-  one-time index build (47.0 s for 8 granules with a 4-process pool); the *repeat* query is 3.3 s with
-  zero traffic, which no server-side path offers. Harmony's time is queue-dominated and varied 127–215 s.
+  a laptop over HTTPS. Our cold time is now 28.9 s (156 s in the first measurement): 15.8 s one-time index build with
+  8 worker processes and chunk-map geolocation reads, 12.3 s fetch + materialize in worker processes, 0.75 s
+  query; the *repeat* query is 0.75 s with zero traffic, which no server-side path offers. Harmony's time is
+  queue-dominated and varied 127–215 s.
 - **Subset fidelity**: the index path returns 801 more photons than segment-based slicing because it applies the exact
   per-photon predicate to whole chunks; box pruning changed nothing (same 5,363,896). SlideRule's 4.40 M reflects its
   own defaults (`quality_ph`, segment-based clipping) — a different subset, flagged as such.
@@ -138,6 +157,8 @@ uv run scripts/ingest.py egig_west_flank 8 [--force]             # index + byte-
 uv run scripts/probe_atl03_chunks.py                             # ATL03 chunk layout / filters / chunk-info throughput
 uv run scripts/probe_range_get.py                                # range GET + decode vs h5py, byte-identical check
 uv run scripts/bench_access.py --methods index,legacy,download,sliderule,harmony   # access-method comparison (network, ~20 min)
+uv run scripts/build_index.py --region egig_west_flank [--window START END]        # offline index pre-build, uncapped, 8 workers
+uv run scripts/relayout_lake.py                                  # one-off: rewrite lake files with 64k-row row groups
 ```
 
 Data (`data/cache`, `data/raw`, `data/scenes`) is gitignored; delete it to force a re-fetch.

@@ -50,16 +50,48 @@ def _decode_photons(refs_rows: list[dict], raws: dict[tuple[str, int], bytes], s
     return out
 
 
+def _cells_vectorized(lat: np.ndarray, lon: np.ndarray, res: int) -> np.ndarray:
+    try:
+        from h3ronpy.vector import coordinates_to_cells
+        return np.asarray(coordinates_to_cells(lat, lon, res), dtype="u8")
+    except Exception:  # h3ronpy unavailable: exact scalar fallback
+        return np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), res)) for la, lo in zip(lat, lon)], dtype="u8")
+
+
 def _materialize(out: dict) -> dict:
     """Assign each photon its own H3 cell and materialize coreg coordinates at the common epoch (§7.4)."""
-    out["h3_cell"] = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), index.H3_RES)) for la, lo in zip(out["lat"], out["lon"])], dtype="u8")
-    good = np.isfinite(out["lat"]) & np.isfinite(out["lon"]) & np.isfinite(out["h"])
+    good_ll = np.isfinite(out["lat"]) & np.isfinite(out["lon"])
+    out["h3_cell"] = np.zeros(out["lat"].size, dtype="u8")
+    out["h3_cell"][good_ll] = _cells_vectorized(out["lat"][good_ll], out["lon"][good_ll], index.H3_RES)
+    good = good_ll & np.isfinite(out["h"])
     out["coreg_lon"], out["coreg_lat"] = np.full_like(out["lon"], np.nan), np.full_like(out["lat"], np.nan)
     if good.any():
         ty = coreg.decimal_year(out["t"][good])
         clon, clat, _ = coreg.propagate(out["lon"][good], out["lat"][good], out["h"][good], ty, lake.COMMON_EPOCH, "ITRF2014")
         out["coreg_lon"][good], out["coreg_lat"][good] = clon, clat
     return out
+
+
+def _process_group(item) -> dict:
+    """Worker: fetch one (granule, beam) group's chunks (presigned URL supplied), decode, materialize, write cell files.
+    Returns access stats + the chunk->cells map; the coverage table is updated by the parent (single DuckDB writer)."""
+    (gname, beam), rs, purl, threads = item
+    reader = RangeReader(threads=threads)
+    reader._presigned[rs[0]["url"]] = (purl, time.time())  # no EDL round trip in the worker
+    ranges, keys = [], []
+    for r in rs:
+        for d in index.DATASETS:
+            ranges.append((r[f"{d}_offset"], r[f"{d}_size"])); keys.append((d, r["chunk_index"]))
+    t0 = time.time()
+    raws = dict(zip(keys, reader.fetch(rs[0]["url"], ranges)))
+    t_fetch = time.time() - t0
+    t1 = time.time()
+    ph = _materialize(_decode_photons(rs, raws, rs[0]["sdp_epoch"]))
+    written = lake.write_photons("ICESAT2", gname, beam, ph)
+    chunk_cells = {r["chunk_index"]: sorted({int(c) for c in np.unique(ph["h3_cell"][ph["chunk_index"] == r["chunk_index"]])}) for r in rs}
+    st = reader.stats.as_dict()
+    st.update({"fetch_seconds": t_fetch, "materialize_seconds": time.time() - t1, "n_photons": int(ph["lon"].size), "cells_written": written})
+    return {"granule": gname, "beam": beam, "chunk_cells": chunk_cells, "stats": st, "n_chunks": len(rs)}
 
 
 def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
@@ -74,39 +106,41 @@ def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: in
     rows = refs.to_pylist()
     have = set() if force else lake.ingested_chunks("ICESAT2", names)
     todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) not in have]
-    reader = RangeReader(threads=threads)
     by_gb: dict[tuple[str, str], list[dict]] = {}
     for r in todo:
         by_gb.setdefault((r["granule"], r["beam"]), []).append(r)
-    n_written_cells = 0
-
-    def fetch_group(item):
-        (gname, beam), rs = item
-        ranges, keys = [], []
-        for r in rs:
-            for d in index.DATASETS:
-                ranges.append((r[f"{d}_offset"], r[f"{d}_size"])); keys.append((d, r["chunk_index"]))
-        return (gname, beam), rs, dict(zip(keys, reader.fetch(rs[0]["url"], ranges)))
-
-    # Fetch several (granule, beam) groups at once: after coalescing a group has only a handful of spans, so
-    # per-group parallelism alone would leave most connections idle. Decode/materialize stays sequential (CPU).
-    from concurrent.futures import ThreadPoolExecutor
+    # Presign every touched granule concurrently in the parent (1-2 s each from outside the region), then hand
+    # (group, presigned URL) to worker PROCESSES: decode + cell assignment + co-registration + Parquet writes are CPU
+    # and the parent's GIL would serialize them. Coverage marks happen here (DuckDB is single-writer).
+    reader = RangeReader(threads=threads)
+    t_p0 = time.time()
+    presigned = reader.presign_all(sorted({rs[0]["url"] for rs in by_gb.values()})) if by_gb else {}
+    t_presign = time.time() - t_p0
+    items = [(gb, rs, presigned[rs[0]["url"]], threads) for gb, rs in by_gb.items()]
+    from concurrent.futures import ProcessPoolExecutor
     t_f0 = time.time()
-    with ThreadPoolExecutor(group_parallel) as ex:
-        fetched = list(ex.map(fetch_group, by_gb.items()))
-    t_fetch = time.time() - t_f0
-    t_m0 = time.time()
-    for (gname, beam), rs, raws in fetched:
-        ph = _materialize(_decode_photons(rs, raws, rs[0]["sdp_epoch"]))
-        written = lake.write_photons("ICESAT2", gname, beam, ph)
-        n_written_cells += len(written)
-        chunk_cells = {r["chunk_index"]: sorted({int(c) for c in np.unique(ph["h3_cell"][ph["chunk_index"] == r["chunk_index"]])}) for r in rs}
-        lake.mark_ingested("ICESAT2", gname, beam, chunk_cells)
-        log.info("%s %s: %d chunks -> %d photons -> %d cell files", gname, beam, len(rs), ph["lon"].size, len(written))
-    st = reader.stats.as_dict()
+    results = []
+    if items:
+        with ProcessPoolExecutor(max_workers=min(group_parallel, len(items))) as ex:
+            results = list(ex.map(_process_group, items))
+    t_groups = time.time() - t_f0
+    n_written_cells = 0
+    agg = {"requests": reader.stats.requests, "bytes": 0, "chunks": 0, "spans": 0, "gap_bytes": 0, "presigns": reader.stats.presigns,
+           "seconds": 0.0, "fetch_seconds": 0.0, "materialize_seconds": 0.0}
+    for res in results:
+        lake.mark_ingested("ICESAT2", res["granule"], res["beam"], res["chunk_cells"])
+        n_written_cells += len(res["stats"]["cells_written"])
+        for k in ("requests", "bytes", "chunks", "spans", "gap_bytes", "seconds", "fetch_seconds", "materialize_seconds"):
+            agg[k] += res["stats"].get(k, 0) or 0
+        log.info("%s %s: %d chunks -> %d photons -> %d cell files (fetch %.1fs, materialize %.1fs)", res["granule"], res["beam"],
+                 res["n_chunks"], res["stats"]["n_photons"], len(res["stats"]["cells_written"]), res["stats"]["fetch_seconds"], res["stats"]["materialize_seconds"])
+    st = {"requests": agg["requests"], "bytes": agg["bytes"], "seconds": round(agg["seconds"], 2), "chunks": agg["chunks"], "spans": agg["spans"],
+          "gap_bytes": agg["gap_bytes"], "presigns": agg["presigns"], "granules_touched": len(presigned),
+          "hdf5_opens_at_query_time": 0, "structure_parses_at_query_time": 0}
     st.update({"cells": len(cells), "granules": names, "index": idx, "chunk_refs": len(rows), "chunks_fetched": len(todo),
                "chunk_refs_by_cells_only": refs_cells.num_rows, "chunks_pruned_by_boxes": refs_cells.num_rows - len(rows),
-               "fetch_seconds": round(t_fetch, 1), "decode_materialize_seconds": round(time.time() - t_m0, 1),
+               "presign_seconds": round(t_presign, 1), "group_phase_seconds": round(t_groups, 1), "group_parallel": group_parallel,
+               "fetch_seconds": round(agg["fetch_seconds"], 1), "decode_materialize_seconds": round(agg["materialize_seconds"], 1),
                "chunks_skipped_already_materialized": len(rows) - len(todo), "cell_files_written": n_written_cells,
                "wall_seconds": round(time.time() - t0, 1), "h3_res": index.H3_RES})
     return {"cells": cells, "granules": names, "stats": st}

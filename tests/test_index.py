@@ -151,3 +151,17 @@ def test_chunk_refs_prunes_by_chunk_boxes(tmp_path, monkeypatch):
     assert index.chunk_refs([cell]).num_rows == 2
     assert index.chunk_refs([cell], bbox=(-45, 69.8, -43, 70.2)).num_rows == 1
     assert index.chunk_refs([cell], bbox=(-45, 69.8, -43, 70.2))["chunk_index"][0].as_py() == 0
+
+
+def test_vectorized_cells_match_h3py():
+    import h3
+    from aicesat import planner
+    rng = np.random.default_rng(5)
+    lat = rng.uniform(60, 82, 2000); lon = rng.uniform(-60, -20, 2000)
+    fast = planner._cells_vectorized(lat, lon, index.H3_RES)
+    ref = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(b), index.H3_RES)) for a, b in zip(lat, lon)], dtype="u8")
+    assert np.array_equal(fast, ref)
+
+
+def test_coalesce_gap_env_default_is_bdp_aware():
+    assert access.MAX_GAP_BYTES >= 256 * 1024  # never below the in-region optimum; larger from remote links
