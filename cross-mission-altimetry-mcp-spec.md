@@ -1,6 +1,6 @@
 # Cross-Mission Altimetry MCP Server — Design Spec
 
-**Status:** draft / hackweek scope — **Appendix D (Slices 1–3) built and verified on real data 2026-08-25**; build notes are marked *Build note (2026-08-25)* throughout, measured results in B.10.
+**Status:** draft / hackweek scope — **Appendix D (Slices 1–3) built and verified on real data 2026-08-25; the §5–§6 index + byte-range access built for ATL03 and the Appendix C comparison measured (C.5b)**; build notes are marked *Build note (2026-08-25)* throughout, measured results in B.10 and C.5b.
 **One-line:** An MCP server that answers cross-mission elevation questions over GLAS, IceBridge, and ICESat-2 — co-registering samples to a common ITRF frame and epoch so plate motion doesn't misalign footprints, with per-sample provenance — by fetching only the data chunks a question needs, accumulating them into a local persistent Parquet lake, and computing answers locally with DuckDB.
 
 ---
@@ -565,6 +565,27 @@ The left side is **really run once and replayed** (not live, not modeled):
 - **Really run:** an actual CMR query + h5coro subsetted fetch over the demo bbox, capturing true granules-touched, parses, round-trips, bytes, and wall-clock.
 - **Replayed:** the animation is driven from those captured real numbers, so on-stage it is instant and robust, not fragile live integration on the losing side.
 - **Labeled:** "baseline: h5coro, measured [date], replayed" on screen. Not live (too fragile), not modeled (too soft, a reviewer trusts it least). This is the C-appendix analogue of B.5's exaggeration label — the demo about honest access must itself be honest about its baseline.
+
+### C.5b Measured scoreboard (build note, 2026-08-25)
+The index (§5–§6, ATL03 only) was built and the comparison run for real — not the split-screen demo of C.4, but the
+numbers it would be driven by. Same bbox (EGIG west flank), same 8 ATL03 v007 granules, same target photon subset.
+
+| Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
+|---|---|---|---|---|---|---|
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 8 | 0 (8 at index build, once) | 608 | 138 | 156.4 (110 index build + 27 fetch + 2 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.22 | 5,363,896 |
+| earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
+| download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
+| SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
+| NSIDC Harmony trajectory subsetter (async) + download | 8 | 8 (server-side, opaque) | 10 | 721 | 127.5 (first run 215, queue variance) | 5,363,095 |
+
+What the numbers say, against C.3's predictions: the granule-open and structure-parse rows behave exactly as predicted
+(0 at query time vs 8 per query everywhere else). The byte row is *not* "close" as C.3 conservatively expected — the
+byte-range path moves 24× less than remote h5py because fsspec's block cache over-reads at 4–16 MB granularity, while
+whole-compressed-chunk reads (§5.3) are ~300 kB each. Round-trips are not a win here (608 chunk GETs vs 201 block
+reads); batching adjacent chunks is the obvious next step. The strong baseline (C.2) is SlideRule, which wins
+wall-clock outright (13 s) by running next to the data; the index's answer to that is the warm path — 3 s, zero
+traffic, no server — and an exact subset. Harmony's cost is queue latency and all-variable output.
 
 ### C.6 Data path (tool call → render)
 1. Agent calls a query that resolves cells → byte-ranges (§5) and reads via Tier-1 (§6.2) — the right side is the **real** system, run live (it is fast and robust; it is the winning side).

@@ -300,3 +300,26 @@ $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 $('btnOff').onclick = () => setState('off');
 $('btnOn').onclick = () => setState('on');
 loadScene();
+
+
+// ---------------------------------------------------------------- access-method scoreboard (measured; spec C.3)
+async function loadBench() {
+  try {
+    const r = await fetch('/api/bench'); if (!r.ok) return;
+    const b = await r.json();
+    const rows = Object.entries(b);
+    if (!rows.length) return;
+    const first = rows[0][1];
+    $('benchMeta').textContent = `${first.region} ${JSON.stringify(first.bbox)}, ${first.n_granules} ATL03 v007 granules, ${first.window.join('..')}; measured ${first.measured_at.slice(0, 10)}`;
+    const cols = [['method', r => r.label || r.method], ['granules touched', r => r.granules_touched], ['HDF5 parses at query', r => r.hdf5_opens_at_query_time ?? r.hdf5_opens],
+                  ['requests', r => r.requests], ['MB', r => (r.bytes / 1e6).toFixed(0)], ['wall s', r => r.wall_s], ['photons', r => r.photons != null ? r.photons.toLocaleString() : 'n/a']];
+    const t = $('benchTable');
+    t.innerHTML = '<tr>' + cols.map(c => `<th style="text-align:left;border-bottom:1px solid var(--hair);padding:2px 4px">${c[0]}</th>`).join('') + '</tr>' +
+      rows.map(([k, r]) => '<tr>' + cols.map((c, i) => `<td style="padding:2px 4px;border-bottom:1px solid #26262e;${i ? 'text-align:right;font-variant-numeric:tabular-nums' : ''}">${c[1](r)}</td>`).join('') +
+        (r.notes ? `</tr><tr><td colspan="7" class="small" style="padding:0 4px 6px">${r.notes}</td>` : '') + '</tr>').join('');
+    $('benchBtn').hidden = false;
+  } catch (e) { console.warn('[aicesat] bench unavailable', e); }
+}
+$('benchBtn').onclick = () => { $('bench').hidden = !$('bench').hidden; };
+$('benchClose').onclick = () => { $('bench').hidden = true; };
+loadBench();

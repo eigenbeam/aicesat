@@ -68,6 +68,39 @@ Measured on the EGIG box, 8 granules: index 110 s (one-time); 120 chunks → 608
 photons / 476 MB; query 5.36 M photons in 2.3 s; second run 0 fetches, 2.4 s. The old `earthaccess.open + h5py`
 path is kept as `atl03.extract_legacy` for the access-method comparison.
 
+## Access-method comparison (measured 2026-08-25, spec Appendix C.3)
+
+Same bbox (egig_west_flank [-45.0, 69.8, -43.0, 70.2]), the same 8 ATL03 v007 granules (2020-03-01..2020-05-31), the same
+target subset (strong beams, land-ice confidence ≥ 3, clipped to the box). Run with `scripts/bench_access.py`; the widget's
+*How the data got here* panel shows the same table from `data/bench/results.json`. Measured, not modelled.
+
+| Method | Granules touched (client) | HDF5 structure parses at query time | HTTP requests | MB transferred | Wall-clock s | Photons returned |
+|---|---|---|---|---|---|---|
+| H3 chunk index + byte-range GETs + Parquet lake, first touch | 8 | 0 (8 at index build, once) | 608 | 138 | 156.4 (110 index build + 27 fetch + 2 query) | 5,363,896 |
+| same, second query (lake warm) | 0 | 0 | 0 | 0 | 3.22 | 5,363,896 |
+| earthaccess.open + h5py over fsspec block cache | 8 | 8 | 201 | 3,372 | 154.9 | 5,363,095 |
+| download whole granules (8 threads) + local h5py | 8 | 8 | 16 | 22,272 | 556.1 | 5,363,095 |
+| SlideRule atl03x (h5coro, public cluster, us-west-2) | 8 | 8 (server-side, opaque) | 1 | 99 | 13.4 | 4,400,711 |
+| NSIDC Harmony trajectory subsetter (async) + download | 8 | 8 (server-side, opaque) | 10 | 721 | 127.5 (first run 215, queue variance) | 5,363,095 |
+
+Honest reading (spec C.3 / C.8):
+- **Granules opened and structure parses at query time** are the real win: the index path opens nothing and parses
+  nothing per query; every other path re-opens and re-parses all 8 granules per query (SlideRule and Harmony do it
+  server-side, where it is invisible to the client but still paid).
+- **Bytes**: the byte-range path moves 138 MB — 24× less than remote h5py through fsspec's block cache (3.4 GB), 161×
+  less than whole-granule download (22 GB), 5× less than Harmony's spatially-subsetted-but-all-variables files
+  (721 MB). SlideRule returns only 99 MB of geoparquet because the *server* reads the source; what h5coro reads from
+  S3 is not exposed, so that row is not a byte comparison at all.
+- **Wall-clock**: SlideRule wins outright (13 s) — a cluster in us-west-2 next to the data beats any client on a
+  laptop over HTTPS, and the spec's warning about beating a strawman applies in reverse: our cold time (156 s) is
+  dominated by the one-time index build (110 s); the *repeat* query is 3 s with zero traffic, which no server-side
+  path offers. Harmony's time is queue-dominated and varied 127–215 s between two runs.
+- **Subset fidelity**: the index path returns 801 more photons than segment-based slicing because it applies the exact
+  per-photon predicate to whole chunks. SlideRule's 4.40 M reflects its own defaults (`quality_ph`, segment-based
+  clipping) — a different subset, flagged as such.
+- **Requests**: 608 small range GETs vs 201 large block reads — round-trips are *not* a win for the index path on this
+  box (each chunk is a separate request; S3 does not support multi-range). Batching adjacent chunks would cut this.
+
 ## Scripts (no MCP transport needed)
 
 ```bash
@@ -78,6 +111,7 @@ uv run scripts/probe_glas.py                                     # dump GLAH06 4
 uv run scripts/ingest.py egig_west_flank 8 [--force]             # index + byte-range ingest + lake query, prints access stats
 uv run scripts/probe_atl03_chunks.py                             # ATL03 chunk layout / filters / chunk-info throughput
 uv run scripts/probe_range_get.py                                # range GET + decode vs h5py, byte-identical check
+uv run scripts/bench_access.py --methods index,legacy,download,sliderule,harmony   # access-method comparison (network, ~20 min)
 ```
 
 Data (`data/cache`, `data/raw`, `data/scenes`) is gitignored; delete it to force a re-fetch.

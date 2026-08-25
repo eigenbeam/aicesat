@@ -161,6 +161,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()})
         if u.path == "/api/lake_cells":
             return self._json(200, lake_cells_geojson())
+        if u.path == "/api/bench":
+            bp = cache.DATA_DIR / "bench" / "results.json"
+            return self._json(200, json.loads(bp.read_text())) if bp.exists() else self._json(404, {"error": "no benchmark results yet"})
         if u.path == "/api/coverage":
             try:
                 bb, poly = geom.normalize_area(json.loads(qs["bbox"][0]) if "bbox" in qs else None,
