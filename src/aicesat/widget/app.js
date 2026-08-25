@@ -1,9 +1,10 @@
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: interpolated surface, paired-shot highlighting + native ghost, scale bar / north / shift arrows. */
-const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer} = deck;
+const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
 const params = new URLSearchParams(location.search);
 const sceneId = params.get('scene');
-const Z_EXAG = parseFloat(params.get('zexag') || '10');
+let Z_EXAG = parseFloat(params.get('zexag') || '10');
+let SHOW_IMAGERY = true;
 
 let scene = null, coreg = null, state = 'off', bounds = null, meshOk = true;
 const $ = id => document.getElementById(id);
@@ -14,6 +15,9 @@ const deckgl = new Deck({
   onError: e => { console.error('[aicesat] deck error', e && e.message); if (/mesh/i.test(String(e && e.message))) { meshOk = false; render(); } },
   onLoad: () => console.log('[aicesat] deck loaded'),
   views: new OrbitView({orbitAxis: 'Z', fovy: 45}),
+  // low-angle directional light from the north-west so relief reads as shading (hillshade-like)
+  effects: [new LightingEffect({ambient: new AmbientLight({color: [255, 255, 255], intensity: 0.9}),
+                                sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [-1, 1, -0.6]})})],
   initialViewState: {target: [0, 0, 0], rotationX: 35, rotationOrbit: -25, zoom: -6, minZoom: -12, maxZoom: 6},
   controller: true,
   layers: [],
@@ -27,7 +31,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
   return new PointCloudLayer(Object.assign({
     id, data: indices(flat.length / 3),
     getPosition: i => [flat[3 * i], flat[3 * i + 1], flat[3 * i + 2] * Z_EXAG],
-    getColor: color, pointSize: size, sizeUnits: 'pixels',
+    getColor: color, pointSize: size, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
   }, opts));
 }
 
@@ -44,7 +48,7 @@ function cloudLayers() {
       getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
       getColor: paired ? (i => paired.has(i) ? s.color : DIM_GLAS) : s.color,
       pointSize: m === 'GLAS' ? (paired ? 3 : 4) : 2, sizeUnits: 'pixels',
-      updateTriggers: {getPosition: [state, !!disp], getColor: [!!paired]},
+      updateTriggers: {getPosition: [state, !!disp, Z_EXAG], getColor: [!!paired]},
       transitions: {getPosition: {duration: 900, easing: ease}},
     }));
     if (paired) {  // paired shots on top, bigger, with a bright rim
@@ -53,7 +57,7 @@ function cloudLayers() {
         id: 'paired-' + m, data: pi,
         getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
         getColor: [255, 214, 120], pointSize: 7, sizeUnits: 'pixels',
-        updateTriggers: {getPosition: [state, !!disp]}, transitions: {getPosition: {duration: 900, easing: ease}},
+        updateTriggers: {getPosition: [state, !!disp, Z_EXAG]}, transitions: {getPosition: {duration: 900, easing: ease}},
       }));
     }
   }
@@ -85,11 +89,25 @@ function surfaceLayers() {
         for (const q of [a, b, c]) { normals[3*q] += n[0]; normals[3*q+1] += n[1]; normals[3*q+2] += n[2]; }
       }
       for (let q = 0; q < normals.length; q += 3) { const l = Math.hypot(normals[q], normals[q+1], normals[q+2]) || 1; normals[q] /= l; normals[q+1] /= l; normals[q+2] /= l; }
+      const img = SHOW_IMAGERY && scene.imagery;
+      let texCoords = null;
+      if (img) {  // drape: texture coordinates from the imagery's local-frame extent
+        texCoords = new Float32Array((pos.length / 3) * 2);
+        for (let q = 0, t = 0; q < pos.length; q += 3, t += 2) {
+          texCoords[t] = (pos[q] - img.x0) / (img.x1 - img.x0);
+          texCoords[t + 1] = 1 - (pos[q + 1] - img.y0) / (img.y1 - img.y0);
+        }
+      }
+      const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}};
+      if (texCoords) attrs.texCoords = {value: texCoords, size: 2};
       layers.push(new SimpleMeshLayer({
-        id: 'surface-mesh', data: [{}],
-        mesh: {attributes: {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}}, indices: {value: new Uint32Array(idx)}},
-        getPosition: () => [0, 0, 0], getColor: [150, 160, 185, 55], material: {ambient: 0.6, diffuse: 0.5, shininess: 8},
-        parameters: {depthWriteEnabled: false},
+        id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
+        mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
+        texture: img ? img.url : undefined,
+        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 160, 185, 55],
+        material: {ambient: 0.45, diffuse: 0.75, shininess: 12, specularColor: [40, 40, 40]},
+        parameters: img ? {} : {depthWriteEnabled: false},
+        updateTriggers: {getPosition: Z_EXAG},
       }));
     }
   }
@@ -109,6 +127,42 @@ function arrow(from, dir, len, head = 0.18) {
   const px = -dy, py = dx, h = len * head;
   return [[from, to], [[to[0] - (dx * 0.7 + px * 0.5) * h, to[1] - (dy * 0.7 + py * 0.5) * h, to[2]], to, [to[0] - (dx * 0.7 - px * 0.5) * h, to[1] - (dy * 0.7 - py * 0.5) * h, to[2]]]];
 }
+function niceStep(len) { const t = len / 4, p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
+function axesLayers() {
+  if (!bounds) return [];
+  const {minx, maxx, miny, maxy, minz, maxz} = bounds;
+  const span = Math.max(maxx - minx, maxy - miny);
+  const o = [minx - 0.22 * span, miny - 0.06 * span, minz * Z_EXAG];       // corner: west of the data, level with the cue row
+  const stepXY = niceStep(span / 4), Lxy = stepXY * 2, zTrue = Math.max(maxz - minz, 1), Lz = niceStep(zTrue) * 2;
+  const paths = [], texts = [];
+  const axis = (dir, len, color, label, tickStep, fmt, scale) => {
+    const end = [o[0] + dir[0] * len * scale, o[1] + dir[1] * len * scale, o[2] + dir[2] * len * scale];
+    paths.push({p: [o, end], c: color, w: 2.5});
+    const tk = 0.012 * span;
+    // tick direction: perpendicular to the axis, pointing away from the other axes (west for y and z, south for x)
+    const tdir = dir[2] ? [-1, 0, 0] : (dir[0] ? [0, -1, 0] : [-1, 0, 0]);
+    for (let v = tickStep; v <= len + 1e-9; v += tickStep) {
+      const pt = [o[0] + dir[0] * v * scale, o[1] + dir[1] * v * scale, o[2] + dir[2] * v * scale];
+      const t1 = [pt[0] + tdir[0] * tk, pt[1] + tdir[1] * tk, pt[2]];
+      paths.push({p: [pt, t1], c: color, w: 1.5});
+      texts.push({position: [t1[0] + tdir[0] * tk * 1.2, t1[1] + tdir[1] * tk * 1.2, t1[2]], text: fmt(v), color, size: 11,
+                  anchor: tdir[0] < 0 ? 'end' : 'middle'});
+    }
+    const lab = [end[0] + dir[0] * 0.02 * span + (dir[2] ? -tk * 2.5 : 0), end[1] + dir[1] * 0.02 * span, end[2] + (dir[2] ? 0.02 * span : 0)];
+    texts.push({position: lab, text: label, color, size: 13, anchor: dir[2] ? 'end' : (dir[0] ? 'start' : 'middle')});
+  };
+  const km = v => `${(v / 1000).toFixed(v >= 1000 ? 0 : 1)} km`;
+  axis([1, 0, 0], Lxy, [235, 120, 120], 'x (EPSG:3413 easting, local)', stepXY, km, 1);
+  axis([0, 1, 0], Lxy, [120, 220, 140], 'y (EPSG:3413 northing, local)', stepXY, km, 1);
+  axis([0, 0, 1], Lz, [140, 170, 255], `z height, true metres (drawn ×${Z_EXAG})`, niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
+  return [
+    new PathLayer({id: 'axes', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels', updateTriggers: {getPath: Z_EXAG}}),
+    new TextLayer({id: 'axes-text', data: texts, getPosition: d => d.position, getText: d => d.text, getColor: d => d.color, getSize: d => d.size, getTextAnchor: d => d.anchor || 'middle',
+      sizeUnits: 'pixels', billboard: true, fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
+      background: true, getBackgroundColor: [20, 20, 26, 170], backgroundPadding: [3, 1], updateTriggers: {getPosition: Z_EXAG}}),
+  ];
+}
+
 function cueLayers() {
   if (!bounds) return [];
   const {minx, maxx, miny, maxy, minz} = bounds;
@@ -143,15 +197,15 @@ function cueLayers() {
 // ---------------------------------------------------------------- render / view
 function render() {
   if (!scene) return;
-  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...cueLayers()]});
+  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...cueLayers(), ...axesLayers()]});
 }
 
 function fitView() {
   const all = Object.values(scene.series).flatMap(s => s.positions);
   if (!all.length) return;
-  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9;
-  for (let i = 0; i < all.length; i += 3) { minx = Math.min(minx, all[i]); maxx = Math.max(maxx, all[i]); miny = Math.min(miny, all[i + 1]); maxy = Math.max(maxy, all[i + 1]); minz = Math.min(minz, all[i + 2]); }
-  bounds = {minx, maxx, miny, maxy, minz};
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9;
+  for (let i = 0; i < all.length; i += 3) { minx = Math.min(minx, all[i]); maxx = Math.max(maxx, all[i]); miny = Math.min(miny, all[i + 1]); maxy = Math.max(maxy, all[i + 1]); minz = Math.min(minz, all[i + 2]); maxz = Math.max(maxz, all[i + 2]); }
+  bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const zoom = Math.log2(Math.min(innerWidth, innerHeight) / (span * 1.25));
   deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], rotationX: 35, rotationOrbit: -25, zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
@@ -204,9 +258,10 @@ function updateLabels() {
   if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = ICESat-2 native position (ON state)</span>`);
   if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.note}</span>`);
   const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
-  if (acc) items.push(`<span class="small">data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks} chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})</span>`);
+  if (acc) items.push(`<span class="small">data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks (${acc.chunks} dataset ranges) / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})</span>`);
   $('legend').innerHTML = items.join('');
-  $('framenote').textContent = `Local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median; vertical ×${Z_EXAG}; scale bar and north arrow in-scene.`;
+  $('framenote').textContent = `Local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres).`;
+  $('attrib').textContent = scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '';
   if (coreg) {
     $('exag').hidden = false;
     $('exag').innerHTML = `<b>Horizontal offset exaggerated ×${coreg.exaggeration}</b> for visibility (clouds and blue arrow alike); true plate-motion displacement ≈ ` +
@@ -222,6 +277,7 @@ async function loadScene() {
   coreg = scene.coreg;
   if (params.get('state') === 'on' && coreg) state = 'on';
   $('btnOff').classList.toggle('on', state === 'off'); $('btnOn').classList.toggle('on', state === 'on');
+  $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG;
   fitView(); render(); updateLabels(); updateStats();
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
 }
@@ -239,6 +295,8 @@ async function setState(s) {
   $('btnOff').classList.toggle('on', s === 'off'); $('btnOn').classList.toggle('on', s === 'on');
   render(); updateStats();
 }
+$('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; render(); updateLabels(); };
+$('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 $('btnOff').onclick = () => setState('off');
 $('btnOn').onclick = () => setState('on');
 loadScene();

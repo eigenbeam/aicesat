@@ -23,6 +23,11 @@ REGIONS: dict[str, dict] = {
         "bbox": (-32.0, 75.5, -29.0, 76.0),
         "note": "Candidate 4: NE interior flank, well upstream of NEGIS.",
     },
+    "jakobshavn_margin": {
+        "bbox": (-51.0, 69.0, -49.0, 69.4),
+        "note": "Widget/relief showcase, NOT a Demo-B region: Jakobshavn Isbrae trunk + Isfjord. Fast-flowing dynamic ice; "
+                "co-registration numbers here are contaminated by ice flow and real thinning (spec B.9 / A3).",
+    },
     "n_central_flank": {
         "bbox": (-45.0, 75.8, -42.0, 76.2),
         "note": "Candidate 5: north-central interior flank (least established site).",

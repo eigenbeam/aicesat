@@ -132,26 +132,30 @@ def extract_legacy(bbox, window, max_granules: int = 3, max_photons: int = 20_00
     return arrays, meta
 
 
-def extract(bbox, window, max_granules: int = 8, max_photons: int = 20_000_000, force: bool = False) -> tuple[dict[str, np.ndarray], dict]:
-    """Index-driven path (spec §4–§8): planner makes the lake sufficient, DuckDB answers. Same output contract as before."""
-    from . import lake, planner
+def extract(bbox, window, max_granules: int = 8, max_photons: int = 20_000_000, force: bool = False, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+    """Index-driven path (spec §4–§8): planner makes the lake sufficient, DuckDB answers. Same output contract as before.
+    polygon: optional [(lon, lat), ...]; bbox must then be its bounding box (see geom.normalize_area)."""
+    from . import geom, lake, planner
 
-    k = cache.key("atl03-lake", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF)
+    k = cache.key("atl03-lake", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF, polygon)
     hit = cache.load(k)
     if hit and not force:
         log.info("atl03 cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
-    plan = planner.ensure(bbox, window, max_granules=max_granules, force=force)
+    plan = planner.ensure(bbox, window, max_granules=max_granules, force=force, polygon=polygon)
     q = lake.query_photons(bbox, plan["cells"], MIN_CONF, granules=plan["granules"])
     glist = q.pop("_granules")
     arrays = {key: v for key, v in q.items()}
+    if polygon is not None:
+        keep = geom.points_in_polygon(arrays["lon"], arrays["lat"], polygon)
+        arrays = {key: v[keep] for key, v in arrays.items()}
     n = arrays["lon"].size
     if n == 0:
         raise RuntimeError("lake query returned no land-ice signal photons in bbox")
     meta = {"mission": "ICESAT2", "product": f"ATL03 v{coverage.ATL03_VERSION}", "bbox": list(bbox), "window": list(window),
             "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid", "n_total_in_bbox": int(n), "n": int(n), "min_conf": MIN_CONF,
             "granules": [{"granule": g} for g in glist], "beam_pairs": list(BEAM_PAIRS), "access_path": "index+byte-range+lake",
-            "access": plan["stats"], "cache_key": k}
+            "access": plan["stats"], "polygon": polygon, "cache_key": k}
     cache.save(k, arrays, meta)
     return arrays, meta

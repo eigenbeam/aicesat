@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Select area — cross-mission altimetry</title>
+<script src="https://unpkg.com/deck.gl@^9.0.0/dist.min.js"></script>
+<style>
+  :root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --amber:#E0A030; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
+  #map { position:absolute; inset:0; }
+  .panel { position:absolute; background:var(--panel); border:1px solid var(--hair); border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+  #tools { top:12px; left:12px; width:380px; }
+  #tools h1 { font-size:15px; margin:0 0 6px; }
+  button { font:inherit; font-size:13px; padding:6px 10px; border-radius:8px; border:1px solid var(--hair); background:#22222a; color:var(--ink); cursor:pointer; margin:2px 4px 2px 0; }
+  button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .small { font-size:12px; color:var(--muted); }
+  #out { font-size:12px; white-space:pre-wrap; max-height:40vh; overflow:auto; margin-top:8px; border-top:1px solid var(--hair); padding-top:6px; }
+  #coords { font-family: ui-monospace, monospace; font-size:11px; color:var(--muted); }
+  a { color: var(--blue); }
+  #attrib { position:absolute; bottom:4px; right:8px; font-size:10px; color:var(--muted); }
+  select { font:inherit; font-size:12px; background:#22222a; color:var(--ink); border:1px solid var(--hair); border-radius:6px; padding:4px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="tools" class="panel">
+  <h1>Select an area</h1>
+  <div class="small">Drag to draw a box, or switch to polygon and click vertices, then Close polygon (or press Enter). Hexagons = H3 cells already in the lake.</div>
+  <div style="margin:8px 0 4px">
+    <button id="modeBox" class="on">Box</button><button id="modePoly">Polygon</button><button id="closePoly" hidden>Close polygon</button><button id="clear">Clear</button>
+    <select id="regionSel"><option value="">candidate regions…</option></select>
+  </div>
+  <div id="coords">no area selected</div>
+  <div style="margin-top:8px">
+    <button id="cov" disabled>Check coverage</button>
+    <button id="build" disabled>Build scene</button>
+    <label class="small">granules <input id="maxg" type="number" value="8" min="1" max="40" style="width:48px"></label>
+    <label class="small"><input id="glas" type="checkbox" checked> GLAS</label>
+    <label class="small"><input id="coreg" type="checkbox"> co-register</label>
+  </div>
+  <div id="out"></div>
+</div>
+<div id="attrib">Imagery: Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0)</div>
+<script src="select.js"></script>
+</body>
+</html>

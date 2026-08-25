@@ -10,13 +10,15 @@ import os
 import sys
 import threading
 import time
+import traceback
 import uuid
+from urllib.parse import parse_qs, urlparse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import atl03, cache, coverage, regions, scene
+from . import atl03, cache, coverage, geom, regions, scene
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -55,6 +57,74 @@ def run_coregister(scene_id: str, common_epoch: float | None = None, colocation_
     return result
 
 
+# ----------------------------------------------------------------------------- scene build (shared by MCP tools + selector page)
+
+_jobs: dict[str, dict] = {}
+
+
+def build_scene(bbox=None, polygon=None, question: str | None = None, max_granules: int = 8, with_glas: bool = True,
+                with_coreg: bool = False, log_fn=lambda m: None) -> dict:
+    """Full pipeline for an area: ATL03 via index+lake, imagery, optional GLAS and co-registration. Returns the scene doc."""
+    bb, poly = geom.normalize_area(bbox, polygon)
+    with _lock:
+        log_fn(f"ICESat-2: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
+        arrays, meta = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
+        st = meta.get("access", {})
+        log_fn(f"ICESat-2: {meta['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched ({st.get('bytes', 0) / 1e6:.0f} MB, "
+               f"{st.get('requests', 0)} requests), {st.get('chunks_skipped_already_materialized', 0)} already in the lake")
+        sid = uuid.uuid4().hex[:10]
+        doc = scene.new_scene(sid, bb, question, polygon=poly)
+        scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
+        try:
+            scene.add_imagery(doc)
+            log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
+        except Exception as e:  # imagery is a cue, never a blocker
+            log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
+        if with_glas:
+            from . import glas
+            g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
+            scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
+            log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
+        cache.save_scene(sid, doc)
+    if with_coreg and with_glas:
+        run_coregister(sid)
+        log_fn("co-registration computed and cached")
+    return cache.load_scene(sid)
+
+
+def start_job(params: dict) -> str:
+    jid = uuid.uuid4().hex[:8]
+    job = _jobs[jid] = {"id": jid, "status": "running", "log": [], "scene_id": None, "widget_url": None, "error": None,
+                        "started": time.time()}
+
+    def run():
+        try:
+            doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"), int(params.get("max_granules", 8)),
+                              bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)), lambda m: job["log"].append(m))
+            job.update(status="done", scene_id=doc["scene_id"], widget_url=widget_url(doc["scene_id"]))
+        except Exception as e:
+            log.exception("build job failed")
+            job.update(status="error", error=f"{type(e).__name__}: {e}")
+            job["log"].append(traceback.format_exc().splitlines()[-1])
+        job["seconds"] = round(time.time() - job["started"], 1)
+
+    threading.Thread(target=run, daemon=True, name=f"job-{jid}").start()
+    return jid
+
+
+def lake_cells_geojson(mission: str = "ICESAT2") -> dict:
+    """Materialized H3 cells as polygons, for the selector map ("what is already in the lake")."""
+    import h3
+    from . import lake
+
+    cells = {p.name.split("=")[1] for p in lake.LAKE_DIR.glob(f"mission={mission}/h3_cell=*")} if lake.LAKE_DIR.exists() else set()
+    feats = []
+    for c in cells:
+        ring = [[lng, lat] for lat, lng in h3.cell_to_boundary(h3.int_to_str(int(c)))]
+        feats.append({"type": "Feature", "properties": {"cell": c}, "geometry": {"type": "Polygon", "coordinates": [ring + [ring[0]]]}})
+    return {"type": "FeatureCollection", "features": feats}
+
+
 # ----------------------------------------------------------------------------- HTTP (widget + api)
 
 class Handler(SimpleHTTPRequestHandler):
@@ -77,6 +147,30 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.startswith("/api/scene/") and self.path.endswith("/imagery.jpg"):
+            sid = self.path.split("/")[3]
+            doc = cache.load_scene(sid)
+            img = doc and doc.get("imagery") and Path(doc["imagery"]["path"])
+            if not img or not img.exists():
+                return self.send_error(404)
+            body = img.read_bytes()
+            self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            return self.wfile.write(body)
+        u = urlparse(self.path); qs = parse_qs(u.query)
+        if u.path == "/api/regions":
+            return self._json(200, {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()})
+        if u.path == "/api/lake_cells":
+            return self._json(200, lake_cells_geojson())
+        if u.path == "/api/coverage":
+            try:
+                bb, poly = geom.normalize_area(json.loads(qs["bbox"][0]) if "bbox" in qs else None,
+                                               json.loads(qs["polygon"][0]) if "polygon" in qs else None)
+                return self._json(200, coverage.check_coverage(bb))
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if u.path.startswith("/api/job/"):
+            j = _jobs.get(u.path.split("/")[3])
+            return self._json(200, j) if j else self._json(404, {"error": "no such job"})
         if self.path.startswith("/api/scene/"):
             sid = self.path.split("/")[3].split("?")[0]
             path = cache.scene_path(sid)
@@ -91,6 +185,13 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path == "/api/extract":
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+                geom.normalize_area(body.get("bbox"), body.get("polygon"))  # validate early
+                return self._json(202, {"job_id": start_job(body)})
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if self.path.startswith("/api/coregister/"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
@@ -149,22 +250,28 @@ def check_coverage(region: str | None = None, bbox: list[float] | None = None,
 
 
 @mcp.tool()
-def show_photons(region: str | None = None, bbox: list[float] | None = None,
-                 time_window: list[str] | None = None, max_granules: int = 2, question: str | None = None) -> dict:
-    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over
-    a region and create a 3D scene. Returns the widget URL to open plus extraction provenance.
-    Note: ATL03 granules are large; the first call for a region takes minutes, later calls are cached."""
-    bb = regions.resolve_bbox(region, tuple(bbox) if bbox else None)
-    window = tuple(time_window) if time_window else regions.DEFAULT_ATL03_WINDOW
-    with _lock:
-        arrays, meta = atl03.extract(bb, window, max_granules=max_granules)
-        sid = uuid.uuid4().hex[:10]
-        doc = scene.new_scene(sid, bb, question)
-        scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
-        cache.save_scene(sid, doc)
-    return {"scene_id": sid, "widget_url": widget_url(sid), "n_photons": meta["n"], "n_in_bbox": meta["n_total_in_bbox"],
+def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
+                 time_window: list[str] | None = None, max_granules: int = 8, question: str | None = None) -> dict:
+    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
+    and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
+    Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
+    later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
+    if region and not (bbox or polygon):
+        bbox = list(regions.resolve_bbox(region))
+    doc = build_scene(bbox, polygon, question, max_granules, with_glas=False)
+    meta = doc["series"]["ICESAT2"]["meta"]
+    return {"scene_id": doc["scene_id"], "widget_url": widget_url(doc["scene_id"]), "n_photons": meta["n"],
             "product": meta["product"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
-            "granules": meta["granules"], "bbox": list(bb), "time_window": list(window)}
+            "access": meta.get("access"), "granules": doc["series"]["ICESAT2"]["granules"], "bbox": doc["bbox"],
+            "polygon": doc.get("polygon"), "time_window": meta["window"], "imagery": bool(doc.get("imagery"))}
+
+
+@mcp.tool()
+def open_area_selector() -> dict:
+    """URL of the map page where the user draws a bounding box or polygon on Sentinel-2 imagery, checks ICESat-2 / GLAS
+    coverage, and builds a scene from it (the page shows which H3 cells are already in the lake)."""
+    return {"url": f"http://{HTTP_HOST}:{HTTP_PORT}/select.html",
+            "how": "draw a box (drag) or polygon (click vertices, double-click to close), then Check coverage / Build scene"}
 
 
 @mcp.tool()

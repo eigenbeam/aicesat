@@ -36,7 +36,7 @@ def surface_grid(frame: dict, arrays: dict, z0: float, cell_m: float = 500.0, ma
 
     x, y = to_local(frame, arrays["lon"], arrays["lat"])
     z = np.asarray(arrays["h"], dtype="f8") - z0
-    x0, y0, x1, y1 = x.min(), y.min(), x.max(), y.max()
+    x0, y0, x1, y1 = bbox_extent(frame)  # full box, so the imagery drape and axes cover the requested area
     cell = float(cell_m)
     while ((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) > max_cells:
         cell *= 1.5
@@ -49,11 +49,38 @@ def surface_grid(frame: dict, arrays: dict, z0: float, cell_m: float = 500.0, ma
     med = np.array([np.median(chunk) for chunk in np.split(zs, start[1:])])
     cxs, cys = x0 + (uniq % nx) * cell, y0 + (uniq // nx) * cell
     gx, gy = np.meshgrid(x0 + np.arange(nx) * cell, y0 + np.arange(ny) * cell)
-    grid = griddata((cxs, cys), med, (gx, gy), method="linear") if uniq.size >= 3 else np.full(gx.shape, np.nan)
+    if uniq.size >= 3:
+        grid = griddata((cxs, cys), med, (gx, gy), method="linear")
+        outside = ~np.isfinite(grid)
+        # outside the hull: distance-weighted mean of the nearest observed cells (smooth), not a nearest-cell cliff
+        from scipy.spatial import cKDTree
+        tree = cKDTree(np.column_stack([cxs, cys]))
+        dist, nn = tree.query(np.column_stack([gx[outside], gy[outside]]), k=min(8, cxs.size))
+        wgt = 1.0 / np.maximum(dist, 1.0) ** 2
+        grid[outside] = (med[nn] * wgt).sum(axis=1) / wgt.sum(axis=1)
+    else:
+        grid, outside = np.full(gx.shape, np.nan), np.ones(gx.shape, bool)
     zlist = [None if not np.isfinite(v) else round(float(v), 2) for v in grid.ravel()]
     return {"x0": float(x0), "y0": float(y0), "cell": cell, "nx": nx, "ny": ny, "z": zlist,
-            "n_cells_observed": int(uniq.size),
-            "note": f"interpolated from ICESat-2 tracks ({uniq.size} of {nx * ny} cells observed, {cell:.0f} m grid); depth cue only"}
+            "n_cells_observed": int(uniq.size), "n_cells_extrapolated": int(outside.sum()),
+            "note": (f"interpolated from ICESat-2 tracks ({uniq.size} of {nx * ny} cells observed, {cell:.0f} m grid; "
+                     f"{int(outside.sum())} cells outside the track hull nearest-filled); depth cue only")}
+
+
+def bbox_extent(frame: dict) -> tuple[float, float, float, float]:
+    """Local-metre extent of the bbox polygon (its four corners, since the projection is not axis-aligned)."""
+    w, s, e, n = frame["bbox"]
+    xs, ys = to_local(frame, np.array([w, e, e, w]), np.array([s, s, n, n]))
+    return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+
+
+def add_imagery(doc: dict, width_px: int = 4096) -> dict:
+    """Fetch/warp the imagery base layer for the scene's bbox (network); records the file path and extent."""
+    from . import imagery
+
+    meta = imagery.build(doc["frame"], bbox_extent(doc["frame"]), width_px)
+    doc["imagery"] = {**meta, "url": f"/api/scene/{doc['scene_id']}/imagery.jpg"}
+    return doc
 
 
 def to_local(frame: dict, lon, lat) -> tuple[np.ndarray, np.ndarray]:
@@ -82,8 +109,8 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
     }
 
 
-def new_scene(scene_id: str, bbox, question: str | None = None) -> dict:
-    return {"scene_id": scene_id, "question": question, "frame": local_frame(bbox), "bbox": list(bbox),
+def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) -> dict:
+    return {"scene_id": scene_id, "question": question, "frame": local_frame(bbox), "bbox": list(bbox), "polygon": polygon,
             "z0": None, "series": {}, "coreg": None,
             "labels": {"note": "Native coordinates as delivered; no co-registration applied."}}
 

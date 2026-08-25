@@ -143,14 +143,30 @@ def indexed_granules() -> set[str]:
     return out
 
 
+INDEX_TIMEOUT_S = 180  # a stalled remote open must not wedge a job: time out and retry once
+
+
 def ensure_index(granules) -> dict:
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+
     have = indexed_granules()
     built, t0 = [], time.time()
     for g in granules:
         name = g["meta"]["native-id"]
-        if name not in have:
-            build_granule_index(g)
-            built.append(name)
+        if name in have:
+            continue
+        for attempt in (1, 2):
+            ex = ThreadPoolExecutor(1)
+            try:
+                ex.submit(build_granule_index, g).result(timeout=INDEX_TIMEOUT_S)
+                break
+            except FutTimeout:
+                log.warning("index build of %s timed out after %ds (attempt %d)", name, INDEX_TIMEOUT_S, attempt)
+                if attempt == 2:
+                    raise TimeoutError(f"index build of {name} timed out twice")
+            finally:
+                ex.shutdown(wait=False)
+        built.append(name)
     return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
 
 

@@ -72,8 +72,8 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
             "rec_ndx": f[V["rec_ndx"]][sl][keep].astype("i8"), "shot": f[V["shot"]][sl][keep].astype("i4")}
 
 
-def extract(bbox, window, max_granules: int = 400) -> tuple[dict[str, np.ndarray], dict]:
-    k = cache.key("glas", coverage.GLAS_VERSION, bbox, window, max_granules, MAX_SAT_FLAG)
+def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+    k = cache.key("glas", coverage.GLAS_VERSION, bbox, window, max_granules, MAX_SAT_FLAG, polygon)
     hit = cache.load(k)
     if hit:
         log.info("glas cache hit %s", k)
@@ -107,6 +107,12 @@ def extract(bbox, window, max_granules: int = 400) -> tuple[dict[str, np.ndarray
     if not parts:
         raise RuntimeError("GLAH06 granules found but no usable shots in bbox")
     arrays = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
+    if polygon is not None:
+        from .geom import points_in_polygon
+        keep = points_in_polygon(arrays["lon"], arrays["lat"], polygon)
+        arrays = {key: v[keep] for key, v in arrays.items()}
+        if arrays["lon"].size == 0:
+            raise RuntimeError("no usable GLAS shots inside the polygon")
     days = arrays["t"].astype("datetime64[D]")
     camp = {}
     for d0 in np.unique(days):
@@ -117,7 +123,7 @@ def extract(bbox, window, max_granules: int = 400) -> tuple[dict[str, np.ndarray
             "ellipsoid_correction": "h = d_elev + d_satElevCorr - d_deltaEllip (TOPEX/Poseidon -> WGS84)",
             "mean_delta_ellip_m": float(np.nanmean(arrays["delta_ellip"])),
             "n": int(arrays["lon"].size), "n_granules_found": n_found, "n_granules_read": len(granules),
-            "campaigns": dict(sorted(camp.items())), "granules": prov, "max_sat_flag": MAX_SAT_FLAG}
+            "campaigns": dict(sorted(camp.items())), "granules": prov, "max_sat_flag": MAX_SAT_FLAG, "polygon": polygon}
     meta["cache_key"] = k
     cache.save(k, arrays, meta)
     return arrays, meta

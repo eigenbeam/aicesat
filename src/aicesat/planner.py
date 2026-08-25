@@ -20,10 +20,10 @@ GPS_EPOCH_MS = np.datetime64(datetime(1980, 1, 6) - timedelta(seconds=18), "ms")
 LAND_ICE_COL = 3
 
 
-def cells_for_bbox(bbox, res: int = index.H3_RES, dilate: int = 1) -> list[int]:
-    """Every cell that overlaps the bbox (h3 'overlap' containment when available, else centre-containment + k-ring)."""
+def cells_for_bbox(bbox, res: int = index.H3_RES, dilate: int = 1, polygon=None) -> list[int]:
+    """Every cell that overlaps the area (h3 'overlap' containment when available, else centre-containment + k-ring)."""
     w, s, e, n = bbox
-    poly = h3.LatLngPoly([(s, w), (s, e), (n, e), (n, w)])
+    poly = h3.LatLngPoly([(la, lo) for lo, la in polygon]) if polygon else h3.LatLngPoly([(s, w), (s, e), (n, e), (n, w)])
     try:
         cells = set(h3.h3shape_to_cells_experimental(poly, res, contain="overlap"))
     except Exception:
@@ -62,10 +62,10 @@ def _materialize(out: dict) -> dict:
     return out
 
 
-def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8) -> dict:
-    """Make the lake sufficient for (bbox, window): index missing granules, fetch missing chunks, materialize."""
+def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None) -> dict:
+    """Make the lake sufficient for (bbox|polygon, window): index missing granules, fetch missing chunks, materialize."""
     t0 = time.time()
-    cells = cells_for_bbox(bbox)
+    cells = cells_for_bbox(bbox, polygon=polygon)
     granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[:max_granules]
     names = [g["meta"]["native-id"] for g in granules]
     idx = index.ensure_index(granules)

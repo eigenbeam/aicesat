@@ -45,7 +45,7 @@ Restart Claude Desktop. The server also serves the widget at `http://127.0.0.1:8
 3. **Slice 3** — "Is the elevation difference between them real, or a registration artifact? Co-register them." →
    `coregister` → toggle OFF/ON in the widget. Rehearse once so the pyproj result is cached (B.7).
 
-Tools: `list_regions`, `check_coverage`, `show_photons`, `add_glas`, `coregister`.
+Tools: `list_regions`, `check_coverage`, `show_photons` (region, bbox or polygon), `add_glas`, `coregister`, `open_area_selector`.
 
 ## Index + byte-range access + Parquet lake (spec §4–§8, Stage 0)
 
@@ -92,6 +92,24 @@ component of the plate-motion shift is observable on a single beam; this is stat
 The per-pair artifact panel uses co-registered positions with *native* heights, so the mm-level vertical part of
 the ITRF2008→ITRF2014 frame step is reported separately (`frame_vertical_shift_m`) and never counted as slope
 artifact.
+
+## Area selection, imagery, axes, relief
+- **Area selector** (`/select.html`, MCP tool `open_area_selector`): a 2-D map on Sentinel-2 cloudless imagery with
+  the candidate regions outlined and the lake's materialized H3 cells drawn as hexagons. Drag a box, or click polygon
+  vertices and press Close/Enter; *Check coverage* queries CMR; *Build scene* starts a background job (`POST
+  /api/extract`, polled at `/api/job/<id>`) that runs the planner, drapes imagery, optionally adds GLAS and
+  co-registers, and links to the 3-D widget. Polygons are honoured exactly (point-in-polygon after the lake query;
+  coverage counts use the polygon's bounding box).
+- **Imagery base layer** (`imagery.py`): EOX Sentinel-2 cloudless 2020 WMTS tiles mosaicked and warped into the
+  scene's local EPSG:3413 frame (4096 px wide, cached), draped on the surface mesh as a texture. Licence CC BY-NC-SA
+  4.0, attribution on screen. Over the interior accumulation zone the mosaic is featureless white — imagery only
+  informs near margins.
+- **3-D axes** in the south-west corner with tick marks: x/y in km (local EPSG:3413), z in *true* metres while the
+  scene is drawn with the vertical exaggeration shown on the slider (1–50×). A low north-west directional light
+  makes relief read as shading; the surface now spans the full box (outside the track hull it is an inverse-distance
+  blend of the nearest observed cells, counted in the legend).
+- `regions.py` gained `jakobshavn_margin` as a relief/imagery showcase — explicitly **not** a Demo-B region (fast
+  ice, real thinning; the co-registration numbers there are contaminated, and the widget says so).
 
 ## Visual cues in the widget
 - **Surface**: a translucent height field with a faint wireframe, gridded (500 m) from the ICESat-2 photons and
