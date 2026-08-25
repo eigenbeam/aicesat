@@ -64,6 +64,10 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep stdout clean
         log.debug("http " + fmt, *args)
 
+    def end_headers(self):  # widget files change during development; never let the browser cache them
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def _json(self, status: int, obj) -> None:
         body = json.dumps(obj, default=cache._json_default).encode()
         self.send_response(status)

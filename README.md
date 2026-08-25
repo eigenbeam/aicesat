@@ -69,6 +69,16 @@ The per-pair artifact panel uses co-registered positions with *native* heights, 
 the ITRF2008→ITRF2014 frame step is reported separately (`frame_vertical_shift_m`) and never counted as slope
 artifact.
 
+## Visual cues in the widget
+- **Surface**: a translucent height field with a faint wireframe, gridded (500 m) from the ICESat-2 photons and
+  linearly interpolated across track gaps inside their hull — labelled as interpolated; a depth cue only.
+- **Paired shots**: the GLAS shots that have an ICESat-2 pair (the only points behind the histograms) are drawn
+  larger and bright; unpaired shots are dimmed once co-registration exists.
+- **Ghost**: in the ON state the ICESat-2 cloud's *native* position stays as a grey ghost so the snap has a reference.
+- **Orientation**: in-scene scale bar, true-north arrow (EPSG:3413 +y is not north away from 45°W), and a blue
+  arrow showing the plate-motion shift direction at the same exaggeration as the clouds, labelled with the true cm.
+- The widget server sends `Cache-Control: no-store`, so edits to `widget/` show on reload.
+
 ## Honesty requirements baked into the widget
 - Persistent label: horizontal offset exaggerated ×N; true displacement in cm; readout numbers un-exaggerated.
 - `unresolved` list visible in both OFF and ON states.

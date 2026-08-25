@@ -18,8 +18,42 @@ COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48]}
 
 def local_frame(bbox) -> dict:
     w, s, e, n = bbox
-    cx, cy = _to_ps.transform((w + e) / 2, (s + n) / 2)
-    return {"crs": "EPSG:3413", "origin_xy": [float(cx), float(cy)], "bbox": list(bbox)}
+    clon, clat = (w + e) / 2, (s + n) / 2
+    cx, cy = _to_ps.transform(clon, clat)
+    # true-north / east unit vectors at the bbox centre (EPSG:3413 +y is NOT north away from 45W)
+    nx, ny = _to_ps.transform(clon, clat + 0.01)
+    ex, ey = _to_ps.transform(clon + 0.01, clat)
+    nv = np.array([nx - cx, ny - cy]); ev = np.array([ex - cx, ey - cy])
+    return {"crs": "EPSG:3413", "origin_xy": [float(cx), float(cy)], "bbox": list(bbox),
+            "north_xy": (nv / np.linalg.norm(nv)).round(6).tolist(),
+            "east_xy": (ev / np.linalg.norm(ev)).round(6).tolist()}
+
+
+def surface_grid(frame: dict, arrays: dict, z0: float, cell_m: float = 500.0, max_cells: int = 40_000) -> dict:
+    """Coarse height field from the ICESat-2 photons: per-cell median where a track crosses the cell, linear
+    interpolation across the gaps between tracks (inside the convex hull only). A depth cue, labelled as such."""
+    from scipy.interpolate import griddata
+
+    x, y = to_local(frame, arrays["lon"], arrays["lat"])
+    z = np.asarray(arrays["h"], dtype="f8") - z0
+    x0, y0, x1, y1 = x.min(), y.min(), x.max(), y.max()
+    cell = float(cell_m)
+    while ((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) > max_cells:
+        cell *= 1.5
+    nx, ny = int(np.ceil((x1 - x0) / cell)) + 1, int(np.ceil((y1 - y0) / cell)) + 1
+    ix = ((x - x0) / cell).astype(np.int64); iy = ((y - y0) / cell).astype(np.int64)
+    key = iy * nx + ix
+    order = np.argsort(key, kind="stable")
+    ks, zs = key[order], z[order]
+    uniq, start = np.unique(ks, return_index=True)
+    med = np.array([np.median(chunk) for chunk in np.split(zs, start[1:])])
+    cxs, cys = x0 + (uniq % nx) * cell, y0 + (uniq // nx) * cell
+    gx, gy = np.meshgrid(x0 + np.arange(nx) * cell, y0 + np.arange(ny) * cell)
+    grid = griddata((cxs, cys), med, (gx, gy), method="linear") if uniq.size >= 3 else np.full(gx.shape, np.nan)
+    zlist = [None if not np.isfinite(v) else round(float(v), 2) for v in grid.ravel()]
+    return {"x0": float(x0), "y0": float(y0), "cell": cell, "nx": nx, "ny": ny, "z": zlist,
+            "n_cells_observed": int(uniq.size),
+            "note": f"interpolated from ICESat-2 tracks ({uniq.size} of {nx * ny} cells observed, {cell:.0f} m grid); depth cue only"}
 
 
 def to_local(frame: dict, lon, lat) -> tuple[np.ndarray, np.ndarray]:
@@ -84,6 +118,8 @@ def drop_glas_outliers(arrays: dict, meta: dict, frame: dict) -> tuple[dict, dic
 def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str) -> dict:
     if doc["z0"] is None:
         doc["z0"] = float(np.median(arrays["h"]))
+    if mission == "ICESAT2":
+        doc["surface"] = surface_grid(doc["frame"], arrays, doc["z0"])
     if mission == "GLAS":
         arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
         cache.save(cache_key + "-clean", arrays, meta)

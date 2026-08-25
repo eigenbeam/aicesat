@@ -35,7 +35,7 @@ GROSS_PAIR_M = 50.0  # |dh| beyond this is a cloud/blunder pair, dropped and cou
 class Params:
     common_epoch: float = 2005.0
     colocation_radius_m: float = 35.0
-    exaggeration: float = 0.0  # <= 0 -> auto: displayed offset ~3% of the scene span (always labelled)
+    exaggeration: float = 0.0  # <= 0 -> auto: displayed offset ~5% of the scene span (always labelled)
 
 
 def params(**kw) -> dict:
@@ -240,7 +240,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
     exag = p.exaggeration
     if exag <= 0:
         span = max(np.ptp(I["x0"]), np.ptp(I["y0"]), 1.0)
-        exag = float(f"{0.03 * span / max(rel, 1e-3):.1g}")  # one significant figure, e.g. 7000
+        exag = float(f"{0.05 * span / max(rel, 1e-3):.1g}")  # one significant figure, e.g. 10000
     log.info("exaggeration x%g (relative displacement %.3f m)", exag, rel)
 
     def display(m):
@@ -269,6 +269,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         "dh_estimator": f"local along-track linear fit of ICESat-2 photons within {p.colocation_radius_m} m, evaluated at the GLAS footprint centre",
         "exaggeration": exag,
         "exaggeration_auto": p.exaggeration <= 0,
+        "pair_display_indices": {"GLAS": (pn[pn % Gd["stride"] == 0] // Gd["stride"]).tolist()},
         "n_pairs": {"native": int(pn.size), "coreg": int(pc.size), "common": int(common.size),
                     "gross_outliers_dropped": {"native": gross_n, "coreg": gross_c, "threshold_m": GROSS_PAIR_M}},
         "stats": {"native": _stats(dhn), "coreg": _stats(dhc), "artifact": _stats(artifact),
