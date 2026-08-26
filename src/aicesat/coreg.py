@@ -243,6 +243,41 @@ def comparability_block(*, coverage_coincides: bool, radius_m: float, slope_deg:
     }
 
 
+def _gia_block(doc: dict, t_is2: float, t_glas: float) -> dict | None:
+    """Present-day GIA solid-Earth vertical motion between the two epochs, expressed as an additive shift to the
+    co-located Δh (ICESat-2 − GLAS). Referencing both heights to the common epoch gives
+        dh_corr = dh_obs − u·(t_IS2 − t_GLAS),   u = uplift rate (m/yr, + up)
+    so the toggle simply shifts the Δh histogram by dh_shift_m = −u·(t_IS2 − t_GLAS). GIA is smooth, so u is sampled
+    at the scene-bbox centre (corners give a range). Returns None if the model grid is unavailable."""
+    try:
+        from . import gia
+    except Exception:
+        return None
+    try:
+        w, s, e, n = doc["bbox"]
+        lon = np.array([(w + e) / 2, w, e, w, e], dtype="f8")
+        lat = np.array([(s + n) / 2, s, s, n, n], dtype="f8")
+        u_mm = np.asarray(gia.uplift_rate_mm_yr(lon, lat), dtype="f8")
+        u_c = u_mm[0] if np.isfinite(u_mm[0]) else np.nanmedian(u_mm)
+        fin = u_mm[np.isfinite(u_mm)]
+        if not np.isfinite(u_c) or fin.size == 0:
+            return None
+        years_signed = t_is2 - t_glas
+        dh_shift = -(float(u_c) / 1000.0) * years_signed
+        return {"model": gia.MODEL, "citation": gia.CITATION,
+                "uplift_rate_mm_per_yr": round(float(u_c), 3),
+                "uplift_rate_range_mm_per_yr": [round(float(fin.min()), 3), round(float(fin.max()), 3)],
+                "years_apart_signed": round(float(years_signed), 3),
+                "dh_shift_m": round(float(dh_shift), 4),
+                "unresolved_key": "GIA",
+                "note": ("removes present-day GIA solid-Earth vertical motion between the epochs (uplift rate × years "
+                         "apart), referencing both heights to the common epoch; does not remove ice-dynamic, firn, or "
+                         "elastic-loading signals")}
+    except Exception as ex:
+        log.warning("GIA block failed: %s", ex)
+        return None
+
+
 def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_m: float = 35.0,
                      exaggeration: float = 0.0, dynamic_ice_flag: bool | None = None) -> dict:
     """Run the live co-registration over a scene document (both series required). Returns the result block."""
@@ -295,6 +330,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
     rel = _relative_displacement(I, Gd)
     eff_slope = (float(np.degrees(np.arctan(abs(np.median(artifact)) / rel))) if artifact.size and rel > 1e-4 else None)
     years_apart = float(abs(np.median(I["t"]) - np.median(Gd["t"])))
+    gia_block = _gia_block(doc, float(np.median(I["t"])), float(np.median(Gd["t"])))
 
     allv = np.concatenate([dhn, dhc]) if dhn.size else np.array([0.0])
     lo, hi = np.percentile(allv, [1, 99]) if allv.size > 10 else (allv.min() - 1, allv.max() + 1)
@@ -310,6 +346,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         "displacement_m": rel,
         "displacement_each_m": {"ICESAT2": float(np.median(I["disp"])), "GLAS": float(np.median(Gd["disp"]))},
         "frame_vertical_shift_m": frame_shift,  # height change from the native-frame -> ITRF2014 Helmert (not plate motion)
+        "gia": gia_block,  # present-day GIA vertical bedrock motion between epochs, as an additive dh(IS2-GLAS) shift (or None)
         "along_track_slope_deg": along_slope_deg,  # median |local along-beam slope| at the pairs (the observable component)
         "dem_slope_deg": dem_slope,               # median ArcticDEM slope at the GLAS shots (None without a DEM)
         "dh_estimator": f"local along-track linear fit of ICESat-2 photons within {p.colocation_radius_m} m, evaluated at the GLAS footprint centre",
