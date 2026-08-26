@@ -11,7 +11,7 @@
 An MCP server for Claude Desktop that pulls real ICESat-2 **ATL03** photons and ICESat/GLAS **GLAH06** shots over a
 chosen area, renders them as a 3D point cloud (deck.gl), and — on a toggle — applies an ITRF2014 + epoch
 co-registration (plate motion, ITRF2014-PMM / NOAM) with pyproj, updating the co-located Δh statistics. Started from
-`cross-mission-altimetry-mcp-spec.md`, which carries the full design and rationale.
+[`docs/cross-mission-altimetry-mcp-spec.md`](docs/cross-mission-altimetry-mcp-spec.md), which carries the full design and rationale.
 
 The co-registration removes **plate motion** between epochs. It does **not** remove ice flow, GIA, geoid/tide, firn
 compaction, or the vertical datum, and the widget says so on every answer. GLAS heights are converted

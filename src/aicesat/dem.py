@@ -7,7 +7,7 @@ https://doi.org/10.7910/DVN/3VDC4W. "DEMs provided by the Polar Geospatial Cente
 
 Tiles are 100 km squares on a grid with origin (-4,000,000, -4,000,000) m in EPSG:3413, named {row}_{col} (1-based):
 row = floor((y + 4e6) / 1e5) + 1, col = floor((x + 4e6) / 1e5) + 1. Tiles over open ocean do not exist (404).
-The scene frame is already EPSG:3413, so reading the scene's grid is a pure window read with COG overviews — no warp.
+Used only when the scene frame is EPSG:3413 (Arctic), so reading the scene's grid is a pure window read with COG overviews — no warp; elsewhere the caller falls back to the photon-interpolated surface.
 """
 from __future__ import annotations
 

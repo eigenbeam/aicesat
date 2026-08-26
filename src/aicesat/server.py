@@ -233,8 +233,6 @@ def open_ui(view: str = "explore") -> dict:
                    "In Claude Desktop the UI renders inline; elsewhere open the URL."}
 
 
-open_area_selector = open_ui  # backward-compatible name
-
 
 @apps.tool(resource_uri=UI_URI, name="add_glas")
 def add_glas(scene_id: str, time_window: list[str] | None = None, max_granules: int = 400) -> dict:

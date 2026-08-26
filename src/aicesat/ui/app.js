@@ -56,6 +56,6 @@ AICESAT.ready.then(api => {
   }
   // legacy deep link: /?scene=<id>
   const legacy = new URLSearchParams(location.search).get('scene');
-  if (legacy && !location.hash) location.hash = '#scene/' + legacy + (new URLSearchParams(location.search).get('state') === 'on' ? '?state=on' : '');
+  if (legacy && !location.hash) location.hash = '#scene/' + legacy;
   route();
 });

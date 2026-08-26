@@ -1,5 +1,5 @@
 """Imagery base layer: EOX Sentinel-2 cloudless WMTS tiles (Web Mercator) mosaicked and warped into the scene's local
-EPSG:3413 frame, saved as one JPEG the widget drapes on the surface mesh. Cached by (extent, layer, zoom).
+scene's local frame (see scene.frame_crs), saved as one JPEG the widget drapes on the surface mesh. Cached by (extent, layer, zoom).
 
 Licence: EOX "Sentinel-2 cloudless" is CC BY-NC-SA 4.0 (https://s2maps.eu) — attribution is shown in the widget.
 """
