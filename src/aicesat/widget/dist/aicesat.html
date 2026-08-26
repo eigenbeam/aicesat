@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cross-mission altimetry</title>
 <style>:root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; }
-html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+html, body { margin:0; height:100vh; position:relative; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+/* MCP App inline: the host sizes the iframe to content height, and an absolute+100% layout collapses to 0.
+   Pin a concrete height so the app is visible; fullscreen (⛶) uses the host viewport. */
+html.app, html.app body { height: var(--app-h, 660px); }
+html.app.fs, html.app.fs body { height: 100vh; }
 #topbar { position:absolute; top:0; left:0; right:0; height:40px; display:flex; align-items:center; gap:6px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--hair); z-index:20; backdrop-filter:blur(6px); }
 #topbar .brand { font-weight:600; margin-right:10px; }
 #topbar .tab { padding:5px 12px; border-radius:8px; border:1px solid transparent; cursor:pointer; color:var(--muted); background:none; font:inherit; font-size:13px; }
@@ -9295,7 +9299,7 @@ window.AICESAT = window.AICESAT || {};
       lakeEvict: cells => call('ui_lake_evict', {cells}),
       bench: () => call('ui_bench').catch(() => null),
       openLink: url => app.openLink ? app.openLink({url}) : window.open(url, '_blank'),
-      fullscreen: () => app.requestDisplayMode && app.requestDisplayMode({mode: 'fullscreen'}),
+      fullscreen: (mode = 'fullscreen') => app.requestDisplayMode && app.requestDisplayMode({mode}),
     };
   }
 
@@ -9935,7 +9939,20 @@ AICESAT.ready.then(api => {
 
   // ---- MCP App specifics
   if (api.kind === 'app') {
-    $('fullscreenBtn').hidden = false; $('fullscreenBtn').onclick = () => api.fullscreen();
+    document.documentElement.classList.add('app');
+    let fs = false;
+    $('fullscreenBtn').hidden = false;
+    $('fullscreenBtn').onclick = () => { fs = !fs; document.documentElement.classList.toggle('fs', fs); api.fullscreen(fs ? 'fullscreen' : 'inline'); setTimeout(reportSize, 60); };
+    const reportSize = () => { try { const h = document.documentElement.classList.contains('fs') ? window.innerHeight : (parseInt(getComputedStyle(document.documentElement).getPropertyValue('--app-h')) || 660); const a = api.app; if (a && a.sendSizeChanged) a.sendSizeChanged({height: h, width: document.documentElement.clientWidth}); } catch (e) {} };
+    window.addEventListener('resize', reportSize); setTimeout(reportSize, 100);
+    AICESAT.applyHostContext = ctx => {
+      if (!ctx) return;
+      if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+      // if the host tells us its viewport height, use it for the inline size
+      const vh = ctx.viewport && ctx.viewport.height || (ctx.safeAreaInsets ? null : null);
+      if (vh && !document.documentElement.classList.contains('fs')) document.documentElement.style.setProperty('--app-h', Math.max(420, Math.min(900, vh)) + 'px');
+      reportSize();
+    };
     // the tool result that launched this instance decides the first view
     const onResult = r => { const sc = r && r.structuredContent; if (!sc) return; if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
     AICESAT.onToolResult = onResult;
@@ -9947,7 +9964,6 @@ AICESAT.ready.then(api => {
       bc.postMessage({id: me});
       bc.onmessage = e => { if (e.data && e.data.id !== me) { document.body.innerHTML = '<div style="padding:24px;color:#a6a39a;font:13px ui-sans-serif,system-ui">This view was superseded by a newer one below. Scroll down to the latest altimetry UI.</div>'; } };
     } catch (e) {}
-    AICESAT.applyHostContext = ctx => { if (ctx && ctx.theme) document.documentElement.dataset.theme = ctx.theme; };
   }
   // legacy deep link: /?scene=<id>
   const legacy = new URLSearchParams(location.search).get('scene');

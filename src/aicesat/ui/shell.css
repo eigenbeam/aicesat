@@ -1,5 +1,9 @@
 :root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; }
-html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+html, body { margin:0; height:100vh; position:relative; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+/* MCP App inline: the host sizes the iframe to content height, and an absolute+100% layout collapses to 0.
+   Pin a concrete height so the app is visible; fullscreen (⛶) uses the host viewport. */
+html.app, html.app body { height: var(--app-h, 660px); }
+html.app.fs, html.app.fs body { height: 100vh; }
 #topbar { position:absolute; top:0; left:0; right:0; height:40px; display:flex; align-items:center; gap:6px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--hair); z-index:20; backdrop-filter:blur(6px); }
 #topbar .brand { font-weight:600; margin-right:10px; }
 #topbar .tab { padding:5px 12px; border-radius:8px; border:1px solid transparent; cursor:pointer; color:var(--muted); background:none; font:inherit; font-size:13px; }

@@ -87,7 +87,7 @@ window.AICESAT = window.AICESAT || {};
       lakeEvict: cells => call('ui_lake_evict', {cells}),
       bench: () => call('ui_bench').catch(() => null),
       openLink: url => app.openLink ? app.openLink({url}) : window.open(url, '_blank'),
-      fullscreen: () => app.requestDisplayMode && app.requestDisplayMode({mode: 'fullscreen'}),
+      fullscreen: (mode = 'fullscreen') => app.requestDisplayMode && app.requestDisplayMode({mode}),
     };
   }
 
