@@ -15,8 +15,17 @@ html.app.fs, html.app.fs body { height: 100vh; }
 .view { position:absolute; inset:0; display:none; }
 .view.on { display:block; }
 .map, .deck { position:absolute; inset:0; }
-.panel { position:absolute; background:var(--panel); border:1px solid var(--hair); border-radius:10px; padding:12px 26px 12px 14px; backdrop-filter:blur(6px); z-index:10; }
-.panel h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
+.panel { position:absolute; background:var(--panel); border:1px solid var(--hair); border-radius:9px; backdrop-filter:blur(6px); z-index:10; font-size:12px; }
+/* panel header (collapse caret + title + close) and collapsible body */
+.panel .phead, .exag .phead { display:flex; align-items:center; gap:6px; padding:5px 6px 5px 8px; cursor:default; border-bottom:1px solid var(--hair); }
+.panel.collapsed .phead, .exag.collapsed .phead { border-bottom:none; }
+.panel .phead .ptitle, .exag .phead .ptitle { flex:1; font-weight:600; font-size:11.5px; letter-spacing:.02em; text-transform:uppercase; color:var(--muted); cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.panel .pcaret, .exag .pcaret { border:none; background:none; color:var(--muted); font-size:11px; padding:0 2px; margin:0; cursor:pointer; line-height:1; }
+.panel .phead .close, .exag .phead .close { position:static; border:none; background:none; color:var(--muted); font-size:14px; padding:0 4px; margin:0; cursor:pointer; }
+.panel .pbody, .exag .pbody { padding:8px 10px; }
+.panel.collapsed .pbody, .exag.collapsed .pbody { display:none; }
+.phead-dupe { display:none !important; }
+.panel h2 { font-size:12px; margin:0 0 5px; font-weight:600; }
 .panel .close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--muted); font-size:14px; padding:2px 6px; cursor:pointer; }
 button { font:inherit; font-size:13px; padding:6px 10px; border-radius:8px; border:1px solid var(--hair); background:#22222a; color:var(--ink); cursor:pointer; margin:2px 4px 2px 0; }
 button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
@@ -48,19 +57,20 @@ details summary { cursor:pointer; }
 canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; border-radius:6px; }
 .readout { font-size:13px; margin:8px 0 4px; }
 .readout b { color:var(--amber); }
-.exag { position:absolute; top:12px; right:12px; width:372px; background:rgba(224,160,48,.15); border:1px solid var(--amber); color:var(--amber); font-size:12px; padding:8px 26px 8px 12px; border-radius:8px; z-index:10; }
-.exag .close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--amber); font-size:14px; padding:2px 6px; cursor:pointer; }
+.exag { position:absolute; top:12px; right:12px; width:320px; background:rgba(224,160,48,.15); border:1px solid var(--amber); color:var(--amber); font-size:11.5px; border-radius:8px; z-index:10; }
+.exag .phead { border-bottom-color:rgba(224,160,48,.3); } .exag .phead .ptitle, .exag .pcaret, .exag .phead .close { color:var(--amber); }
 
 /* ---- scene viewer panels (positions relative to the view) ---- */
-#hud { top:12px; left:12px; max-width:440px; }
+#hud { top:12px; left:12px; max-width:330px; }
 #hud h1 { font-size:15px; margin:0 0 4px; font-weight:600; }
 #hud .q { color:var(--muted); font-size:12px; margin-bottom:8px; }
 #hud .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
 #hud .legend span { display:inline; }
 #controls { bottom:12px; left:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; max-width:calc(100% - 420px); }
-#stats { top:112px; right:12px; width:372px; max-height:calc(100% - 124px); overflow-y:auto; }
+#stats { top:150px; right:12px; width:310px; max-height:calc(100% - 162px); overflow-y:auto; }
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
-#bench { top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto; }
+#bench { top:150px; left:12px; width:400px; max-height:calc(100% - 200px); overflow:auto; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
 #status { color:var(--muted); font-size:12px; }
 #exag { top:12px; right:12px; }
+#hud h1 { font-size:13px; margin:0 0 4px; }

@@ -5,7 +5,7 @@ AICESAT.ExploreView = class {
     const U = AICESAT.util; this.api = api; this.root = root; this.openScene = openScene;
     root.innerHTML = `
       <div class="map" id="exMap"></div>
-      <div class="panel" id="exTools" data-title="area tools" style="top:12px;left:12px;width:380px">
+      <div class="panel" id="exTools" data-title="area tools" style="top:12px;left:12px;width:344px">
         <h2>Select an area</h2>
         <div class="small">Drag a box, or Polygon: click vertices then Close (Enter). Blue hexagons = cells in the lake; grid shows all cells with stats on hover.</div>
         <div style="margin:8px 0 4px"><button id="exBox" class="on">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
@@ -16,7 +16,7 @@ AICESAT.ExploreView = class {
           <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label> <label class="small"><input id="exCoreg" type="checkbox"> co-register</label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
-      <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:360px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
+      <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Imagery: Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
     this.map = new AICESAT.MapView($('exMap'), {grid: false, selectCells: false, draw: true, footprints: true});

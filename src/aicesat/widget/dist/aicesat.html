@@ -21,8 +21,17 @@ html.app.fs, html.app.fs body { height: 100vh; }
 .view { position:absolute; inset:0; display:none; }
 .view.on { display:block; }
 .map, .deck { position:absolute; inset:0; }
-.panel { position:absolute; background:var(--panel); border:1px solid var(--hair); border-radius:10px; padding:12px 26px 12px 14px; backdrop-filter:blur(6px); z-index:10; }
-.panel h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
+.panel { position:absolute; background:var(--panel); border:1px solid var(--hair); border-radius:9px; backdrop-filter:blur(6px); z-index:10; font-size:12px; }
+/* panel header (collapse caret + title + close) and collapsible body */
+.panel .phead, .exag .phead { display:flex; align-items:center; gap:6px; padding:5px 6px 5px 8px; cursor:default; border-bottom:1px solid var(--hair); }
+.panel.collapsed .phead, .exag.collapsed .phead { border-bottom:none; }
+.panel .phead .ptitle, .exag .phead .ptitle { flex:1; font-weight:600; font-size:11.5px; letter-spacing:.02em; text-transform:uppercase; color:var(--muted); cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.panel .pcaret, .exag .pcaret { border:none; background:none; color:var(--muted); font-size:11px; padding:0 2px; margin:0; cursor:pointer; line-height:1; }
+.panel .phead .close, .exag .phead .close { position:static; border:none; background:none; color:var(--muted); font-size:14px; padding:0 4px; margin:0; cursor:pointer; }
+.panel .pbody, .exag .pbody { padding:8px 10px; }
+.panel.collapsed .pbody, .exag.collapsed .pbody { display:none; }
+.phead-dupe { display:none !important; }
+.panel h2 { font-size:12px; margin:0 0 5px; font-weight:600; }
 .panel .close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--muted); font-size:14px; padding:2px 6px; cursor:pointer; }
 button { font:inherit; font-size:13px; padding:6px 10px; border-radius:8px; border:1px solid var(--hair); background:#22222a; color:var(--ink); cursor:pointer; margin:2px 4px 2px 0; }
 button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
@@ -54,22 +63,23 @@ details summary { cursor:pointer; }
 canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; border-radius:6px; }
 .readout { font-size:13px; margin:8px 0 4px; }
 .readout b { color:var(--amber); }
-.exag { position:absolute; top:12px; right:12px; width:372px; background:rgba(224,160,48,.15); border:1px solid var(--amber); color:var(--amber); font-size:12px; padding:8px 26px 8px 12px; border-radius:8px; z-index:10; }
-.exag .close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--amber); font-size:14px; padding:2px 6px; cursor:pointer; }
+.exag { position:absolute; top:12px; right:12px; width:320px; background:rgba(224,160,48,.15); border:1px solid var(--amber); color:var(--amber); font-size:11.5px; border-radius:8px; z-index:10; }
+.exag .phead { border-bottom-color:rgba(224,160,48,.3); } .exag .phead .ptitle, .exag .pcaret, .exag .phead .close { color:var(--amber); }
 
 /* ---- scene viewer panels (positions relative to the view) ---- */
-#hud { top:12px; left:12px; max-width:440px; }
+#hud { top:12px; left:12px; max-width:330px; }
 #hud h1 { font-size:15px; margin:0 0 4px; font-weight:600; }
 #hud .q { color:var(--muted); font-size:12px; margin-bottom:8px; }
 #hud .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
 #hud .legend span { display:inline; }
 #controls { bottom:12px; left:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; max-width:calc(100% - 420px); }
-#stats { top:112px; right:12px; width:372px; max-height:calc(100% - 124px); overflow-y:auto; }
+#stats { top:150px; right:12px; width:310px; max-height:calc(100% - 162px); overflow-y:auto; }
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
-#bench { top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto; }
+#bench { top:150px; left:12px; width:400px; max-height:calc(100% - 200px); overflow:auto; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
 #status { color:var(--muted); font-size:12px; }
 #exag { top:12px; right:12px; }
+#hud h1 { font-size:13px; margin:0 0 4px; }
 </style>
 </head>
 <body>
@@ -9193,18 +9203,37 @@ window.__extApps={getDocumentTheme:CN,applyHostStyleVariables:yN,applyHostFonts:
   U.el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); } if (html) e.innerHTML = html; return e; };
   U.bboxOfPolygon = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
   U.areaRing = a => a.bbox ? [[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[1]], [a.bbox[2], a.bbox[3]], [a.bbox[0], a.bbox[3]]] : a.polygon;
-  // panel manager: every .panel gets a close button; a select lists hidden panels to reopen
+  // panel manager: each panel gets a header with a collapse caret + close; collapsed state is remembered.
   U.panels = (root, menu) => {
     const panels = [...root.querySelectorAll('.panel, .exag')];
-    const refresh = () => { if (!menu) return; menu.innerHTML = '<option value="">panels…</option>' + panels.filter(p => p.hidden).map(p => `<option value="${p.id}">show ${p.dataset.title || p.id}</option>`).join(''); };
+    const store = (id, v) => { try { localStorage.setItem('aicesat.panel.' + id + '.c', v ? '1' : '0'); } catch (e) {} };
+    const stored = id => { try { return localStorage.getItem('aicesat.panel.' + id + '.c') === '1'; } catch (e) { return false; } };
     for (const p of panels) {
-      if (p.querySelector(':scope > .close')) continue;
-      const b = U.el('button', {class: 'close', title: 'hide'}, '×'); b.onclick = () => { p.hidden = true; refresh(); }; p.appendChild(b);
+      if (p.querySelector(':scope > .phead')) continue;             // idempotent
+      const heading = p.querySelector(':scope > h1, :scope > h2');
+      const title = p.dataset.title || (heading && heading.textContent.trim()) || p.id;
+      if (p.dataset.title && heading) heading.classList.add('phead-dupe');   // hide the in-body title we lifted
+      const kids = [...p.childNodes];
+      const body = U.el('div', {class: 'pbody'});
+      kids.forEach(k => body.appendChild(k));
+      const head = U.el('div', {class: 'phead'});
+      const caret = U.el('button', {class: 'pcaret', title: 'collapse'}, '▾');
+      const label = U.el('span', {class: 'ptitle'}, ''); label.textContent = title;
+      const close = U.el('button', {class: 'close', title: 'hide'}, '×');
+      head.append(caret, label, close);
+      p.append(head, body);
+      const setCollapsed = (v, persist = true) => { p.classList.toggle('collapsed', v); caret.textContent = v ? '▸' : '▾'; caret.title = v ? 'expand' : 'collapse'; if (persist) store(p.id, v); };
+      caret.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
+      label.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
+      close.onclick = () => { p.hidden = true; refresh(); };
+      if (stored(p.id)) setCollapsed(true, false);
     }
+    const refresh = () => { if (!menu) return; menu.innerHTML = '<option value="">panels…</option>' + panels.filter(p => p.hidden).map(p => `<option value="${p.id}">show ${p.dataset.title || p.id}</option>`).join(''); };
     if (menu) menu.onchange = e => { const p = root.querySelector('#' + CSS.escape(e.target.value)); if (p) { p.hidden = false; p.dispatchEvent(new Event('reopen')); } e.target.value = ''; refresh(); };
     refresh();
     return refresh;
   };
+
   // tiny hash router
   U.route = () => { const h = location.hash.replace(/^#\/?/, ''); const [view, ...rest] = h.split('/'); return {view: view || 'explore', arg: rest.join('/')}; };
 })();
@@ -9456,7 +9485,7 @@ AICESAT.ExploreView = class {
     const U = AICESAT.util; this.api = api; this.root = root; this.openScene = openScene;
     root.innerHTML = `
       <div class="map" id="exMap"></div>
-      <div class="panel" id="exTools" data-title="area tools" style="top:12px;left:12px;width:380px">
+      <div class="panel" id="exTools" data-title="area tools" style="top:12px;left:12px;width:344px">
         <h2>Select an area</h2>
         <div class="small">Drag a box, or Polygon: click vertices then Close (Enter). Blue hexagons = cells in the lake; grid shows all cells with stats on hover.</div>
         <div style="margin:8px 0 4px"><button id="exBox" class="on">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
@@ -9467,7 +9496,7 @@ AICESAT.ExploreView = class {
           <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label> <label class="small"><input id="exCoreg" type="checkbox"> co-register</label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
-      <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:360px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
+      <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Imagery: Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
     this.map = new AICESAT.MapView($('exMap'), {grid: false, selectCells: false, draw: true, footprints: true});
@@ -9515,19 +9544,19 @@ AICESAT.LakeView = class {
     const U = AICESAT.util; this.api = api; this.root = root;
     root.innerHTML = `
       <div class="map" id="lkMap"></div>
-      <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:380px">
+      <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:320px">
         <h2>Lake</h2><div id="lkStats" class="small">loading…</div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
       </div>
-      <div class="panel" id="lkSelect" data-title="selected cells" style="top:12px;right:12px;width:360px">
+      <div class="panel" id="lkSelect" data-title="selected cells" style="top:12px;right:12px;width:300px">
         <h2>Cells</h2><div class="small">Click cells (res 6) to select. Colour = data age (bright = fresh). Hover for stats.</div>
         <div id="lkSel" class="small mono" style="margin:6px 0">none selected</div>
         <button id="lkLoad" disabled>Load in background</button><button id="lkEvict" class="danger" disabled>Evict</button><button id="lkClear">Clear</button>
         <label class="small">granules <input id="lkMaxG" type="number" value="40" min="1" max="200" style="width:56px"></label>
       </div>
-      <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:480px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
+      <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:420px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
       <div id="attrib">Imagery: Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: false});
@@ -9563,7 +9592,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="exag" class="exag" data-title="exaggeration label" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Co-registration:</span>\n  <button id="btnOff" class="on">OFF (native)</button>\n  <button id="btnOn">ON (ITRF2014 @ common epoch)</button>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="exag" class="exag" data-title="exaggeration label" hidden><div id="exagBody"></div></div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Co-registration:</span>\n  <button id="btnOff" class="on">OFF (native)</button>\n  <button id="btnOn">ON (ITRF2014 @ common epoch)</button>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: interpolated surface, paired-shot highlighting + native ghost, scale bar / north / shift arrows. */
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
@@ -9833,7 +9862,7 @@ function updateLabels() {
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
   if (coreg) {
     $('exag').hidden = false;
-    $('exag').innerHTML = `<b>Horizontal offset exaggerated ×${coreg.exaggeration}</b> for visibility (clouds and blue arrow alike); true plate-motion displacement ≈ ` +
+    $('exagBody').innerHTML = `<b>Horizontal offset exaggerated ×${coreg.exaggeration}</b> for visibility (clouds and blue arrow alike); true plate-motion displacement ≈ ` +
       `<b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> between epochs ${coreg.epochs.ICESAT2.toFixed(1)} and ${coreg.epochs.GLAS.toFixed(1)}. Readout numbers are un-exaggerated.`;
   }
   $('btnOn').disabled = false;

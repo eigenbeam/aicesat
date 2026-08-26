@@ -5,19 +5,19 @@ AICESAT.LakeView = class {
     const U = AICESAT.util; this.api = api; this.root = root;
     root.innerHTML = `
       <div class="map" id="lkMap"></div>
-      <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:380px">
+      <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:320px">
         <h2>Lake</h2><div id="lkStats" class="small">loading…</div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
       </div>
-      <div class="panel" id="lkSelect" data-title="selected cells" style="top:12px;right:12px;width:360px">
+      <div class="panel" id="lkSelect" data-title="selected cells" style="top:12px;right:12px;width:300px">
         <h2>Cells</h2><div class="small">Click cells (res 6) to select. Colour = data age (bright = fresh). Hover for stats.</div>
         <div id="lkSel" class="small mono" style="margin:6px 0">none selected</div>
         <button id="lkLoad" disabled>Load in background</button><button id="lkEvict" class="danger" disabled>Evict</button><button id="lkClear">Clear</button>
         <label class="small">granules <input id="lkMaxG" type="number" value="40" min="1" max="200" style="width:56px"></label>
       </div>
-      <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:480px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
+      <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:420px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
       <div id="attrib">Imagery: Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: false});
