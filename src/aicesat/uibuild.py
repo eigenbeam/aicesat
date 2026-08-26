@@ -18,12 +18,32 @@ def build() -> Path:
     js = "\n;\n".join((UI / f).read_text() for f in SOURCES if (UI / f).exists())
     deck = next(VENDOR.glob("deck.gl-*.min.js")).read_text()
     h3js = next(VENDOR.glob("h3-js-*.umd.js")).read_text()
+    bridge = bridge_as_classic_script(next(VENDOR.glob("ext-apps-*.app-with-deps.js")).read_text())
     # </script> inside inlined code would terminate the tag
     safe = lambda s: s.replace("</script", "<\\/script")
-    html = shell.replace("{{CSS}}", css).replace("{{VENDOR_H3}}", safe(h3js)).replace("{{VENDOR_DECK}}", safe(deck)).replace("{{APP_JS}}", safe(js))
+    html = (shell.replace("{{CSS}}", css).replace("{{VENDOR_H3}}", safe(h3js)).replace("{{VENDOR_DECK}}", safe(deck))
+            .replace("{{VENDOR_BRIDGE}}", safe(bridge)).replace("{{APP_JS}}", safe(js)))
     DIST.parent.mkdir(parents=True, exist_ok=True)
     DIST.write_text(html)
     return DIST
+
+
+def bridge_as_classic_script(esm: str) -> str:
+    """The ext-apps bundle is a self-contained ES module ending in one `export{a as b,...}` statement. Rewrite that
+    statement into a global so the bundle can be inlined as a classic <script> under the app sandbox's CSP."""
+    m = list(re.finditer(r"export\{([^}]*)\};?\s*$", esm.strip()))
+    if not m:
+        raise ValueError("ext-apps bundle: no trailing export statement found")
+    m = m[-1]
+    pairs = []
+    for item in m.group(1).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        local, _, exported = item.partition(" as ")
+        pairs.append(f"{(exported or local).strip()}:{local.strip()}")
+    body = esm.strip()[: m.start()]
+    return "(function(){\n" + body + "\nwindow.__extApps={" + ",".join(pairs) + "};\n})();"
 
 
 def needs_build() -> bool:

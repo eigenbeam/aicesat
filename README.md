@@ -187,7 +187,14 @@ the server rebuilds on start when sources are newer) into `src/aicesat/widget/di
 - **Scene** (`#scene/<id>[?state=on&zexag=N]`): the 3-D viewer as a view inside Explore with a Back button; all
   panels closeable (reopen via the panels menu); pair markers are a thin pale ring (toggle); text condensed with
   details disclosures.
-The same page will be served to Claude Desktop as an MCP App (Phase 4); `AICESAT.api` is the single data adapter.
+The same page is served to Claude Desktop as an **MCP App** (`ui://aicesat/app.html`, `text/html;profile=mcp-app`,
+registered via `mcp.server.apps.Apps`): `open_ui` / `show_photons` / `add_glas` / `coregister` carry
+`_meta.ui.resourceUri` so their result renders the UI inline, and the UI's data plane is a set of `visibility:["app"]`
+tools (`ui_scene_part`, `ui_lake_cells`, …) the host proxies without the model. `AICESAT.api` picks the adapter at
+load: the ext-apps bridge when running inside a host iframe (data via those tools, scene positions streamed as base64
+float32 chunks ≤ 96 kB), else the localhost `/api/*` routes. Verify the wiring with `uv run scripts/e2e_apps.py`
+(add `APPS=1` to negotiate the extension). Caveat: `visibility:["app"]` is advisory metadata the *host* honours;
+a plain MCP client that does not implement MCP Apps (e.g. Claude Code) will see the `ui_*` tools in the model list.
 
 ## DEM under the imagery
 The drape surface is **ArcticDEM v4.1 32 m** (PGC, AWS Open Data public COGs, EPSG:3413, WGS84-ellipsoid heights — the

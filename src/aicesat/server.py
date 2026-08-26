@@ -17,6 +17,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from mcp.server import MCPServer
+from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 
 from . import api, atl03, cache, coverage, geom, regions, scene, uibuild
 
@@ -184,8 +185,172 @@ def start_http() -> ThreadingHTTPServer:
 
 # ----------------------------------------------------------------------------- MCP tools
 
+UI_URI = "ui://aicesat/app.html"
+apps = Apps()
+
+
+def _ui_html() -> str:
+    try:
+        if uibuild.needs_build():
+            uibuild.build()
+    except Exception as e:
+        log.warning("UI build failed: %s", e)
+    return uibuild.DIST.read_text() if uibuild.DIST.exists() else "<!doctype html><p>UI not built</p>"
+
+
+apps.add_html_resource(
+    UI_URI, _ui_html(), name="aicesat-ui", title="Cross-mission altimetry",
+    description="Explore / Lake / Scene views: draw an area on imagery, build scenes, browse the Parquet lake, view co-registration in 3-D",
+    csp=ResourceCsp(connect_domains=["https://tiles.maps.eox.at"], resource_domains=["https://tiles.maps.eox.at"]),
+    prefers_border=False,
+)
+
+
+@apps.tool(resource_uri=UI_URI, name="show_photons")
+def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
+                 time_window: list[str] | None = None, max_granules: int = 8, question: str | None = None) -> dict:
+    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
+    and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
+    Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
+    later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
+    if region and not (bbox or polygon):
+        bbox = list(regions.resolve_bbox(region))
+    doc = build_scene(bbox, polygon, question, max_granules, with_glas=False)
+    meta = doc["series"]["ICESAT2"]["meta"]
+    return {"scene_id": doc["scene_id"], "widget_url": widget_url(doc["scene_id"]), "n_photons": meta["n"],
+            "product": meta["product"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
+            "access": meta.get("access"), "granules": doc["series"]["ICESAT2"]["granules"], "bbox": doc["bbox"],
+            "polygon": doc.get("polygon"), "time_window": meta["window"], "imagery": bool(doc.get("imagery"))}
+
+
+@apps.tool(resource_uri=UI_URI, name="open_ui")
+def open_ui(view: str = "explore") -> dict:
+    """URL of the unified UI: Explore (imagery map, draw a box or polygon on Sentinel-2 imagery, coverage check, build
+    scenes, open the 3-D viewer) and Lake (H3 grid with per-cell stats, storage limit, background loading, eviction)."""
+    view = view if view in ("explore", "lake") else "explore"
+    return {"view": view, "url": f"http://{HTTP_HOST}:{HTTP_PORT}/#{view}", "lake": f"http://{HTTP_HOST}:{HTTP_PORT}/#lake",
+            "how": "Explore: drag a box (or Polygon: click vertices, Enter), Check coverage / Build scene; Lake: click cells, Load in background / Evict. "
+                   "In Claude Desktop the UI renders inline; elsewhere open the URL."}
+
+
+open_area_selector = open_ui  # backward-compatible name
+
+
+@apps.tool(resource_uri=UI_URI, name="add_glas")
+def add_glas(scene_id: str, time_window: list[str] | None = None, max_granules: int = 400) -> dict:
+    """Slice 2: add ICESat/GLAS GLAH06 40 Hz shots (2003-2009 campaigns) to an existing scene, in native
+    coordinates (ITRF2008; heights converted TOPEX/Poseidon -> WGS84 ellipsoid). Returns provenance by campaign."""
+    from . import glas
+
+    doc = cache.load_scene(scene_id)
+    if doc is None:
+        raise ValueError(f"no such scene {scene_id}")
+    window = tuple(time_window) if time_window else regions.DEFAULT_GLAS_WINDOW
+    with _lock:
+        arrays, meta = glas.extract(tuple(doc["bbox"]), window, max_granules=max_granules)
+        scene.add_series(doc, "GLAS", arrays, meta, meta["cache_key"])
+        doc["coreg"] = None
+        cache.save_scene(scene_id, doc)
+    return {"scene_id": scene_id, "widget_url": widget_url(scene_id), "n_shots": meta["n"],
+            "campaigns": meta["campaigns"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
+            "ellipsoid_correction": meta["ellipsoid_correction"], "granules": meta["granules"]}
+
+
+@apps.tool(resource_uri=UI_URI, name="coregister")
+def coregister(scene_id: str, common_epoch: float = 2005.0, colocation_radius_m: float = 35.0,
+               exaggeration: float = 0.0) -> dict:
+    """Slice 3: run the ITRF2014 + epoch co-registration (plate motion, ITRF2014-PMM NOAM) on both missions in
+    a scene, co-locate GLAS shots with ICESat-2 photons, and compute delta-h statistics in native and
+    co-registered coordinates. Live pyproj on first call, cached after. Returns the comparability block.
+    exaggeration <= 0 picks a display exaggeration automatically (~3% of scene span); it is always labelled on screen."""
+    out = run_coregister(scene_id, common_epoch, colocation_radius_m, exaggeration)
+    slim = {k: v for k, v in out.items() if k not in ("dh_native", "dh_coreg", "artifact", "display_positions")}
+    slim["widget_url"] = widget_url(scene_id)
+    return slim
+
+
+# ----------------------------------------------------------------------------- app-visible tools (MCP Apps data plane)
+_APP = dict(resource_uri=UI_URI, visibility=["app"])
+
+
+@apps.tool(name="ui_regions", **_APP)
+def ui_regions() -> dict:
+    return api.list_regions()
+
+
+@apps.tool(name="ui_scenes", **_APP)
+def ui_scenes() -> dict:
+    return {"scenes": [{**r, "widget_url": widget_url(r["scene_id"])} for r in api.scenes()]}
+
+
+@apps.tool(name="ui_scene_part", **_APP)
+def ui_scene_part(scene_id: str, part: str = "meta", chunk: int = 0, stride: int = 1) -> dict:
+    return api.scene_part(scene_id, part, chunk, stride=stride)
+
+
+@apps.tool(name="ui_coverage", **_APP)
+def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | None = None) -> dict:
+    return api.check_coverage(bbox, polygon)
+
+
+@apps.tool(name="ui_extract", **_APP)
+def ui_extract(bbox: list[float] | None = None, polygon: list[list[float]] | None = None, question: str | None = None,
+               max_granules: int = 8, with_glas: bool = True, with_coreg: bool = False) -> dict:
+    geom.normalize_area(bbox, polygon)
+    j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question, "max_granules": max_granules, "with_glas": with_glas, "with_coreg": with_coreg})
+    return {"job_id": j["id"], "scene_id": j["scene_id"]}
+
+
+@apps.tool(name="ui_job", **_APP)
+def ui_job(job_id: str) -> dict:
+    j = api.job(job_id)
+    return j if j else {"error": "no such job", "status": "error", "id": job_id, "log": []}
+
+
+@apps.tool(name="ui_jobs", **_APP)
+def ui_jobs() -> dict:
+    return {"jobs": api.jobs()}
+
+
+@apps.tool(name="ui_coregister", **_APP)
+def ui_coregister(scene_id: str) -> dict:
+    return api.coregister(scene_id)
+
+
+@apps.tool(name="ui_lake_cells", **_APP)
+def ui_lake_cells(stats: bool = True) -> dict:
+    return api.lake_cells(stats=stats)
+
+
+@apps.tool(name="ui_lake_summary", **_APP)
+def ui_lake_summary() -> dict:
+    return api.lake_summary()
+
+
+@apps.tool(name="ui_lake_settings", **_APP)
+def ui_lake_settings(max_bytes: int | None = None) -> dict:
+    return api.lake_settings(max_bytes)
+
+
+@apps.tool(name="ui_lake_load", **_APP)
+def ui_lake_load(cells: list[str], max_granules: int = 40) -> dict:
+    j = api.lake_load(cells, None, max_granules)
+    return {"job_id": j["id"]}
+
+
+@apps.tool(name="ui_lake_evict", **_APP)
+def ui_lake_evict(cells: list[str]) -> dict:
+    return api.lake_evict(cells)
+
+
+@apps.tool(name="ui_bench", **_APP)
+def ui_bench() -> dict:
+    return api.bench() or {}
+
+
 mcp = MCPServer(
     "aicesat",
+    extensions=[apps],
     instructions=(
         "Cross-mission altimetry demo (ICESat-2 ATL03 + ICESat/GLAS GLAH06). Tools compute and return "
         "structured JSON plus a widget URL the user should open; the widget renders the 3D scene. "
@@ -193,7 +358,6 @@ mcp = MCPServer(
         "'agree' — co-registration removes the plate-motion artifact only."
     ),
 )
-
 
 @mcp.tool()
 def list_regions() -> dict:
@@ -236,67 +400,6 @@ def check_coverage(region: str | None = None, bbox: list[float] | None = None,
     Give either a region name (see list_regions) or an explicit bbox [W, S, E, N]. No data is fetched."""
     bb = regions.resolve_bbox(region, tuple(bbox) if bbox else None)
     return api.check_coverage(list(bb), None, atl03_window, glas_window)
-
-
-@mcp.tool()
-def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
-                 time_window: list[str] | None = None, max_granules: int = 8, question: str | None = None) -> dict:
-    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
-    and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
-    Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
-    later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
-    if region and not (bbox or polygon):
-        bbox = list(regions.resolve_bbox(region))
-    doc = build_scene(bbox, polygon, question, max_granules, with_glas=False)
-    meta = doc["series"]["ICESAT2"]["meta"]
-    return {"scene_id": doc["scene_id"], "widget_url": widget_url(doc["scene_id"]), "n_photons": meta["n"],
-            "product": meta["product"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
-            "access": meta.get("access"), "granules": doc["series"]["ICESAT2"]["granules"], "bbox": doc["bbox"],
-            "polygon": doc.get("polygon"), "time_window": meta["window"], "imagery": bool(doc.get("imagery"))}
-
-
-@mcp.tool()
-def open_ui() -> dict:
-    """URL of the unified UI: Explore (imagery map, draw a box or polygon on Sentinel-2 imagery, coverage check, build
-    scenes, open the 3-D viewer) and Lake (H3 grid with per-cell stats, storage limit, background loading, eviction)."""
-    return {"url": f"http://{HTTP_HOST}:{HTTP_PORT}/#explore", "lake": f"http://{HTTP_HOST}:{HTTP_PORT}/#lake",
-            "how": "Explore: drag a box (or Polygon: click vertices, Enter), Check coverage / Build scene; Lake: click cells, Load in background / Evict"}
-
-
-open_area_selector = open_ui  # backward-compatible name
-
-
-@mcp.tool()
-def add_glas(scene_id: str, time_window: list[str] | None = None, max_granules: int = 400) -> dict:
-    """Slice 2: add ICESat/GLAS GLAH06 40 Hz shots (2003-2009 campaigns) to an existing scene, in native
-    coordinates (ITRF2008; heights converted TOPEX/Poseidon -> WGS84 ellipsoid). Returns provenance by campaign."""
-    from . import glas
-
-    doc = cache.load_scene(scene_id)
-    if doc is None:
-        raise ValueError(f"no such scene {scene_id}")
-    window = tuple(time_window) if time_window else regions.DEFAULT_GLAS_WINDOW
-    with _lock:
-        arrays, meta = glas.extract(tuple(doc["bbox"]), window, max_granules=max_granules)
-        scene.add_series(doc, "GLAS", arrays, meta, meta["cache_key"])
-        doc["coreg"] = None
-        cache.save_scene(scene_id, doc)
-    return {"scene_id": scene_id, "widget_url": widget_url(scene_id), "n_shots": meta["n"],
-            "campaigns": meta["campaigns"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
-            "ellipsoid_correction": meta["ellipsoid_correction"], "granules": meta["granules"]}
-
-
-@mcp.tool()
-def coregister(scene_id: str, common_epoch: float = 2005.0, colocation_radius_m: float = 35.0,
-               exaggeration: float = 0.0) -> dict:
-    """Slice 3: run the ITRF2014 + epoch co-registration (plate motion, ITRF2014-PMM NOAM) on both missions in
-    a scene, co-locate GLAS shots with ICESat-2 photons, and compute delta-h statistics in native and
-    co-registered coordinates. Live pyproj on first call, cached after. Returns the comparability block.
-    exaggeration <= 0 picks a display exaggeration automatically (~3% of scene span); it is always labelled on screen."""
-    out = run_coregister(scene_id, common_epoch, colocation_radius_m, exaggeration)
-    slim = {k: v for k, v in out.items() if k not in ("dh_native", "dh_coreg", "artifact", "display_positions")}
-    slim["widget_url"] = widget_url(scene_id)
-    return slim
 
 
 def main() -> None:
