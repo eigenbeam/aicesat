@@ -26,7 +26,7 @@ window.AICESAT = window.AICESAT || {};
       const close = U.el('button', {class: 'close', title: 'hide'}, '×');
       head.append(caret, label, close);
       p.append(head, body);
-      const setCollapsed = (v, persist = true) => { p.classList.toggle('collapsed', v); caret.textContent = v ? '▸' : '▾'; caret.title = v ? 'expand' : 'collapse'; if (persist) store(p.id, v); };
+      const setCollapsed = (v, persist = true) => { p.classList.toggle('collapsed', v); caret.textContent = v ? '▸' : '▾'; caret.title = v ? 'expand' : 'collapse'; if (persist) store(p.id, v); if (!v) p.dispatchEvent(new Event('reopen')); };
       caret.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
       label.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
       close.onclick = () => { p.hidden = true; refresh(); };

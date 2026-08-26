@@ -71,7 +71,7 @@ def scene_doc(scene_id: str) -> dict | None:
 
 def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = 96_000, stride: int = 1) -> dict:
     """Chunked access for hosts with small result limits. parts: meta | surface | imagery | coreg | positions:<MISSION>
-    (base64 float32 xyz, chunked) | display:<MISSION> (co-registered display positions, chunked) | dh (histogram data)."""
+    (base64 float32 xyz, chunked) | dh (histogram data)."""
     doc = cache.load_scene(scene_id)
     if doc is None:
         raise KeyError(scene_id)
@@ -86,13 +86,9 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         m = part.split(":", 1)[1]
         arr = np.asarray(doc["series"][m]["positions"], dtype="f4").reshape(-1, 3)[:: max(1, int(stride))]
         return _chunked(arr.ravel(), chunk, chunk_bytes, "xyz")
-    if part.startswith("display:"):
-        m = part.split(":", 1)[1]
-        arr = np.asarray(doc["coreg"]["display_positions"][m], dtype="f4").reshape(-1, 3)[:: max(1, int(stride))]
-        return _chunked(arr.ravel(), chunk, chunk_bytes, "xyz")
     if part == "coreg":
         c = doc.get("coreg") or {}
-        return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact", "display_positions")}
+        return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact")}
     if part == "dh":
         c = doc.get("coreg") or {}
         return {k: c.get(k) for k in ("dh_native", "dh_coreg", "artifact")}

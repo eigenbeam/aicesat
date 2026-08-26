@@ -294,22 +294,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
     # relative displacement between the two clouds: vector difference of the median shifts
     rel = _relative_displacement(I, Gd)
     eff_slope = (float(np.degrees(np.arctan(abs(np.median(artifact)) / rel))) if artifact.size and rel > 1e-4 else None)
-    # along-track projection of the relative displacement (only this component is observable along one beam)
-    vrel = _relative_vector(I, Gd)
     years_apart = float(abs(np.median(I["t"]) - np.median(Gd["t"])))
-
-    exag = p.exaggeration
-    if exag <= 0:
-        span = max(np.ptp(I["x0"]), np.ptp(I["y0"]), 1.0)
-        exag = float(f"{0.05 * span / max(rel, 1e-3):.1g}")  # one significant figure, e.g. 10000
-    log.info("exaggeration x%g (relative displacement %.3f m)", exag, rel)
-
-    def display(m):
-        d = data[m]
-        st = d["stride"]
-        dx, dy = (d["x1"] - d["x0"]) * exag, (d["y1"] - d["y0"]) * exag
-        pos = np.column_stack([d["x0"] + dx, d["y0"] + dy, d["h1"] - z0])[::st].astype("f4")
-        return np.round(pos, 3).ravel().tolist()
 
     allv = np.concatenate([dhn, dhc]) if dhn.size else np.array([0.0])
     lo, hi = np.percentile(allv, [1, 99]) if allv.size > 10 else (allv.min() - 1, allv.max() + 1)
@@ -325,12 +310,9 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         "displacement_m": rel,
         "displacement_each_m": {"ICESAT2": float(np.median(I["disp"])), "GLAS": float(np.median(Gd["disp"]))},
         "frame_vertical_shift_m": frame_shift,  # height change from the native-frame -> ITRF2014 Helmert (not plate motion)
-        "relative_shift_vector_m": vrel.tolist(),
         "along_track_slope_deg": along_slope_deg,  # median |local along-beam slope| at the pairs (the observable component)
         "dem_slope_deg": dem_slope,               # median ArcticDEM slope at the GLAS shots (None without a DEM)
         "dh_estimator": f"local along-track linear fit of ICESat-2 photons within {p.colocation_radius_m} m, evaluated at the GLAS footprint centre",
-        "exaggeration": exag,
-        "exaggeration_auto": p.exaggeration <= 0,
         "pair_display_indices": {"GLAS": (pn[pn % Gd["stride"] == 0] // Gd["stride"]).tolist()},
         "n_pairs": {"native": int(pn.size), "coreg": int(pc.size), "common": int(common.size),
                     "gross_outliers_dropped": {"native": gross_n, "coreg": gross_c, "threshold_m": GROSS_PAIR_M}},
@@ -340,7 +322,6 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         "dh_native": np.round(dhn, 4).tolist(),
         "dh_coreg": np.round(dhc, 4).tolist(),
         "artifact": np.round(artifact, 5).tolist(),
-        "display_positions": {m: display(m) for m in data},
         "comparability": comparability_block(
             coverage_coincides=pn.size > 0, radius_m=p.colocation_radius_m, slope_deg=slope_deg,
             displacement_m=rel, dynamic_ice_flag=dynamic_ice_flag, effective_slope_deg=eff_slope,

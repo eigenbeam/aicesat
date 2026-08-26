@@ -66,9 +66,7 @@ window.AICESAT = window.AICESAT || {};
         if (meta.has_coreg) {
           const c = await call('ui_scene_part', {scene_id: id, part: 'coreg'});
           const dh = await call('ui_scene_part', {scene_id: id, part: 'dh'});
-          const disp = {};
-          for (const m of Object.keys(meta.series)) { const stride = Math.max(1, Math.ceil(meta.series[m].n / budget)); disp[m] = Array.from(await chunked(id, 'display:' + m, stride)); }
-          doc.coreg = {...c, ...dh, display_positions: disp};
+          doc.coreg = {...c, ...dh};
         }
         if (meta.imagery) { const b64 = await chunkedBytes(id, 'imagery'); if (b64) imagery.set(id, 'data:image/jpeg;base64,' + b64); }
         return doc;

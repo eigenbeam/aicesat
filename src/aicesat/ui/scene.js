@@ -1,16 +1,19 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="exag" class="exag" data-title="exaggeration label" hidden><div id="exagBody"></div></div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Co-registration:</span>\n  <button id="btnOff" class="on">OFF (native)</button>\n  <button id="btnOn">ON (ITRF2014 @ common epoch)</button>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
-   plus visual cues: interpolated surface, paired-shot highlighting + native ghost, scale bar / north / shift arrows. */
+   plus visual cues: interpolated surface, paired-shot highlighting, scale bar / north arrow.
+   Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
+   sub-pixel, so the 3-D clouds do not visibly move (no exaggeration, no animated snap, no shift arrow). */
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
 let params = new URLSearchParams(); let sceneId = null;
 let Z_EXAG = 10;
 let SHOW_IMAGERY = true;
 
-let scene = null, coreg = null, state = 'off', bounds = null, meshOk = true;
+let scene = null, coreg = null, bounds = null, meshOk = true;
+const adj = {plate_motion: true};   // which corrections are applied (toggled in the controls)
 const $ = id => root.querySelector('#' + id);
-const GHOST = [170, 170, 180, 70], PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200], BLUE = [55, 138, 221];
+const PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200];
 let SHOW_PAIRS = true;
 
 const deckgl = new Deck({
@@ -42,27 +45,19 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 function cloudLayers() {
   const out = [];
   for (const [m, s] of Object.entries(scene.series)) {
-    const nat = s.positions;
-    const disp = (state === 'on' && coreg && coreg.display_positions[m]) ? coreg.display_positions[m] : null;
-    const src = disp || nat;
+    const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
     const paired = (coreg && coreg.pair_display_indices && coreg.pair_display_indices[m]) ? new Set(coreg.pair_display_indices[m]) : null;
-    if (m === 'ICESAT2' && disp) out.push(cloudLayer('ghost-' + m, nat, GHOST, 1.5));          // where it was (native)
     if (paired && SHOW_PAIRS) {  // co-located shots: a thin pale ring UNDER the point (subtle marker, not a blob)
-      const pi = [...paired];
       out.push(new PointCloudLayer({
-        id: 'paired-' + m, data: pi,
+        id: 'paired-' + m, data: [...paired],
         getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-        getColor: PAIR_RING, pointSize: 4.5, sizeUnits: 'pixels',
-        updateTriggers: {getPosition: [state, !!disp, Z_EXAG]}, transitions: {getPosition: {duration: 900, easing: ease}},
+        getColor: PAIR_RING, pointSize: 4.5, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
       }));
     }
     out.push(new PointCloudLayer({
-      id: 'pc-' + m, data: indices(nat.length / 3),
+      id: 'pc-' + m, data: indices(src.length / 3),
       getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-      getColor: s.color,
-      pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels',
-      updateTriggers: {getPosition: [state, !!disp, Z_EXAG]},
-      transitions: {getPosition: {duration: 900, easing: ease}},
+      getColor: s.color, pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
     }));
   }
   return out;
@@ -156,9 +151,9 @@ function axesLayers() {
     texts.push({position: lab, text: label, color, size: 13, anchor: dir[2] ? 'end' : (dir[0] ? 'start' : 'middle')});
   };
   const km = v => `${(v / 1000).toFixed(v >= 1000 ? 0 : 1)} km`;
-  axis([1, 0, 0], Lxy, [235, 120, 120], 'x (EPSG:3413 easting, local)', stepXY, km, 1);
-  axis([0, 1, 0], Lxy, [120, 220, 140], 'y (EPSG:3413 northing, local)', stepXY, km, 1);
-  axis([0, 0, 1], Lz, [140, 170, 255], `z height, true metres (drawn ×${Z_EXAG})`, niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
+  axis([1, 0, 0], Lxy, [235, 120, 120], 'x', stepXY, km, 1);
+  axis([0, 1, 0], Lxy, [120, 220, 140], 'y', stepXY, km, 1);
+  axis([0, 0, 1], Lz, [140, 170, 255], 'z', niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
   return [
     new PathLayer({id: 'axes', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels', updateTriggers: {getPath: Z_EXAG}}),
     new TextLayer({id: 'axes-text', data: texts, getPosition: d => d.position, getText: d => d.text, getColor: d => d.color, getSize: d => d.size, getTextAnchor: d => d.anchor || 'middle',
@@ -181,15 +176,6 @@ function cueLayers() {
   const [nx_, ny_] = scene.frame.north_xy, nb = [bx + L + 0.12 * span, by, zc], nl = 0.12 * span;
   for (const seg of arrow(nb, [nx_, ny_], nl)) paths.push({p: seg, c: CUE, w: 2});
   texts.push({position: [nb[0] + nx_ * nl * 1.25, nb[1] + ny_ * nl * 1.25, zc], text: 'N', color: CUE});
-  // plate-motion shift direction, in the cue cluster below the scale bar. Drawn at a readable length (not the
-  // clouds' exaggeration: even x10000 is a ~3 km stub that vanishes under foreshortening) and labelled as such.
-  if (coreg) {
-    const v = coreg.relative_shift_vector_m, len = Math.hypot(v[0], v[1]), dir = [v[0] / len, v[1] / len];
-    const al = 0.10 * span, sb = [bx + 0.02 * span, by - 0.10 * span, zc];
-    for (const seg of arrow(sb, dir, al, 0.25)) paths.push({p: seg, c: BLUE, w: 4});
-    texts.push({position: [bx, sb[1] - 0.13 * span, zc], anchor: 'start',
-      text: `direction of ICESat-2 shift to common epoch (arrow length not to scale)\n${(len * 100).toFixed(1)} cm true; clouds and ghost drawn ×${coreg.exaggeration}`, color: BLUE});
-  }
   return [
     new PathLayer({id: 'cues', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels'}),
     new TextLayer({id: 'cue-text', data: texts, getPosition: d => d.position, getText: d => d.text, getColor: d => d.color, getTextAnchor: d => d.anchor || 'middle',
@@ -235,20 +221,21 @@ function drawHist(canvas, values, {color, refLine = 0, range} = {}) {
 function updateStats() {
   if (!coreg) { $('stats').hidden = true; return; }
   $('stats').hidden = false;
-  const on = state === 'on';
+  const on = adj.plate_motion;
   const dh = on ? coreg.dh_coreg : coreg.dh_native, st = on ? coreg.stats.coreg : coreg.stats.native;
   drawHist($('histDh'), dh, {color: on ? '#378ADD' : '#D85A30', range: coreg.stats.dh_range});
   $('readout1').innerHTML = `median Δh = <b>${(st.median * 100).toFixed(1)} cm</b> (MAD ${(st.mad * 100).toFixed(1)} cm, n = ${st.n}) — ` +
-    (on ? 'plate-motion artifact removed; remaining Δh is real change + unresolved terms' : 'includes the plate-motion registration artifact');
+    (on ? 'plate motion applied; remaining Δh is real change + unresolved terms' : 'plate motion off; includes the registration artifact');
   drawHist($('histArt'), coreg.artifact, {color: '#E0A030', range: coreg.stats.artifact_range});
   const a = coreg.stats.artifact, c = coreg.comparability;
-  $('readout2').innerHTML = `artifact: median <b>${(a.median * 100).toFixed(2)} cm</b> (MAD ${(a.mad * 100).toFixed(2)} cm) from <b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> over ${coreg.years_apart.toFixed(1)} yr; ` +
+  $('readout2').innerHTML = `plate-motion effect on Δh: median <b>${(a.median * 100).toFixed(2)} cm</b> (MAD ${(a.mad * 100).toFixed(2)} cm) from a <b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> shift over ${coreg.years_apart.toFixed(1)} yr — ` +
+    `sub-pixel in the scene; ` +
     `slope ${c.surface_slope_deg.toFixed(2)}° regional` + (coreg.along_track_slope_deg != null ? ` / ${coreg.along_track_slope_deg.toFixed(2)}° along-beam` : '') + (coreg.dem_slope_deg != null ? ` / ${coreg.dem_slope_deg.toFixed(2)}° DEM` : '') +
     ` <details class="small" style="display:inline"><summary style="display:inline;cursor:pointer">more</summary>${coreg.dh_estimator}; only the along-beam component of the shift is observable; ${coreg.n_pairs.gross_outliers_dropped.native} gross pairs > ${coreg.n_pairs.gross_outliers_dropped.threshold_m} m dropped</details>`;
-  $('unresolved').innerHTML = `<b>Unresolved (both states):</b> ${c.unresolved.join(', ')}` +
+  $('unresolved').innerHTML = `<b>Unresolved (not corrected):</b> ${c.unresolved.join(', ')}` +
     (c.dynamic_ice_flag === true ? '<br><b style="color:#D85A30">dynamic ice — ice flow is NOT corrected</b>' : c.dynamic_ice_flag === null ? '<br>Dynamic ice: <b>unknown</b> (no velocity field)' : '') +
-    `<details class="small"><summary style="cursor:pointer">applied corrections</summary>plate motion (ITRF2014-PMM, ${coreg.common_frame} @ ${coreg.common_epoch}); ${c.ellipsoid_correction_applied}; ` +
-    `frame step ${coreg.native_frames.GLAS}→${coreg.common_frame} shifts GLAS heights by ${(coreg.frame_vertical_shift_m.GLAS * 1000).toFixed(1)} mm (in the ON Δh, not in the artifact panel)` +
+    `<details class="small"><summary style="cursor:pointer">corrections</summary>plate motion (ITRF2014-PMM, ${coreg.common_frame} @ ${coreg.common_epoch}); ${c.ellipsoid_correction_applied}; ` +
+    `frame step ${coreg.native_frames.GLAS}→${coreg.common_frame} shifts GLAS heights by ${(coreg.frame_vertical_shift_m.GLAS * 1000).toFixed(1)} mm` +
     (c.dynamic_ice_flag === null ? `; ${c.dynamic_ice_note}` : '') + `</details>`;
 }
 
@@ -258,7 +245,6 @@ function updateLabels() {
   const items = Object.entries(scene.series).map(([m, s]) =>
     `<span><span class="dot" style="background:rgb(${s.color.join(',')})"></span>${m} · ${s.n.toLocaleString()} pts · ${s.meta.product} · ${s.meta.native_frame}</span>`);
   if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>paired shots n = ${coreg.pair_display_indices.GLAS.length} (ring)</span>`);
-  if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = native position (ON)</span>`);
   if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'interpolated from tracks (depth cue)'}</span>`);
   if (scene.surface && scene.surface.attribution) $('attrib').dataset.dem = scene.surface.attribution;
   $('legend').innerHTML = items.join('');
@@ -268,12 +254,8 @@ function updateLabels() {
     (acc ? `data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})<br>` : '') +
     `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
-  if (coreg) {
-    $('exag').hidden = false;
-    $('exagBody').innerHTML = `<b>Horizontal offset exaggerated ×${coreg.exaggeration}</b> for visibility (clouds and blue arrow alike); true plate-motion displacement ≈ ` +
-      `<b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> between epochs ${coreg.epochs.ICESAT2.toFixed(1)} and ${coreg.epochs.GLAS.toFixed(1)}. Readout numbers are un-exaggerated.`;
-  }
-  $('btnOn').disabled = false;
+  $('btnCoreg').hidden = !!coreg;
+  $('lblPlate').hidden = !coreg;
 }
 
 async function loadScene() {
@@ -281,29 +263,24 @@ async function loadScene() {
   try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = `scene ${sceneId}: ${e.message}`; return; }
   scene = doc;
   coreg = scene.coreg;
-  if (params.get('state') === 'on' && coreg) state = 'on';
-  $('btnOff').classList.toggle('on', state === 'off'); $('btnOn').classList.toggle('on', state === 'on');
+  $('adjPlate').checked = adj.plate_motion;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG;
   fitView(); render(); updateLabels(); updateStats();
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
 }
 
-async function setState(s) {
-  if (s === 'on' && !coreg) {
-    $('status').textContent = 'running ITRF+epoch co-registration (pyproj)…'; $('btnOn').disabled = true;
-    try { coreg = await api.coregister(sceneId); } catch (e) { $('status').textContent = 'co-registration failed: ' + e.message; $('btnOn').disabled = false; return; }
-    $('status').textContent = coreg.cached ? 'co-registration (cached)' : `co-registration computed live in ${coreg.compute_seconds}s`;
-    updateLabels();
-  }
-  state = s;
-  $('btnOff').classList.toggle('on', s === 'off'); $('btnOn').classList.toggle('on', s === 'on');
-  render(); updateStats();
+async function ensureCoreg() {
+  if (coreg) return true;
+  $('status').textContent = 'computing plate-motion co-registration (pyproj)…'; $('btnCoreg').disabled = true;
+  try { coreg = await api.coregister(sceneId); } catch (e) { $('status').textContent = 'co-registration failed: ' + e.message; $('btnCoreg').disabled = false; return false; }
+  $('status').textContent = coreg.cached ? 'co-registration cached' : `co-registration computed in ${coreg.compute_seconds}s`;
+  updateLabels(); return true;
 }
+$('btnCoreg').onclick = async () => { if (await ensureCoreg()) updateStats(); };
+$('adjPlate').onchange = e => { adj.plate_motion = e.target.checked; updateStats(); };
 $('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; render(); updateLabels(); };
 $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 $('pairs').onchange = e => { SHOW_PAIRS = e.target.checked; render(); };
-$('btnOff').onclick = () => setState('off');
-$('btnOn').onclick = () => setState('on');
 
 
 // ---------------------------------------------------------------- access-method scoreboard (measured; spec C.3)
@@ -337,7 +314,7 @@ this.open = async (id, query) => {
   root.classList.add('on');
   params = new URLSearchParams(query || '');
   if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
-  if (id !== sceneId) { sceneId = id; scene = null; coreg = null; state = 'off'; bounds = null; deckgl.setProps({layers: []}); await loadScene(); loadBench(); }
+  if (id !== sceneId) { sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []}); await loadScene(); loadBench(); }
   else deckgl.redraw && deckgl.redraw(true);
 };
 this.hide = () => root.classList.remove('on');
