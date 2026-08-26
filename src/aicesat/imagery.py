@@ -24,7 +24,12 @@ LAYER = "s2cloudless-2020_3857"
 TILE_URL = "https://tiles.maps.eox.at/wmts/1.0.0/{layer}/default/g/{z}/{y}/{x}.jpg"
 ATTRIBUTION = "Sentinel-2 cloudless 2020 by EOX IT Services GmbH (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data"
 MAX_ZOOM, MAX_TILES = 13, 600
-_ps_to_ll = Transformer.from_crs("EPSG:3413", "EPSG:4326", always_xy=True)
+from functools import lru_cache
+
+
+@lru_cache(maxsize=64)
+def _to_ll(crs: str) -> Transformer:
+    return Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
 IMG_DIR = cache.DATA_DIR / "cache" / "imagery"
 
 
@@ -48,7 +53,8 @@ def build(frame: dict, extent: tuple[float, float, float, float], width_px: int 
     h = max(64, int(round(w * (y1 - y0) / (x1 - x0))))
     m_per_px = (x1 - x0) / w
     # zoom so that the mercator pixel size at this latitude roughly matches the target pixel size
-    lat_c = _ps_to_ll.transform(ox + (x0 + x1) / 2, oy + (y0 + y1) / 2)[1]
+    to_ll = _to_ll(frame["crs"])
+    lat_c = to_ll.transform(ox + (x0 + x1) / 2, oy + (y0 + y1) / 2)[1]
     z = int(min(MAX_ZOOM, max(3, round(math.log2(156543.03 * math.cos(math.radians(lat_c)) / m_per_px)))))
     meta.update({"zoom": z, "m_per_px": m_per_px, "width": w, "height": h})
     if out.exists():
@@ -58,7 +64,7 @@ def build(frame: dict, extent: tuple[float, float, float, float], width_px: int 
     xs = ox + x0 + (np.arange(w) + 0.5) * m_per_px
     ys = oy + y1 - (np.arange(h) + 0.5) * m_per_px  # row 0 = north (top)
     gx, gy = np.meshgrid(xs, ys)
-    lon, lat = _ps_to_ll.transform(gx.ravel(), gy.ravel())
+    lon, lat = to_ll.transform(gx.ravel(), gy.ravel())
     tx, ty = _merc(np.asarray(lon), np.asarray(lat), z)
     txi, tyi = np.floor(tx).astype(int), np.floor(ty).astype(int)
     tiles = sorted(set(zip(txi.tolist(), tyi.tolist())))

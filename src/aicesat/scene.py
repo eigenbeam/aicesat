@@ -11,7 +11,22 @@ from pyproj import Transformer
 
 from . import cache
 
-_to_ps = Transformer.from_crs("EPSG:4326", "EPSG:3413", always_xy=True)
+from functools import lru_cache
+
+
+def frame_crs(lat: float, lon: float) -> str:
+    """Local projected CRS for a scene centred at (lat, lon): polar stereographic near the poles, else a per-scene
+    azimuthal-equidistant so any region on Earth renders in metres with minimal distortion for a small box."""
+    if lat >= 55:
+        return "EPSG:3413"      # NSIDC Sea Ice Polar Stereographic North (Arctic; matches ArcticDEM)
+    if lat <= -55:
+        return "EPSG:3031"      # Antarctic Polar Stereographic (matches REMA)
+    return f"+proj=aeqd +lat_0={lat:.6f} +lon_0={lon:.6f} +datum=WGS84 +units=m +no_defs +type=crs"
+
+
+@lru_cache(maxsize=64)
+def _tr(crs: str) -> Transformer:
+    return Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 
 COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48]}
 
@@ -19,12 +34,14 @@ COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48]}
 def local_frame(bbox) -> dict:
     w, s, e, n = bbox
     clon, clat = (w + e) / 2, (s + n) / 2
-    cx, cy = _to_ps.transform(clon, clat)
-    # true-north / east unit vectors at the bbox centre (EPSG:3413 +y is NOT north away from 45W)
-    nx, ny = _to_ps.transform(clon, clat + 0.01)
-    ex, ey = _to_ps.transform(clon + 0.01, clat)
+    crs = frame_crs(clat, clon)
+    tr = _tr(crs)
+    cx, cy = tr.transform(clon, clat)
+    # true-north / east unit vectors at the bbox centre (the projected +y is not generally north)
+    nx, ny = tr.transform(clon, clat + 0.01)
+    ex, ey = tr.transform(clon + 0.01, clat)
     nv = np.array([nx - cx, ny - cy]); ev = np.array([ex - cx, ey - cy])
-    return {"crs": "EPSG:3413", "origin_xy": [float(cx), float(cy)], "bbox": list(bbox),
+    return {"crs": crs, "origin_xy": [float(cx), float(cy)], "bbox": list(bbox),
             "north_xy": (nv / np.linalg.norm(nv)).round(6).tolist(),
             "east_xy": (ev / np.linalg.norm(ev)).round(6).tolist()}
 
@@ -84,7 +101,7 @@ def add_imagery(doc: dict, width_px: int = 4096) -> dict:
 
 
 def to_local(frame: dict, lon, lat) -> tuple[np.ndarray, np.ndarray]:
-    x, y = _to_ps.transform(np.asarray(lon), np.asarray(lat))
+    x, y = _tr(frame["crs"]).transform(np.asarray(lon), np.asarray(lat))
     ox, oy = frame["origin_xy"]
     return np.asarray(x) - ox, np.asarray(y) - oy
 

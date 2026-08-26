@@ -1,35 +1,38 @@
-/* Shared 2-D map: EOX imagery, candidate regions, lake cells, global H3 grid (resolution by zoom, hover stats),
-   scene footprints (ready/loading/error), box/polygon drawing, cell selection. Used by Explore and Lake. */
+/* Shared 3-D globe: EOX imagery draped on the sphere, candidate regions, lake cells, global H3 grid (resolution by
+   zoom, hover stats), scene footprints (ready/loading/error), box/polygon drawing, cell selection. No flat projection.
+   Used by Explore and Lake. Navigate = drag to spin / scroll to zoom; Box/Polygon capture the drag for drawing. */
 window.AICESAT = window.AICESAT || {};
 AICESAT.MapView = class {
   constructor(container, opts = {}) {
-    const {Deck, MapView} = deck;
+    const {Deck, _GlobeView, GlobeView} = deck;
+    const Globe = GlobeView || _GlobeView;
     this.opts = Object.assign({grid: false, gridStats: true, selectCells: false, draw: true, footprints: true}, opts);
     this.container = container;
-    this.state = {mode: 'box', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, cellStats: {},
-                  scenes: [], grid: this.opts.grid, gridRes: 4, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 71.5, zoom: 3.6}};
+    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, cellStats: {},
+                  scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.onSelect = () => {}; this.onOpenScene = () => {}; this.onCellsSelected = () => {};
     this.deck = new Deck({
-      parent: container, views: new MapView({repeat: false}),
-      initialViewState: {...this.state.viewState, minZoom: 2, maxZoom: 13}, controller: {dragPan: true, doubleClickZoom: false}, layers: [],
-      onViewStateChange: ({viewState}) => { const was = this.state.viewState.zoom; this.state.viewState = viewState; const r = this.resForZoom(viewState.zoom); if (r !== this.state.gridRes || (was < 5.5) !== (viewState.zoom < 5.5)) { this.state.gridRes = r; this.render(); } },
+      parent: container, views: new Globe({resolution: 12}),
+      initialViewState: {...this.state.viewState, minZoom: 0, maxZoom: 12}, controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}, layers: [],
+      onViewStateChange: ({viewState}) => { this.state.viewState = viewState; this._renderSoon(); },
       getCursor: () => 'crosshair',
-      onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; this.deck.setProps({controller: {dragPan: false, doubleClickZoom: false}}); } },
+      onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; this.deck.setProps({controller: false}); } },
       onDrag: (info) => { if (this.state.drawing && info.coordinate) { this.state.box.b = info.coordinate; this.render(); } },
-      onDragEnd: (info) => { if (this.state.drawing) { this.state.drawing = false; if (info.coordinate) this.state.box.b = info.coordinate; this.deck.setProps({controller: {dragPan: true, doubleClickZoom: false}}); this.render(); this.onSelect(this.area()); } },
+      onDragEnd: (info) => { if (this.state.drawing) { this.state.drawing = false; if (info.coordinate) this.state.box.b = info.coordinate; this.deck.setProps({controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}}); this.render(); this.onSelect(this.area()); } },
       onClick: (info) => this.click(info),
       onHover: (info) => this.hover(info),
     });
   }
-  resForZoom(z) { return z < 4 ? 3 : z < 6 ? 4 : z < 8 ? 5 : 6; }
+  resForZoom(z) { return z < 1.5 ? 2 : z < 3 ? 3 : z < 5 ? 4 : z < 7 ? 5 : 6; }
+  _renderSoon() { if (this._raf) return; this._raf = requestAnimationFrame(() => { this._raf = 0; this.render(); }); }
   area() { const s = this.state; if (s.box) { const b = [Math.min(s.box.a[0], s.box.b[0]), Math.min(s.box.a[1], s.box.b[1]), Math.max(s.box.a[0], s.box.b[0]), Math.max(s.box.a[1], s.box.b[1])].map(v => +v.toFixed(4)); return {bbox: b}; }
     if (s.polyClosed && s.poly.length >= 3) return {polygon: s.poly.map(p => [+p[0].toFixed(4), +p[1].toFixed(4)])}; return null; }
   setArea(a) { this.state.poly = []; this.state.polyClosed = false; this.state.box = a && a.bbox ? {a: [a.bbox[0], a.bbox[1]], b: [a.bbox[2], a.bbox[3]]} : null; if (a && a.polygon) { this.state.poly = a.polygon; this.state.polyClosed = true; } this.render(); this.onSelect(this.area()); }
   clear() { this.setArea(null); this.state.selected.clear(); this.onCellsSelected([]); this.render(); }
   setMode(m) { this.state.mode = m; }
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
-  flyTo(bbox, zoom = 7) { this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom, minZoom: 2, maxZoom: 13}}); }
+  flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
   click(info) {
     const s = this.state;
@@ -72,21 +75,37 @@ AICESAT.MapView = class {
     for (const a of Object.values(agg)) a.stats.granules = [...a.stats.granules];
     return agg;
   }
+  // cells around the point the globe is facing; angular half-extent shrinks with zoom. Bounded so it never blows up.
   gridCells() {
-    // all cells of the current resolution intersecting the viewport (Greenland-scale polygon at low zoom)
-    const vs = this.state.viewState, res = this.state.gridRes;
-    const w = 360 / Math.pow(2, vs.zoom) * (this.container.clientWidth / 512), h = 170 / Math.pow(2, vs.zoom) * (this.container.clientHeight / 512);
-    const lon0 = Math.max(-180, vs.longitude - w), lon1 = Math.min(180, vs.longitude + w), lat0 = Math.max(-85, vs.latitude - h), lat1 = Math.min(85, vs.latitude + h);
-    try { return h3.polygonToCells([[lat0, lon0], [lat0, lon1], [lat1, lon1], [lat1, lon0]], res); } catch (e) { return []; }
+    const vs = this.state.viewState, cLat = vs.latitude, cLon = vs.longitude;
+    const halfDeg = Math.min(80, 70 / Math.pow(1.7, Math.max(0, vs.zoom)));   // ~visible cap; whole face when zoomed out
+    const s = Math.max(-89, cLat - halfDeg), n = Math.min(89, cLat + halfDeg);
+    const dLon = Math.min(179, halfDeg / Math.max(0.15, Math.cos(cLat * Math.PI / 180)));
+    const w = cLon - dLon, e = cLon + dLon;
+    let res = this.resForZoom(vs.zoom);
+    for (let i = 0; i < 6; i++) {
+      let cells = [];
+      try {
+        if (e - w >= 359) cells = h3.getRes0Cells().flatMap(c => res === 0 ? [c] : h3.cellToChildren(c, Math.min(res, 2)));  // whole globe
+        else cells = h3.polygonToCells([[s, Math.max(-180, w)], [s, Math.min(180, e)], [n, Math.min(180, e)], [n, Math.max(-180, w)]], res);
+      } catch (err) { cells = []; }
+      if (cells.length > 6000 && res > 0) { res--; continue; }
+      if (cells.length === 0) { try { const c = h3.latLngToCell(cLat, cLon, res); cells = [c, ...h3.gridDisk(c, 1)]; } catch (err) {} }
+      return {cells: [...new Set(cells)], res};
+    }
+    return {cells: [], res};
   }
   render() {
-    const {TileLayer, BitmapLayer, PolygonLayer, PathLayer, TextLayer, GeoJsonLayer, H3HexagonLayer, ScatterplotLayer} = deck;
+    const {TileLayer, BitmapLayer, PolygonLayer, PathLayer, TextLayer, GeoJsonLayer, H3HexagonLayer, ScatterplotLayer, SolidPolygonLayer} = deck;
     const s = this.state, U = AICESAT.util, layers = [];
-    layers.push(new TileLayer({id: 'eox', data: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg', minZoom: 0, maxZoom: 13, tileSize: 256,
-      renderSubLayers: p => { const {west, south, east, north} = p.tile.bbox; return new BitmapLayer(p, {data: null, image: p.data, bounds: [west, south, east, north]}); }}));
+    // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
+    layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
+    if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
     if (s.grid) {
-      const agg = this.gridData(); const all = this.gridCells();
-      const data = all.length < 12000 ? all.map(hx => agg[hx] || {hexagon: hx, stats: null}) : Object.values(agg);
+      const {cells, res} = this.gridCells();
+      s.gridRes = res;
+      const agg = this.gridData();
+      const data = cells.map(hx => agg[hx] || {hexagon: hx, stats: null});
       const fill = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
       layers.push(new H3HexagonLayer({id: 'grid', data, getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true, extruded: false,
         getFillColor: fill, getLineColor: d => (d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40], lineWidthMinPixels: 1, pickable: true,

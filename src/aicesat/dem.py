@@ -79,7 +79,10 @@ def _read_tile_window(url: str, bounds: tuple[float, float, float, float], shape
 
 def surface_for_frame(frame: dict, extent: tuple[float, float, float, float], z0: float, cell_m: float = 100.0) -> dict | None:
     """DEM height field on the scene's local grid (same dict shape as scene.surface_grid; z relative to z0).
-    extent is in LOCAL metres (frame origin subtracted); tiles are read in absolute EPSG:3413 coordinates."""
+    ArcticDEM tiles are EPSG:3413, so this is a pure window read only when the scene frame is EPSG:3413 (Arctic);
+    elsewhere returns None and the caller falls back to the photon-interpolated surface (REMA/global DEM: future)."""
+    if frame.get("crs") != "EPSG:3413":
+        return None
     ox, oy = frame["origin_xy"]
     x0, y0, x1, y1 = extent
     cell = float(cell_m)

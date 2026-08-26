@@ -293,3 +293,26 @@ def test_meta_db_lock_serialises_concurrent_access(tmp_path, monkeypatch):
     for t in ts: t.start()
     for t in ts: t.join()
     assert not errors, errors
+
+
+def test_frame_crs_by_latitude():
+    from aicesat import scene
+    assert scene.frame_crs(72.0, -40.0) == "EPSG:3413"          # Greenland -> Arctic
+    assert scene.frame_crs(-78.0, 160.0) == "EPSG:3031"          # Antarctica
+    aeqd = scene.frame_crs(46.5, 8.0)                            # Alps -> local azimuthal equidistant
+    assert "+proj=aeqd" in aeqd and "+lat_0=46.5" in aeqd
+
+
+def test_local_frame_roundtrips_anywhere():
+    from aicesat import scene
+    import numpy as np
+    for bbox in [(-45, 69.8, -43, 70.2), (7.5, 46.2, 8.5, 46.8), (-70, -50, -69, -49.5), (160, -78, 162, -77.5)]:
+        fr = scene.local_frame(bbox)
+        w, s, e, n = bbox
+        # bbox centre maps to ~ (0,0) local; corners are finite and within a sane range for a ~1 deg box
+        cx, cy = scene.to_local(fr, np.array([(w + e) / 2]), np.array([(s + n) / 2]))
+        assert abs(cx[0]) < 1 and abs(cy[0]) < 1
+        xs, ys = scene.to_local(fr, np.array([w, e]), np.array([s, n]))
+        assert np.all(np.isfinite(xs)) and np.all(np.isfinite(ys)) and np.abs(xs).max() < 5e5
+        # north_xy is a unit vector
+        assert abs(np.hypot(*fr["north_xy"]) - 1) < 1e-3
