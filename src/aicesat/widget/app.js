@@ -8,7 +8,8 @@ let SHOW_IMAGERY = true;
 
 let scene = null, coreg = null, state = 'off', bounds = null, meshOk = true;
 const $ = id => document.getElementById(id);
-const GHOST = [170, 170, 180, 70], DIM_GLAS = [216, 90, 48, 60], CUE = [230, 230, 235, 200], BLUE = [55, 138, 221];
+const GHOST = [170, 170, 180, 70], PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200], BLUE = [55, 138, 221];
+let SHOW_PAIRS = true;
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -43,23 +44,23 @@ function cloudLayers() {
     const src = disp || nat;
     const paired = (coreg && coreg.pair_display_indices && coreg.pair_display_indices[m]) ? new Set(coreg.pair_display_indices[m]) : null;
     if (m === 'ICESAT2' && disp) out.push(cloudLayer('ghost-' + m, nat, GHOST, 1.5));          // where it was (native)
-    out.push(new PointCloudLayer({
-      id: 'pc-' + m, data: indices(nat.length / 3),
-      getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-      getColor: paired ? (i => paired.has(i) ? s.color : DIM_GLAS) : s.color,
-      pointSize: m === 'GLAS' ? (paired ? 3 : 4) : 2, sizeUnits: 'pixels',
-      updateTriggers: {getPosition: [state, !!disp, Z_EXAG], getColor: [!!paired]},
-      transitions: {getPosition: {duration: 900, easing: ease}},
-    }));
-    if (paired) {  // paired shots on top, bigger, with a bright rim
+    if (paired && SHOW_PAIRS) {  // co-located shots: a thin pale ring UNDER the point (subtle marker, not a blob)
       const pi = [...paired];
       out.push(new PointCloudLayer({
         id: 'paired-' + m, data: pi,
         getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-        getColor: [255, 214, 120], pointSize: 7, sizeUnits: 'pixels',
+        getColor: PAIR_RING, pointSize: 4.5, sizeUnits: 'pixels',
         updateTriggers: {getPosition: [state, !!disp, Z_EXAG]}, transitions: {getPosition: {duration: 900, easing: ease}},
       }));
     }
+    out.push(new PointCloudLayer({
+      id: 'pc-' + m, data: indices(nat.length / 3),
+      getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
+      getColor: s.color,
+      pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels',
+      updateTriggers: {getPosition: [state, !!disp, Z_EXAG]},
+      transitions: {getPosition: {duration: 900, easing: ease}},
+    }));
   }
   return out;
 }
@@ -238,15 +239,14 @@ function updateStats() {
     (on ? 'plate-motion artifact removed; remaining Δh is real change + unresolved terms' : 'includes the plate-motion registration artifact');
   drawHist($('histArt'), coreg.artifact, {color: '#E0A030', range: coreg.stats.artifact_range});
   const a = coreg.stats.artifact, c = coreg.comparability;
-  $('readout2').innerHTML = `plate-motion artifact: median <b>${(a.median * 100).toFixed(2)} cm</b> vertical (MAD ${(a.mad * 100).toFixed(2)} cm), from a true horizontal displacement of ` +
-    `<b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> over ${coreg.years_apart.toFixed(1)} yr; regional plane slope ${c.surface_slope_deg.toFixed(2)}°` +
-    (coreg.along_track_slope_deg != null ? `, median along-beam slope at the pairs ${coreg.along_track_slope_deg.toFixed(2)}°` : '') +
-    ` <span class="small">(${coreg.dh_estimator}; only the along-beam component of the shift is observable; ${coreg.n_pairs.gross_outliers_dropped.native} gross pairs > ${coreg.n_pairs.gross_outliers_dropped.threshold_m} m dropped)</span>`;
-  $('unresolved').innerHTML = `<b>Unresolved (not corrected, in both states):</b> ${c.unresolved.join(', ')}` +
-    `<br>Applied: plate motion (ITRF2014-PMM, ${coreg.common_frame} @ ${coreg.common_epoch}); ${c.ellipsoid_correction_applied}` +
-    `<br>Frame step ${coreg.native_frames.GLAS}→${coreg.common_frame} shifts GLAS heights by ${(coreg.frame_vertical_shift_m.GLAS * 1000).toFixed(1)} mm (in the ON Δh, not in the artifact panel)` +
-    (c.dynamic_ice_flag === true ? '<br><b style="color:#D85A30">dynamic_ice_flag = true — ice flow is NOT corrected; trajectory may mislead</b>'
-      : c.dynamic_ice_flag === null ? `<br>Dynamic ice: <b>unknown</b> — ${c.dynamic_ice_note}` : '');
+  $('readout2').innerHTML = `artifact: median <b>${(a.median * 100).toFixed(2)} cm</b> (MAD ${(a.mad * 100).toFixed(2)} cm) from <b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> over ${coreg.years_apart.toFixed(1)} yr; ` +
+    `slope ${c.surface_slope_deg.toFixed(2)}° regional` + (coreg.along_track_slope_deg != null ? ` / ${coreg.along_track_slope_deg.toFixed(2)}° along-beam` : '') +
+    ` <details class="small" style="display:inline"><summary style="display:inline;cursor:pointer">more</summary>${coreg.dh_estimator}; only the along-beam component of the shift is observable; ${coreg.n_pairs.gross_outliers_dropped.native} gross pairs > ${coreg.n_pairs.gross_outliers_dropped.threshold_m} m dropped</details>`;
+  $('unresolved').innerHTML = `<b>Unresolved (both states):</b> ${c.unresolved.join(', ')}` +
+    (c.dynamic_ice_flag === true ? '<br><b style="color:#D85A30">dynamic ice — ice flow is NOT corrected</b>' : c.dynamic_ice_flag === null ? '<br>Dynamic ice: <b>unknown</b> (no velocity field)' : '') +
+    `<details class="small"><summary style="cursor:pointer">applied corrections</summary>plate motion (ITRF2014-PMM, ${coreg.common_frame} @ ${coreg.common_epoch}); ${c.ellipsoid_correction_applied}; ` +
+    `frame step ${coreg.native_frames.GLAS}→${coreg.common_frame} shifts GLAS heights by ${(coreg.frame_vertical_shift_m.GLAS * 1000).toFixed(1)} mm (in the ON Δh, not in the artifact panel)` +
+    (c.dynamic_ice_flag === null ? `; ${c.dynamic_ice_note}` : '') + `</details>`;
 }
 
 function updateLabels() {
@@ -254,13 +254,15 @@ function updateLabels() {
   $('question').textContent = scene.question || '';
   const items = Object.entries(scene.series).map(([m, s]) =>
     `<span><span class="dot" style="background:rgb(${s.color.join(',')})"></span>${m} · ${s.n.toLocaleString()} pts · ${s.meta.product} · ${s.meta.native_frame}</span>`);
-  if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(255,214,120)"></span>paired GLAS shots (n = ${coreg.pair_display_indices.GLAS.length}) — the only points behind the histograms</span>`);
-  if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = ICESat-2 native position (ON state)</span>`);
-  if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.note}</span>`);
-  const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
-  if (acc) items.push(`<span class="small">data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks (${acc.chunks} dataset ranges) / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})</span>`);
+  if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>paired shots n = ${coreg.pair_display_indices.GLAS.length} (ring)</span>`);
+  if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = native position (ON)</span>`);
+  if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'interpolated from tracks (depth cue)'}</span>`);
   $('legend').innerHTML = items.join('');
-  $('framenote').textContent = `Local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres).`;
+  const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
+  $('framenote').innerHTML = `<details><summary>details</summary>` +
+    (scene.surface ? `${scene.surface.note}<br>` : '') +
+    (acc ? `data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})<br>` : '') +
+    `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
   $('attrib').textContent = scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '';
   if (coreg) {
     $('exag').hidden = false;
@@ -297,6 +299,7 @@ async function setState(s) {
 }
 $('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; render(); updateLabels(); };
 $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
+$('pairs').onchange = e => { SHOW_PAIRS = e.target.checked; render(); };
 $('btnOff').onclick = () => setState('off');
 $('btnOn').onclick = () => setState('on');
 loadScene();
@@ -323,3 +326,22 @@ async function loadBench() {
 $('benchBtn').onclick = () => { $('bench').hidden = !$('bench').hidden; };
 $('benchClose').onclick = () => { $('bench').hidden = true; };
 loadBench();
+
+
+// ---------------------------------------------------------------- closeable panels
+(function panels() {
+  const ids = {hud: 'legend & frame', exag: 'exaggeration label', stats: 'Δh panels', bench: 'access comparison'};
+  const menu = $('panelsMenu');
+  for (const [id, label] of Object.entries(ids)) {
+    const el = $(id); if (!el) continue;
+    const b = document.createElement('button'); b.className = 'close'; b.title = 'hide'; b.textContent = '×';
+    b.onclick = () => { el.hidden = true; refresh(); };
+    el.appendChild(b);
+  }
+  function refresh() {
+    menu.innerHTML = '<option value="">panels…</option>' + Object.entries(ids).filter(([id]) => $(id) && $(id).hidden).map(([id, l]) => `<option value="${id}">show ${l}</option>`).join('');
+  }
+  menu.onchange = e => { const el = $(e.target.value); if (el) { el.hidden = false; if (e.target.value === 'stats') updateStats(); } e.target.value = ''; refresh(); };
+  const mo = new MutationObserver(refresh); for (const id of Object.keys(ids)) if ($(id)) mo.observe($(id), {attributes: true, attributeFilter: ['hidden']});
+  refresh();
+})();

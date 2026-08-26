@@ -17,6 +17,7 @@ dependencies = [
     "sliderule>=5.5.0",
     "harmony-py>=1.6.0",
     "h3ronpy>=0.22.0",
+    "rasterio>=1.5.1",
 ]
 
 [project.scripts]

@@ -208,7 +208,7 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
     return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
 
 
-def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None) -> pa.Table:
+def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:
     """Distinct chunk references for a set of cells (one row per (granule, beam, chunk)); the addressing role of §5.1.
     bbox (W,S,E,N) additionally prunes chunks whose own segment bounding box misses the query — cells are coarse
     (a res-6 cell reaches ~3.7 km outside the box), per-chunk boxes are not."""
@@ -224,6 +224,7 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
         w, s_, e, n = bbox
         cond.append(f"lat_max >= {s_} AND lat_min <= {n} AND lon_max >= {w} AND lon_min <= {e}")
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
-    q = f"""SELECT DISTINCT granule, url, beam, sdp_epoch, cycle, chunk_index, ph_start, ph_end, {cols}
+    cell_col = "h3_cell, " if per_cell else ""
+    q = f"""SELECT DISTINCT granule, url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end, {cols}
             FROM read_parquet('{ATL03_INDEX_DIR}/*.parquet') WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
     return con.execute(q).to_arrow_table()

@@ -96,16 +96,37 @@ def _process_group(item) -> dict:
 
 def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
     """Make the lake sufficient for (bbox|polygon, window): index missing granules, fetch missing chunks, materialize."""
-    t0 = time.time()
     cells = cells_for_bbox(bbox, polygon=polygon)
+    return _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox=bbox)
+
+
+def ensure_cells(cells, window, max_granules: int = 40, force: bool = False, threads: int = 8, group_parallel: int = 4) -> dict:
+    """Materialize a set of H3 cells (background loading from the Lake tab): search by the cells' union bbox, prune
+    chunks by that bbox, keep only refs for the requested cells."""
+    cells = sorted(int(c) for c in cells)
+    boundaries = [h3.cell_to_boundary(h3.int_to_str(c)) for c in cells]
+    lats = [la for b in boundaries for la, _ in b]; lons = [lo for b in boundaries for _, lo in b]
+    bbox = (min(lons), min(lats), max(lons), max(lats))
+    return _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox=bbox)
+
+
+def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox) -> dict:
+    t0 = time.time()
     granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[:max_granules]
     names = [g["meta"]["native-id"] for g in granules]
     idx = index.ensure_index(granules)
     refs_cells = index.chunk_refs(cells, granules=names)
-    refs = index.chunk_refs(cells, granules=names, bbox=bbox)  # per-chunk boxes prune what the coarse cells let through
-    rows = refs.to_pylist()
-    have = set() if force else lake.ingested_chunks("ICESAT2", names)
-    todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) not in have]
+    refs = index.chunk_refs(cells, granules=names, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
+    have = set() if force else lake.ingested_chunk_cells("ICESAT2", names)
+    # cell-aware: a chunk is fetched if ANY requested cell it touches is not materialized (partial evictions re-fetch)
+    todo_keys = {(r["granule"], r["beam"], r["chunk_index"]) for r in refs.to_pylist()
+                 if (r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) not in have}
+    seen = set(); rows = []
+    for r in refs.to_pylist():
+        k = (r["granule"], r["beam"], r["chunk_index"])
+        if k not in seen:
+            seen.add(k); rows.append({kk: v for kk, v in r.items() if kk != "h3_cell"})
+    todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) in todo_keys]
     by_gb: dict[tuple[str, str], list[dict]] = {}
     for r in todo:
         by_gb.setdefault((r["granule"], r["beam"]), []).append(r)
@@ -134,6 +155,7 @@ def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: in
             agg[k] += res["stats"].get(k, 0) or 0
         log.info("%s %s: %d chunks -> %d photons -> %d cell files (fetch %.1fs, materialize %.1fs)", res["granule"], res["beam"],
                  res["n_chunks"], res["stats"]["n_photons"], len(res["stats"]["cells_written"]), res["stats"]["fetch_seconds"], res["stats"]["materialize_seconds"])
+    evicted = lake.enforce_limit(protect=cells) if results else []
     st = {"requests": agg["requests"], "bytes": agg["bytes"], "seconds": round(agg["seconds"], 2), "chunks": agg["chunks"], "spans": agg["spans"],
           "gap_bytes": agg["gap_bytes"], "presigns": agg["presigns"], "granules_touched": len(presigned),
           "hdf5_opens_at_query_time": 0, "structure_parses_at_query_time": 0}
@@ -142,5 +164,6 @@ def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: in
                "presign_seconds": round(t_presign, 1), "group_phase_seconds": round(t_groups, 1), "group_parallel": group_parallel,
                "fetch_seconds": round(agg["fetch_seconds"], 1), "decode_materialize_seconds": round(agg["materialize_seconds"], 1),
                "chunks_skipped_already_materialized": len(rows) - len(todo), "cell_files_written": n_written_cells,
+               "evicted_for_limit": evicted,
                "wall_seconds": round(time.time() - t0, 1), "h3_res": index.H3_RES})
     return {"cells": cells, "granules": names, "stats": st}

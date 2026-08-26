@@ -165,3 +165,64 @@ def test_vectorized_cells_match_h3py():
 
 def test_coalesce_gap_env_default_is_bdp_aware():
     assert access.MAX_GAP_BYTES >= 256 * 1024  # never below the in-region optimum; larger from remote links
+
+
+def _synthetic_lake(tmp_path, monkeypatch, n_cells=3):
+    import h3
+    monkeypatch.setattr(lake, "LAKE_DIR", tmp_path / "lake")
+    monkeypatch.setattr(lake, "INDEX_DIR", tmp_path / "index")
+    monkeypatch.setattr(lake, "META_DB", tmp_path / "index" / "meta.duckdb")
+    monkeypatch.setattr(lake, "SETTINGS_PATH", tmp_path / "index" / "settings.json")
+    monkeypatch.setattr(lake, "EVICTION_LOG", tmp_path / "index" / "evictions.jsonl")
+    cells = []
+    for i in range(n_cells):
+        n = 500 * (i + 1)
+        lat0 = 69.9 + i * 0.05
+        ph = {"lon": np.full(n, -44.5), "lat": np.linspace(lat0, lat0 + 0.001, n), "h": np.full(n, 2600.0), "conf": np.full(n, 4, "i1"),
+              "t": np.full(n, np.datetime64("2020-03-12T17:27:45", "ms")), "photon_index": np.arange(n, dtype="i8"),
+              "chunk_index": np.zeros(n, "i4"), "coreg_lon": np.full(n, -44.5), "coreg_lat": np.linspace(lat0, lat0 + 0.001, n)}
+        ph["h3_cell"] = np.array([h3.str_to_int(h3.latlng_to_cell(la, lo, index.H3_RES)) for la, lo in zip(ph["lat"], ph["lon"])], dtype="u8")
+        written = lake.write_photons("ICESAT2", f"G{i}", "gt1r", ph)
+        lake.mark_ingested("ICESAT2", f"G{i}", "gt1r", {0: written})
+        cells.extend(written)
+    return sorted(set(cells))
+
+
+def test_cell_stats_and_summary(tmp_path, monkeypatch):
+    cells = _synthetic_lake(tmp_path, monkeypatch)
+    st = lake.cell_stats()
+    assert set(st) == set(cells) and all(s["rows"] > 0 and s["bytes"] > 0 and s["chunks"] >= 1 and s["last_ingested"] for s in st.values())
+    summ = lake.lake_summary()
+    assert summ["cells"] == len(cells) and summ["rows"] == sum(s["rows"] for s in st.values()) and summ["max_bytes"] == lake.DEFAULT_MAX_BYTES
+
+
+def test_evict_cells_removes_files_and_coverage_rows_only(tmp_path, monkeypatch):
+    cells = _synthetic_lake(tmp_path, monkeypatch)
+    victim = cells[0]
+    ev = lake.evict_cells([victim], reason="test")
+    assert len(ev) == 1 and ev[0]["cell"] == victim and ev[0]["reason"] == "test"
+    assert not lake.cell_dir("ICESAT2", victim).exists()
+    assert victim not in lake.cell_stats()
+    assert all(c != victim for (_, _, _, c) in lake.ingested_chunk_cells("ICESAT2", [f"G{i}" for i in range(3)]))
+    assert lake.recent_evictions()[-1]["cell"] == victim
+
+
+def test_enforce_limit_evicts_oldest_first_and_protects(tmp_path, monkeypatch):
+    cells = _synthetic_lake(tmp_path, monkeypatch)
+    st = lake.cell_stats()
+    total = sum(s["bytes"] for s in st.values())
+    # make G0's cell the oldest
+    con = lake.meta_conn(); con.execute("UPDATE coverage_cells SET ingested_at = TIMESTAMP '2020-01-01' WHERE granule = 'G0'"); con.close()
+    oldest = [c for c, s in st.items() if "G0" in s["granules"]][0]
+    lake.set_settings(max_bytes=int(total * 0.8))
+    ev = lake.enforce_limit(protect=[oldest])       # oldest is protected -> a different cell goes
+    assert ev and all(e["cell"] != oldest for e in ev)
+    lake.set_settings(max_bytes=1)
+    ev2 = lake.enforce_limit(protect=[])
+    assert oldest in {e["cell"] for e in ev2} and not lake.cell_stats()
+
+
+def test_settings_roundtrip(tmp_path, monkeypatch):
+    _synthetic_lake(tmp_path, monkeypatch, n_cells=1)
+    assert lake.get_settings()["max_bytes"] == lake.DEFAULT_MAX_BYTES
+    assert lake.set_settings(max_bytes=123)["max_bytes"] == 123 and lake.get_settings()["max_bytes"] == 123

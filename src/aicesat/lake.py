@@ -83,31 +83,155 @@ def relayout(mission: str = "ICESAT2") -> dict:
     return {"files_rewritten": n_files, "rows": n_rows, "seconds": round(time.time() - t0, 1)}
 
 
+SETTINGS_PATH = INDEX_DIR / "settings.json"
+EVICTION_LOG = INDEX_DIR / "evictions.jsonl"
+DEFAULT_MAX_BYTES = 5 << 30  # 5 GB
+
+
 def meta_conn() -> duckdb.DuckDBPyConnection:
+    """Coverage is recorded per (chunk, cell): a chunk materialized into three cells has three rows, so evicting one
+    cell leaves the other two marked and the planner re-fetches the chunk only for the evicted cell."""
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(META_DB))
-    con.execute("""CREATE TABLE IF NOT EXISTS coverage (
-        mission VARCHAR, granule VARCHAR, beam VARCHAR, chunk_index INTEGER, h3_cells UBIGINT[], ingested_at TIMESTAMP,
-        PRIMARY KEY (mission, granule, beam, chunk_index))""")
+    con.execute("""CREATE TABLE IF NOT EXISTS coverage_cells (
+        mission VARCHAR, granule VARCHAR, beam VARCHAR, chunk_index INTEGER, h3_cell UBIGINT, ingested_at TIMESTAMP,
+        PRIMARY KEY (mission, granule, beam, chunk_index, h3_cell))""")
+    # one-time migration from the list-valued table
+    if con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'coverage'").fetchone()[0]:
+        con.execute("""INSERT OR IGNORE INTO coverage_cells
+                       SELECT mission, granule, beam, chunk_index, unnest(h3_cells), ingested_at FROM coverage""")
+        con.execute("DROP TABLE coverage")
     return con
 
 
 def mark_ingested(mission: str, granule: str, beam: str, chunk_cells: dict[int, list[int]]) -> None:
     con = meta_conn()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    con.executemany("INSERT OR REPLACE INTO coverage VALUES (?, ?, ?, ?, ?, ?)",
-                    [(mission, granule, beam, int(k), [int(c) for c in cells], now) for k, cells in chunk_cells.items()])
+    con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)",
+                    [(mission, granule, beam, int(k), int(c), now) for k, cells in chunk_cells.items() for c in cells])
     con.close()
 
 
-def ingested_chunks(mission: str, granules: list[str]) -> set[tuple[str, str, int]]:
+def ingested_chunk_cells(mission: str, granules: list[str]) -> set[tuple[str, str, int, int]]:
+    """(granule, beam, chunk_index, h3_cell) tuples already materialized."""
     if not META_DB.exists() or not granules:
         return set()
     con = meta_conn()
-    rows = con.execute("SELECT granule, beam, chunk_index FROM coverage WHERE mission = ? AND granule IN (" +
+    rows = con.execute("SELECT granule, beam, chunk_index, h3_cell FROM coverage_cells WHERE mission = ? AND granule IN (" +
                        ",".join("?" * len(granules)) + ")", [mission, *granules]).fetchall()
     con.close()
-    return {(g, b, int(k)) for g, b, k in rows}
+    return {(g, b, int(k), int(c)) for g, b, k, c in rows}
+
+
+def ingested_chunks(mission: str, granules: list[str]) -> set[tuple[str, str, int]]:
+    """Chunks with at least one materialized cell (kept for callers that only need chunk identity)."""
+    return {(g, b, k) for g, b, k, _ in ingested_chunk_cells(mission, granules)}
+
+
+# ----------------------------------------------------------------------------- per-cell stats, settings, eviction
+
+def cell_stats(mission: str = "ICESAT2") -> dict[int, dict]:
+    """Per materialized cell: granules, beams, chunks, rows, bytes, first/last ingested. Files are the source of truth
+    for bytes/rows (Parquet footers), the coverage table for provenance and age."""
+    out: dict[int, dict] = {}
+    if not LAKE_DIR.exists():
+        return out
+    for cdir in LAKE_DIR.glob(f"mission={mission}/h3_cell=*"):
+        cell = int(cdir.name.split("=")[1])
+        files = list(cdir.glob("*.parquet"))
+        if not files:
+            continue
+        rows = 0
+        for f in files:
+            try:
+                rows += pq.read_metadata(f).num_rows
+            except Exception:
+                pass
+        out[cell] = {"cell": cell, "files": len(files), "rows": rows, "bytes": sum(f.stat().st_size for f in files),
+                     "granules": sorted({f.name.split("__")[0] for f in files}), "beams": sorted({f.stem.split("__")[1] for f in files}),
+                     "chunks": 0, "first_ingested": None, "last_ingested": None}
+    if META_DB.exists() and out:
+        con = meta_conn()
+        for cell, n, first, last in con.execute("SELECT h3_cell, count(*), min(ingested_at), max(ingested_at) FROM coverage_cells "
+                                                "WHERE mission = ? GROUP BY h3_cell", [mission]).fetchall():
+            if int(cell) in out:
+                out[int(cell)].update(chunks=int(n), first_ingested=first.isoformat() if first else None,
+                                      last_ingested=last.isoformat() if last else None)
+        con.close()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for st in out.values():
+        st["age_s"] = (now - datetime.fromisoformat(st["last_ingested"])).total_seconds() if st["last_ingested"] else None
+    return out
+
+
+def get_settings() -> dict:
+    import json
+    d = {"max_bytes": DEFAULT_MAX_BYTES}
+    if SETTINGS_PATH.exists():
+        try:
+            d.update(json.loads(SETTINGS_PATH.read_text()))
+        except Exception:
+            pass
+    return d
+
+
+def set_settings(**kw) -> dict:
+    import json
+    d = get_settings(); d.update({k: v for k, v in kw.items() if v is not None})
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(d))
+    return d
+
+
+def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual") -> list[dict]:
+    """Delete the cells' Parquet files and coverage rows (the index is untouched); returns what was evicted."""
+    import json
+    import shutil
+
+    stats = cell_stats(mission)
+    evicted = []
+    con = meta_conn()
+    for c in cells:
+        c = int(c)
+        st = stats.get(c)
+        if st is None:
+            continue
+        shutil.rmtree(cell_dir(mission, c), ignore_errors=True)
+        con.execute("DELETE FROM coverage_cells WHERE mission = ? AND h3_cell = ?", [mission, c])
+        evicted.append({"cell": c, "bytes": st["bytes"], "rows": st["rows"], "last_ingested": st["last_ingested"], "reason": reason,
+                        "evicted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    con.close()
+    if evicted:
+        INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        with EVICTION_LOG.open("a") as f:
+            for rec in evicted:
+                f.write(json.dumps(rec) + "\n")
+    return evicted
+
+
+def enforce_limit(protect=(), mission: str = "ICESAT2") -> list[dict]:
+    """Evict least-recently-ingested cells until the lake is under max_bytes; never touches `protect` cells."""
+    limit = int(get_settings()["max_bytes"])
+    stats = cell_stats(mission)
+    total = sum(s["bytes"] for s in stats.values())
+    if total <= limit:
+        return []
+    protect = {int(c) for c in protect}
+    victims = sorted((s for c, s in stats.items() if c not in protect), key=lambda s: (s["last_ingested"] or "", s["cell"]))
+    chosen = []
+    for s in victims:
+        if total <= limit:
+            break
+        chosen.append(s["cell"]); total -= s["bytes"]
+    return evict_cells(chosen, mission, reason=f"limit {limit} bytes") if chosen else []
+
+
+def recent_evictions(n: int = 50) -> list[dict]:
+    import json
+    if not EVICTION_LOG.exists():
+        return []
+    lines = EVICTION_LOG.read_text().splitlines()[-n:]
+    return [json.loads(l) for l in lines if l.strip()]
 
 
 def query_photons(bbox, cells: list[int], min_conf: int, granules: list[str] | None = None, mission: str = "ICESAT2") -> dict:
@@ -140,9 +264,12 @@ def query_photons(bbox, cells: list[int], min_conf: int, granules: list[str] | N
 
 
 def lake_summary(mission: str = "ICESAT2") -> dict:
-    files = list(LAKE_DIR.glob(f"mission={mission}/h3_cell=*/*.parquet"))
-    if not files:
-        return {"files": 0, "rows": 0, "cells": 0, "bytes": 0}
-    con = duckdb.connect()
-    n = con.execute(f"SELECT count(*) FROM read_parquet('{LAKE_DIR}/mission={mission}/h3_cell=*/*.parquet')").fetchone()[0]
-    return {"files": len(files), "rows": int(n), "cells": len({p.parent.name for p in files}), "bytes": sum(p.stat().st_size for p in files)}
+    stats = cell_stats(mission)
+    total = sum(s["bytes"] for s in stats.values())
+    settings = get_settings()
+    return {"files": sum(s["files"] for s in stats.values()), "rows": sum(s["rows"] for s in stats.values()), "cells": len(stats),
+            "bytes": total, "max_bytes": int(settings["max_bytes"]), "usage": (total / settings["max_bytes"]) if settings["max_bytes"] else None,
+            "granules": len({g for s in stats.values() for g in s["granules"]}),
+            "oldest_ingested": min((s["last_ingested"] for s in stats.values() if s["last_ingested"]), default=None),
+            "newest_ingested": max((s["last_ingested"] for s in stats.values() if s["last_ingested"]), default=None),
+            "evictions_recent": recent_evictions(10)}

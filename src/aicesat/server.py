@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import atl03, cache, coverage, geom, regions, scene
+from . import api, atl03, cache, coverage, geom, regions, scene
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -26,103 +26,19 @@ log = logging.getLogger(__name__)
 WIDGET_DIR = Path(__file__).parent / "widget"
 HTTP_HOST = "127.0.0.1"
 HTTP_PORT = int(os.environ.get("AICESAT_PORT", "8765"))  # updated by start_http() if the port is taken
-_lock = threading.Lock()  # serialise compute (one user, one demo)
+_lock = api._lock  # serialise compute (one user, one demo)
 
 
 def widget_url(scene_id: str) -> str:
     return f"http://{HTTP_HOST}:{HTTP_PORT}/?scene={scene_id}"
 
 
-# ----------------------------------------------------------------------------- compute entry points
-
-def run_coregister(scene_id: str, common_epoch: float | None = None, colocation_radius_m: float | None = None,
-                   exaggeration: float | None = None) -> dict:
-    from . import coreg  # Slice 3
-
-    doc = cache.load_scene(scene_id)
-    if doc is None:
-        raise KeyError(scene_id)
-    kw = {k: v for k, v in dict(common_epoch=common_epoch, colocation_radius_m=colocation_radius_m,
-                                exaggeration=exaggeration).items() if v is not None}
-    with _lock:
-        if doc.get("coreg") and doc["coreg"].get("params") == coreg.params(**kw):
-            out = dict(doc["coreg"]); out["cached"] = True
-            return out
-        t0 = time.time()
-        result = coreg.coregister_scene(doc, **kw)
-        result["compute_seconds"] = round(time.time() - t0, 2)
-        result["cached"] = False
-        doc["coreg"] = result
-        cache.save_scene(scene_id, doc)
-    return result
-
-
-# ----------------------------------------------------------------------------- scene build (shared by MCP tools + selector page)
-
-_jobs: dict[str, dict] = {}
-
-
-def build_scene(bbox=None, polygon=None, question: str | None = None, max_granules: int = 8, with_glas: bool = True,
-                with_coreg: bool = False, log_fn=lambda m: None) -> dict:
-    """Full pipeline for an area: ATL03 via index+lake, imagery, optional GLAS and co-registration. Returns the scene doc."""
-    bb, poly = geom.normalize_area(bbox, polygon)
-    with _lock:
-        log_fn(f"ICESat-2: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
-        arrays, meta = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
-        st = meta.get("access", {})
-        log_fn(f"ICESat-2: {meta['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched ({st.get('bytes', 0) / 1e6:.0f} MB, "
-               f"{st.get('requests', 0)} requests), {st.get('chunks_skipped_already_materialized', 0)} already in the lake")
-        sid = uuid.uuid4().hex[:10]
-        doc = scene.new_scene(sid, bb, question, polygon=poly)
-        scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
-        try:
-            scene.add_imagery(doc)
-            log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
-        except Exception as e:  # imagery is a cue, never a blocker
-            log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
-        if with_glas:
-            from . import glas
-            g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
-            scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
-            log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
-        cache.save_scene(sid, doc)
-    if with_coreg and with_glas:
-        run_coregister(sid)
-        log_fn("co-registration computed and cached")
-    return cache.load_scene(sid)
-
-
-def start_job(params: dict) -> str:
-    jid = uuid.uuid4().hex[:8]
-    job = _jobs[jid] = {"id": jid, "status": "running", "log": [], "scene_id": None, "widget_url": None, "error": None,
-                        "started": time.time()}
-
-    def run():
-        try:
-            doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"), int(params.get("max_granules", 8)),
-                              bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)), lambda m: job["log"].append(m))
-            job.update(status="done", scene_id=doc["scene_id"], widget_url=widget_url(doc["scene_id"]))
-        except Exception as e:
-            log.exception("build job failed")
-            job.update(status="error", error=f"{type(e).__name__}: {e}")
-            job["log"].append(traceback.format_exc().splitlines()[-1])
-        job["seconds"] = round(time.time() - job["started"], 1)
-
-    threading.Thread(target=run, daemon=True, name=f"job-{jid}").start()
-    return jid
-
-
-def lake_cells_geojson(mission: str = "ICESAT2") -> dict:
-    """Materialized H3 cells as polygons, for the selector map ("what is already in the lake")."""
-    import h3
-    from . import lake
-
-    cells = {p.name.split("=")[1] for p in lake.LAKE_DIR.glob(f"mission={mission}/h3_cell=*")} if lake.LAKE_DIR.exists() else set()
-    feats = []
-    for c in cells:
-        ring = [[lng, lat] for lat, lng in h3.cell_to_boundary(h3.int_to_str(int(c)))]
-        feats.append({"type": "Feature", "properties": {"cell": c}, "geometry": {"type": "Polygon", "coordinates": [ring + [ring[0]]]}})
-    return {"type": "FeatureCollection", "features": feats}
+# ----------------------------------------------------------------------------- compute (delegated to api.py)
+api._widget_url = lambda sid: widget_url(sid)
+run_coregister = api.coregister
+build_scene = api.build_scene
+start_job = lambda params: api.start_job(params)["id"]
+lake_cells_geojson = lambda mission="ICESAT2": api.lake_cells(stats=False, mission=mission)
 
 
 # ----------------------------------------------------------------------------- HTTP (widget + api)
@@ -158,9 +74,27 @@ class Handler(SimpleHTTPRequestHandler):
             return self.wfile.write(body)
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/api/regions":
-            return self._json(200, {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()})
+            return self._json(200, api.list_regions())
         if u.path == "/api/lake_cells":
-            return self._json(200, lake_cells_geojson())
+            return self._json(200, api.lake_cells(stats=False))
+        if u.path == "/api/lake/cells":
+            return self._json(200, api.lake_cells(stats=True))
+        if u.path == "/api/lake/summary":
+            return self._json(200, api.lake_summary())
+        if u.path == "/api/lake/settings":
+            return self._json(200, api.lake_settings())
+        if u.path == "/api/scenes":
+            return self._json(200, [{**r, "widget_url": widget_url(r["scene_id"])} for r in api.scenes()])
+        if u.path == "/api/jobs":
+            return self._json(200, api.jobs())
+        if u.path.startswith("/api/scene/") and u.path.endswith("/part"):
+            sid = u.path.split("/")[3]
+            try:
+                return self._json(200, api.scene_part(sid, qs.get("part", ["meta"])[0], int(qs.get("chunk", ["0"])[0])))
+            except KeyError:
+                return self._json(404, {"error": "no such scene"})
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if u.path == "/api/bench":
             bp = cache.DATA_DIR / "bench" / "results.json"
             return self._json(200, json.loads(bp.read_text())) if bp.exists() else self._json(404, {"error": "no benchmark results yet"})
@@ -172,7 +106,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if u.path.startswith("/api/job/"):
-            j = _jobs.get(u.path.split("/")[3])
+            j = api.job(u.path.split("/")[3])
             return self._json(200, j) if j else self._json(404, {"error": "no such job"})
         if self.path.startswith("/api/scene/"):
             sid = self.path.split("/")[3].split("?")[0]
@@ -187,18 +121,30 @@ class Handler(SimpleHTTPRequestHandler):
             return self.wfile.write(body)
         return super().do_GET()
 
+    def _body(self) -> dict:
+        return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+
     def do_POST(self):
-        if self.path == "/api/extract":
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+        try:
+            if self.path == "/api/extract":
+                body = self._body()
                 geom.normalize_area(body.get("bbox"), body.get("polygon"))  # validate early
-                return self._json(202, {"job_id": start_job(body)})
-            except Exception as e:
-                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+                j = api.start_job(body)
+                return self._json(202, {"job_id": j["id"], "scene_id": j["scene_id"]})
+            if self.path == "/api/lake/settings":
+                return self._json(200, api.lake_settings(max_bytes=self._body().get("max_bytes")))
+            if self.path == "/api/lake/load":
+                body = self._body()
+                j = api.lake_load(body["cells"], body.get("window"), int(body.get("max_granules", 40)))
+                return self._json(202, {"job_id": j["id"]})
+            if self.path == "/api/lake/evict":
+                return self._json(200, api.lake_evict(self._body()["cells"]))
+        except Exception as e:
+            return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if self.path.startswith("/api/coregister/"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
-                return self._json(200, run_coregister(sid))
+                return self._json(200, api.coregister(sid))
             except KeyError:
                 return self._json(404, {"error": "no such scene"})
             except Exception as e:  # surfaced to the widget status line
@@ -240,7 +186,35 @@ mcp = MCPServer(
 @mcp.tool()
 def list_regions() -> dict:
     """Named candidate Greenland demo regions (bbox = west, south, east, north) with validation notes."""
-    return {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()}
+    return api.list_regions()
+
+
+@mcp.tool()
+def list_scenes() -> list[dict]:
+    """Scenes built so far (newest first) with status ready | loading | error, area, series present, and widget URL."""
+    return [{**r, "widget_url": widget_url(r["scene_id"])} for r in api.scenes()]
+
+
+@mcp.tool()
+def lake_status() -> dict:
+    """Parquet lake summary: cells, files, rows, bytes, storage limit and usage, recent evictions."""
+    return api.lake_summary()
+
+
+@mcp.tool()
+def lake_load_cells(cells: list[str], time_window: list[str] | None = None, max_granules: int = 40) -> dict:
+    """Materialize H3 (res 6) cells into the lake in the background (cell ids as decimal strings); returns a job id."""
+    j = api.lake_load(cells, time_window, max_granules)
+    return {"job_id": j["id"]}
+
+
+@mcp.tool()
+def job_status(job_id: str) -> dict:
+    """Status and log of a background build job (scene or cell load)."""
+    j = api.job(job_id)
+    if not j:
+        raise ValueError(f"no such job {job_id}")
+    return j
 
 
 @mcp.tool()
@@ -249,7 +223,7 @@ def check_coverage(region: str | None = None, bbox: list[float] | None = None,
     """How many ATL03 (ICESat-2) and GLAH06 (ICESat/GLAS) granules touch a region, by month / laser campaign.
     Give either a region name (see list_regions) or an explicit bbox [W, S, E, N]. No data is fetched."""
     bb = regions.resolve_bbox(region, tuple(bbox) if bbox else None)
-    return coverage.check_coverage(bb, atl03_window, glas_window)
+    return api.check_coverage(list(bb), None, atl03_window, glas_window)
 
 
 @mcp.tool()
