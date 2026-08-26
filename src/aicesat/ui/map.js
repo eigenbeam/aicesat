@@ -138,8 +138,8 @@ AICESAT.MapView = class {
     }
     this.deck.setProps({layers});
   }
-  async refreshData(api) {
-    const [regions, cells, scenes] = await Promise.all([api.regions().catch(() => ({})), api.lakeCells(this.opts.gridStats).catch(() => null), api.scenes().catch(() => [])]);
+  async refreshData(api, mission = 'ICESAT2') {
+    const [regions, cells, scenes] = await Promise.all([api.regions().catch(() => ({})), api.lakeCells(this.opts.gridStats, mission).catch(() => null), api.scenes().catch(() => [])]);
     Object.assign(this.state, {regions, cells, scenes}); this.render();
   }
 };

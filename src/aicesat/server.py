@@ -85,9 +85,9 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/lake_cells":
             return self._json(200, api.lake_cells(stats=False))
         if u.path == "/api/lake/cells":
-            return self._json(200, api.lake_cells(stats=True))
+            return self._json(200, api.lake_cells(stats=True, mission=qs.get("mission", ["ICESAT2"])[0]))
         if u.path == "/api/lake/summary":
-            return self._json(200, api.lake_summary())
+            return self._json(200, api.lake_summary(qs.get("mission", ["ICESAT2"])[0]))
         if u.path == "/api/lake/settings":
             return self._json(200, api.lake_settings())
         if u.path == "/api/scenes":
@@ -316,13 +316,13 @@ def ui_coregister(scene_id: str) -> dict:
 
 
 @apps.tool(name="ui_lake_cells", **_APP)
-def ui_lake_cells(stats: bool = True) -> dict:
-    return api.lake_cells(stats=stats)
+def ui_lake_cells(stats: bool = True, mission: str = "ICESAT2") -> dict:
+    return api.lake_cells(stats=stats, mission=mission)
 
 
 @apps.tool(name="ui_lake_summary", **_APP)
-def ui_lake_summary() -> dict:
-    return api.lake_summary()
+def ui_lake_summary(mission: str = "ICESAT2") -> dict:
+    return api.lake_summary(mission)
 
 
 @apps.tool(name="ui_lake_settings", **_APP)

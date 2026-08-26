@@ -9,17 +9,17 @@ AICESAT.ExploreView = class {
         <h2>Select an area</h2>
         <div class="small">Navigate: drag to spin the globe, scroll to zoom. Box: drag a rectangle. Polygon: click vertices then Close (Enter). Blue hexagons = cells in the lake; grid shows all cells with stats on hover.</div>
         <div style="margin:8px 0 4px"><button id="exPan" class="on">Navigate</button><button id="exBox">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
-          <select id="exRegion"><option value="">regions…</option></select> <label class="small"><input id="exGrid" type="checkbox"> H3 grid</label></div>
+          <select id="exRegion"><option value="">regions…</option></select></div>
         <div id="exCoords" class="mono small">no area selected</div>
         <div style="margin-top:8px"><button id="exCov" disabled>Check coverage</button><button id="exBuild" disabled>Build scene</button>
-          <label class="small">granules <input id="exMaxG" type="number" value="8" min="1" max="40" style="width:48px"></label>
-          <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label> <label class="small"><input id="exCoreg" type="checkbox"> co-register</label></div>
+          <label class="small" title="upper bound on how many ATL03/GLAS granules the build will fetch">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label>
+          <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
-    this.map = new AICESAT.MapView($('exMap'), {grid: false, selectCells: false, draw: true, footprints: true});
+    this.map = new AICESAT.MapView($('exMap'), {grid: true, selectCells: false, draw: true, footprints: true});
     this.map.onSelect = a => { $('exCoords').textContent = a ? JSON.stringify(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
     this.map.onOpenScene = sc => { if (sc.status === 'ready') openScene(sc.scene_id); };
     const modeBtns = {pan: $('exPan'), box: $('exBox'), poly: $('exPoly')};
@@ -29,12 +29,17 @@ AICESAT.ExploreView = class {
     $('exPoly').onclick = () => setMode('poly');
     $('exClose').onclick = () => this.map.closePolygon(); root.addEventListener('keydown', e => { if (e.key === 'Enter') this.map.closePolygon(); });
     $('exClear').onclick = () => { this.map.clear(); $('exOut').textContent = ''; };
-    $('exGrid').onchange = e => this.map.setGrid(e.target.checked);
     $('exRegion').onchange = e => { const r = this.map.state.regions[e.target.value]; if (!r) return; setMode('box'); this.map.setArea({bbox: r.bbox}); this.map.flyTo(r.bbox); };
     $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; $('exOut').textContent = 'checking CMR…';
-      try { const d = await api.coverage(a); $('exOut').textContent = `ATL03 v${d.ATL03.version} ${d.ATL03.window.join('..')}: ${d.ATL03.n_granules} granules ${JSON.stringify(d.ATL03.by_month)}\nGLAH06 v${d.GLAH06.version}: ${d.GLAH06.n_granules} granules ${JSON.stringify(d.GLAH06.by_campaign)}\n${d.both_present ? 'both missions present' : 'NOT both missions present'}`; } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
+      const brk = o => Object.entries(o || {}).map(([k, v]) => `${k}\u2009${v}`).join(' · ') || '—';
+      try { const d = await api.coverage(a);
+        $('exOut').innerHTML =
+          `<div class="covrow"><b>ATL03</b> <span class="small">v${d.ATL03.version} · ${d.ATL03.window.join(' – ')}</span> · <b>${d.ATL03.n_granules}</b> granules<div class="small">by month — ${brk(d.ATL03.by_month)}</div></div>` +
+          `<div class="covrow"><b>GLAH06</b> <span class="small">v${d.GLAH06.version}</span> · <b>${d.GLAH06.n_granules}</b> granules<div class="small">by campaign — ${brk(d.GLAH06.by_campaign)}</div></div>` +
+          `<div class="covrow ${d.both_present ? 'ok' : 'no'}">${d.both_present ? '✓ both missions present' : '✗ not both missions present'}</div>`;
+      } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
-      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exCoreg').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
+      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exGlas').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
     this.$ = $;

@@ -92,6 +92,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
 #status { color:var(--muted); font-size:12px; }
+.covrow { margin:0 0 6px; }
+.covrow.ok { color:var(--green); }
+.covrow.no { color:var(--red); }
 </style>
 </head>
 <body>
@@ -9214,6 +9217,8 @@ window.__extApps={getDocumentTheme:CN,applyHostStyleVariables:yN,applyHostFonts:
   U.fmtBytes = b => b == null ? '–' : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(0) + ' MB' : (b / 1e3).toFixed(0) + ' kB';
   U.fmtAge = s => s == null ? '–' : s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${(s / 3600).toFixed(1)} h ago` : `${(s / 86400).toFixed(1)} d ago`;
   U.fmtN = n => n == null ? '–' : Number(n).toLocaleString();
+  // ISO timestamp -> readable local date; naive (no tz) timestamps are treated as UTC
+  U.fmtDate = s => { if (!s) return '–'; const iso = /[zZ]|[+]\d\d:?\d\d$/.test(s) ? s : s.replace(' ', 'T') + 'Z'; const d = new Date(iso); return isNaN(d) ? s : d.toLocaleString(undefined, {year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
   U.el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); } if (html) e.innerHTML = html; return e; };
   U.bboxOfPolygon = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
   U.areaRing = a => a.bbox ? [[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[1]], [a.bbox[2], a.bbox[3]], [a.bbox[0], a.bbox[3]]] : a.polygon;
@@ -9301,8 +9306,8 @@ window.AICESAT = window.AICESAT || {};
     job: id => j(`/api/job/${id}`),
     jobs: () => j('/api/jobs'),
     coregister: id => post(`/api/coregister/${id}`, {}),
-    lakeCells: (stats = true) => j(stats ? '/api/lake/cells' : '/api/lake_cells'),
-    lakeSummary: () => j('/api/lake/summary'),
+    lakeCells: (stats = true, mission = 'ICESAT2') => j(stats ? '/api/lake/cells?mission=' + encodeURIComponent(mission) : '/api/lake_cells'),
+    lakeSummary: (mission = 'ICESAT2') => j('/api/lake/summary?mission=' + encodeURIComponent(mission)),
     lakeSettings: max_bytes => max_bytes == null ? j('/api/lake/settings') : post('/api/lake/settings', {max_bytes}),
     lakeLoad: (cells, opts = {}) => post('/api/lake/load', {cells, ...opts}),
     lakeEvict: cells => post('/api/lake/evict', {cells}),
@@ -9360,8 +9365,8 @@ window.AICESAT = window.AICESAT || {};
       job: id => call('ui_job', {job_id: id}),
       jobs: async () => (await call('ui_jobs')).jobs,
       coregister: id => call('ui_coregister', {scene_id: id}),
-      lakeCells: (stats = true) => call('ui_lake_cells', {stats}),
-      lakeSummary: () => call('ui_lake_summary'),
+      lakeCells: (stats = true, mission = 'ICESAT2') => call('ui_lake_cells', {stats, mission}),
+      lakeSummary: (mission = 'ICESAT2') => call('ui_lake_summary', {mission}),
       lakeSettings: max_bytes => call('ui_lake_settings', max_bytes == null ? {} : {max_bytes}),
       lakeLoad: (cells, opts = {}) => call('ui_lake_load', {cells, ...opts}),
       lakeEvict: cells => call('ui_lake_evict', {cells}),
@@ -9529,8 +9534,8 @@ AICESAT.MapView = class {
     }
     this.deck.setProps({layers});
   }
-  async refreshData(api) {
-    const [regions, cells, scenes] = await Promise.all([api.regions().catch(() => ({})), api.lakeCells(this.opts.gridStats).catch(() => null), api.scenes().catch(() => [])]);
+  async refreshData(api, mission = 'ICESAT2') {
+    const [regions, cells, scenes] = await Promise.all([api.regions().catch(() => ({})), api.lakeCells(this.opts.gridStats, mission).catch(() => null), api.scenes().catch(() => [])]);
     Object.assign(this.state, {regions, cells, scenes}); this.render();
   }
 };
@@ -9547,17 +9552,17 @@ AICESAT.ExploreView = class {
         <h2>Select an area</h2>
         <div class="small">Navigate: drag to spin the globe, scroll to zoom. Box: drag a rectangle. Polygon: click vertices then Close (Enter). Blue hexagons = cells in the lake; grid shows all cells with stats on hover.</div>
         <div style="margin:8px 0 4px"><button id="exPan" class="on">Navigate</button><button id="exBox">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
-          <select id="exRegion"><option value="">regions…</option></select> <label class="small"><input id="exGrid" type="checkbox"> H3 grid</label></div>
+          <select id="exRegion"><option value="">regions…</option></select></div>
         <div id="exCoords" class="mono small">no area selected</div>
         <div style="margin-top:8px"><button id="exCov" disabled>Check coverage</button><button id="exBuild" disabled>Build scene</button>
-          <label class="small">granules <input id="exMaxG" type="number" value="8" min="1" max="40" style="width:48px"></label>
-          <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label> <label class="small"><input id="exCoreg" type="checkbox"> co-register</label></div>
+          <label class="small" title="upper bound on how many ATL03/GLAS granules the build will fetch">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label>
+          <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
-    this.map = new AICESAT.MapView($('exMap'), {grid: false, selectCells: false, draw: true, footprints: true});
+    this.map = new AICESAT.MapView($('exMap'), {grid: true, selectCells: false, draw: true, footprints: true});
     this.map.onSelect = a => { $('exCoords').textContent = a ? JSON.stringify(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
     this.map.onOpenScene = sc => { if (sc.status === 'ready') openScene(sc.scene_id); };
     const modeBtns = {pan: $('exPan'), box: $('exBox'), poly: $('exPoly')};
@@ -9567,12 +9572,17 @@ AICESAT.ExploreView = class {
     $('exPoly').onclick = () => setMode('poly');
     $('exClose').onclick = () => this.map.closePolygon(); root.addEventListener('keydown', e => { if (e.key === 'Enter') this.map.closePolygon(); });
     $('exClear').onclick = () => { this.map.clear(); $('exOut').textContent = ''; };
-    $('exGrid').onchange = e => this.map.setGrid(e.target.checked);
     $('exRegion').onchange = e => { const r = this.map.state.regions[e.target.value]; if (!r) return; setMode('box'); this.map.setArea({bbox: r.bbox}); this.map.flyTo(r.bbox); };
     $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; $('exOut').textContent = 'checking CMR…';
-      try { const d = await api.coverage(a); $('exOut').textContent = `ATL03 v${d.ATL03.version} ${d.ATL03.window.join('..')}: ${d.ATL03.n_granules} granules ${JSON.stringify(d.ATL03.by_month)}\nGLAH06 v${d.GLAH06.version}: ${d.GLAH06.n_granules} granules ${JSON.stringify(d.GLAH06.by_campaign)}\n${d.both_present ? 'both missions present' : 'NOT both missions present'}`; } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
+      const brk = o => Object.entries(o || {}).map(([k, v]) => `${k}\u2009${v}`).join(' · ') || '—';
+      try { const d = await api.coverage(a);
+        $('exOut').innerHTML =
+          `<div class="covrow"><b>ATL03</b> <span class="small">v${d.ATL03.version} · ${d.ATL03.window.join(' – ')}</span> · <b>${d.ATL03.n_granules}</b> granules<div class="small">by month — ${brk(d.ATL03.by_month)}</div></div>` +
+          `<div class="covrow"><b>GLAH06</b> <span class="small">v${d.GLAH06.version}</span> · <b>${d.GLAH06.n_granules}</b> granules<div class="small">by campaign — ${brk(d.GLAH06.by_campaign)}</div></div>` +
+          `<div class="covrow ${d.both_present ? 'ok' : 'no'}">${d.both_present ? '✓ both missions present' : '✗ not both missions present'}</div>`;
+      } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
-      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exCoreg').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
+      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exGlas').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
     this.$ = $;
@@ -9606,7 +9616,9 @@ AICESAT.LakeView = class {
     root.innerHTML = `
       <div class="map" id="lkMap"></div>
       <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:320px">
-        <h2>Lake</h2><div id="lkStats" class="small">loading…</div>
+        <h2>Lake</h2>
+        <div class="small" style="margin-bottom:6px">collection <select id="lkMission"><option value="ICESAT2">ICESat-2 ATL03</option></select></div>
+        <div id="lkStats" class="small">loading…</div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
@@ -9620,6 +9632,8 @@ AICESAT.LakeView = class {
       <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:420px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
+    this.mission = 'ICESAT2';
+    $('lkMission').onchange = e => { this.mission = e.target.value; this.map.clear(); this.refresh(); };
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: false});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
@@ -9640,11 +9654,23 @@ AICESAT.LakeView = class {
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;
     const U = AICESAT.util, $ = this.$;
-    const [s] = await Promise.all([this.api.lakeSummary(), this.map.refreshData(this.api), this.refreshJobs()]);
-    $('lkStats').innerHTML = `<table class="stats"><tr><td>cells</td><td class="num">${U.fmtN(s.cells)}</td><td>files</td><td class="num">${U.fmtN(s.files)}</td></tr><tr><td>rows</td><td class="num">${U.fmtN(s.rows)}</td><td>granules</td><td class="num">${U.fmtN(s.granules)}</td></tr><tr><td>size</td><td class="num">${U.fmtBytes(s.bytes)}</td><td>limit</td><td class="num">${U.fmtBytes(s.max_bytes)}</td></tr><tr><td>oldest</td><td colspan="3" class="small">${s.oldest_ingested ? s.oldest_ingested.slice(0, 16).replace('T', ' ') : '–'} · newest ${s.newest_ingested ? s.newest_ingested.slice(0, 16).replace('T', ' ') : '–'}</td></tr></table>`;
+    const [s] = await Promise.all([this.api.lakeSummary(this.mission), this.map.refreshData(this.api, this.mission), this.refreshJobs()]);
+    this.syncMissions(s.missions);
+    $('lkStats').innerHTML = `<table class="stats"><tr><td>cells</td><td class="num">${U.fmtN(s.cells)}</td><td>files</td><td class="num">${U.fmtN(s.files)}</td></tr><tr><td>rows</td><td class="num">${U.fmtN(s.rows)}</td><td>granules</td><td class="num">${U.fmtN(s.granules)}</td></tr><tr><td>size</td><td class="num">${U.fmtBytes(s.bytes)}</td><td>limit</td><td class="num">${U.fmtBytes(s.max_bytes)}</td></tr><tr><td>oldest</td><td colspan="3" class="small">${U.fmtDate(s.oldest_ingested)} · newest ${U.fmtDate(s.newest_ingested)}</td></tr></table>`;
     const u = s.usage || 0; const bar = $('lkBar'); bar.style.width = Math.min(100, u * 100).toFixed(1) + '%'; bar.className = u > 1 ? 'over' : u > 0.85 ? 'warn' : '';
     if (document.activeElement !== $('lkLimit')) $('lkLimit').value = (s.max_bytes / 1e9).toFixed(1);
-    $('lkEvictions').innerHTML = (s.evictions_recent || []).length ? s.evictions_recent.map(e => `<div>${e.evicted_at.slice(0, 16).replace('T', ' ')} · cell ${e.cell} · ${U.fmtBytes(e.bytes)} · ${e.reason}</div>`).join('') : 'none';
+    $('lkEvictions').innerHTML = (s.evictions_recent || []).length ? s.evictions_recent.map(e => `<div>${U.fmtDate(e.evicted_at)} · cell ${e.cell} · ${U.fmtBytes(e.bytes)} · ${e.reason}</div>`).join('') : 'none';
+  }
+  syncMissions(missions) {
+    const sel = this.$('lkMission'), U = AICESAT.util;
+    const list = (missions && missions.length) ? missions : [{mission: 'ICESAT2', product: 'ICESat-2 ATL03'}];
+    const key = list.map(m => m.mission).join(',');
+    if (sel.dataset.key !== key) {   // rebuild options only when the set of collections changes
+      sel.innerHTML = list.map(m => `<option value="${m.mission}">${m.product}${m.cells != null ? ` · ${U.fmtN(m.cells)} cells` : ''}</option>`).join('');
+      sel.dataset.key = key;
+    }
+    if (!list.some(m => m.mission === this.mission)) this.mission = list[0].mission;
+    sel.value = this.mission;
   }
   show() { this.root.classList.add('on'); this.refresh(); }
   hide() { this.root.classList.remove('on'); }
@@ -9653,7 +9679,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox"> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting, scale bar / north arrow.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -9661,7 +9687,7 @@ AICESAT.SceneView = class {
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
 let params = new URLSearchParams(); let sceneId = null;
 let Z_EXAG = 10;
-let SHOW_IMAGERY = true;
+let SHOW_IMAGERY = false;
 
 let scene = null, coreg = null, bounds = null, meshOk = true;
 const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
@@ -9742,25 +9768,25 @@ function surfaceLayers() {
       }
       for (let q = 0; q < normals.length; q += 3) { const l = Math.hypot(normals[q], normals[q+1], normals[q+2]) || 1; normals[q] /= l; normals[q+1] /= l; normals[q+2] /= l; }
       const img = SHOW_IMAGERY && scene.imagery;
-      let texCoords = null;
-      if (img) {  // drape: texture coordinates from the imagery's local-frame extent
-        texCoords = new Float32Array((pos.length / 3) * 2);
-        for (let q = 0, t = 0; q < pos.length; q += 3, t += 2) {
-          texCoords[t] = (pos[q] - img.x0) / (img.x1 - img.x0);
-          texCoords[t + 1] = 1 - (pos[q + 1] - img.y0) / (img.y1 - img.y0);
-        }
+      // texCoords must ALWAYS exist (SimpleMeshLayer reads the attribute even with no texture); map to the
+      // imagery extent when draping, else to the surface extent (unused, but a valid attribute).
+      const ex = img ? img : {x0, y0, x1: x0 + nx * cell, y1: y0 + ny * cell};
+      const texCoords = new Float32Array((pos.length / 3) * 2);
+      for (let q = 0, t = 0; q < pos.length; q += 3, t += 2) {
+        texCoords[t] = (pos[q] - ex.x0) / (ex.x1 - ex.x0);
+        texCoords[t + 1] = 1 - (pos[q + 1] - ex.y0) / (ex.y1 - ex.y0);
       }
-      const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}};
-      if (texCoords) attrs.texCoords = {value: texCoords, size: 2};
-      layers.push(new SimpleMeshLayer({
+      const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}, texCoords: {value: texCoords, size: 2}};
+      const meshProps = {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
-        texture: img ? api.imageryUrl(sceneId) : undefined,
-        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 160, 185, 55],
-        material: {ambient: 0.45, diffuse: 0.75, shininess: 12, specularColor: [40, 40, 40]},
-        parameters: img ? {} : {depthWriteEnabled: false},
+        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 162, 188, 190],
+        material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         updateTriggers: {getPosition: Z_EXAG},
-      }));
+      };
+      if (img) meshProps.texture = api.imageryUrl(sceneId);      // omit the key entirely when not draping
+      else meshProps.parameters = {depthWriteEnabled: false};    // translucent surface: don't occlude points behind it
+      layers.push(new SimpleMeshLayer(meshProps));
     }
   }
   // faint wireframe (rows + columns), always drawn; also the fallback if the mesh layer fails
@@ -9927,6 +9953,11 @@ async function loadScene() {
   $('adjGia').checked = adj.gia;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG;
   fitView(); render(); updateLabels(); updateStats();
+  if (coreg && !('gia' in coreg)) {   // saved before the GIA correction existed -> recompute in the background, then refresh
+    $('status').textContent = 'updating co-registration…';
+    api.coregister(sceneId).then(c => { coreg = scene.coreg = c; $('status').textContent = ''; updateStats(); updateLabels(); })
+      .catch(e => { $('status').textContent = ''; console.warn('[aicesat] coreg refresh failed', e); });
+  }
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
 }
 

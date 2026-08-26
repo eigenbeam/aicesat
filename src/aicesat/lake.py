@@ -294,11 +294,30 @@ def query_photons(bbox, cells: list[int], min_conf: int, granules: list[str] | N
             "_granules": glist}
 
 
+PRODUCTS = {"ICESAT2": "ICESat-2 ATL03", "ATL06": "ICESat-2 ATL06", "GLAS": "ICESat/GLAS GLAH06", "ICESSN": "IceBridge ATM ICESSN"}
+
+
+def missions() -> list[dict]:
+    """Collections currently materialized in the lake (lightweight: cell dirs + file sizes, no parquet-footer reads)."""
+    if not LAKE_DIR.exists():
+        return []
+    out = []
+    for d in sorted(LAKE_DIR.glob("mission=*")):
+        m = d.name.split("=", 1)[1]
+        cells = [c for c in d.glob("h3_cell=*") if any(c.glob("*.parquet"))]
+        if not cells:
+            continue
+        b = sum(f.stat().st_size for c in cells for f in c.glob("*.parquet"))
+        out.append({"mission": m, "product": PRODUCTS.get(m, m), "cells": len(cells), "bytes": int(b)})
+    return out
+
+
 def lake_summary(mission: str = "ICESAT2") -> dict:
     stats = cell_stats(mission)
     total = sum(s["bytes"] for s in stats.values())
     settings = get_settings()
-    return {"files": sum(s["files"] for s in stats.values()), "rows": sum(s["rows"] for s in stats.values()), "cells": len(stats),
+    return {"mission": mission, "product": PRODUCTS.get(mission, mission), "missions": missions(),
+            "files": sum(s["files"] for s in stats.values()), "rows": sum(s["rows"] for s in stats.values()), "cells": len(stats),
             "bytes": total, "max_bytes": int(settings["max_bytes"]), "usage": (total / settings["max_bytes"]) if settings["max_bytes"] else None,
             "granules": len({g for s in stats.values() for g in s["granules"]}),
             "oldest_ingested": min((s["last_ingested"] for s in stats.values() if s["last_ingested"]), default=None),

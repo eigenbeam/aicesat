@@ -209,7 +209,8 @@ def coregister(scene_id: str, common_epoch: float | None = None, colocation_radi
         raise KeyError(scene_id)
     kw = {k: v for k, v in dict(common_epoch=common_epoch, colocation_radius_m=colocation_radius_m, exaggeration=exaggeration).items() if v is not None}
     with _lock:
-        if doc.get("coreg") and doc["coreg"].get("params") == coreg.params(**kw):
+        # recompute if params changed OR the saved result predates a schema addition (e.g. the GIA block)
+        if doc.get("coreg") and doc["coreg"].get("params") == coreg.params(**kw) and "gia" in doc["coreg"]:
             out = dict(doc["coreg"]); out["cached"] = True
             return out
         t0 = time.time()
@@ -238,9 +239,9 @@ def lake_cells(stats: bool = True, mission: str = "ICESAT2") -> dict:
     return {"type": "FeatureCollection", "features": feats}
 
 
-def lake_summary() -> dict:
+def lake_summary(mission: str = "ICESAT2") -> dict:
     from . import lake
-    return lake.lake_summary()
+    return lake.lake_summary(mission)
 
 
 def lake_settings(max_bytes: int | None = None) -> dict:

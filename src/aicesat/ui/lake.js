@@ -6,7 +6,9 @@ AICESAT.LakeView = class {
     root.innerHTML = `
       <div class="map" id="lkMap"></div>
       <div class="panel" id="lkSummary" data-title="lake summary" style="top:12px;left:12px;width:320px">
-        <h2>Lake</h2><div id="lkStats" class="small">loading…</div>
+        <h2>Lake</h2>
+        <div class="small" style="margin-bottom:6px">collection <select id="lkMission"><option value="ICESAT2">ICESat-2 ATL03</option></select></div>
+        <div id="lkStats" class="small">loading…</div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
@@ -20,6 +22,8 @@ AICESAT.LakeView = class {
       <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:420px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
+    this.mission = 'ICESAT2';
+    $('lkMission').onchange = e => { this.mission = e.target.value; this.map.clear(); this.refresh(); };
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: false});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
@@ -40,11 +44,23 @@ AICESAT.LakeView = class {
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;
     const U = AICESAT.util, $ = this.$;
-    const [s] = await Promise.all([this.api.lakeSummary(), this.map.refreshData(this.api), this.refreshJobs()]);
-    $('lkStats').innerHTML = `<table class="stats"><tr><td>cells</td><td class="num">${U.fmtN(s.cells)}</td><td>files</td><td class="num">${U.fmtN(s.files)}</td></tr><tr><td>rows</td><td class="num">${U.fmtN(s.rows)}</td><td>granules</td><td class="num">${U.fmtN(s.granules)}</td></tr><tr><td>size</td><td class="num">${U.fmtBytes(s.bytes)}</td><td>limit</td><td class="num">${U.fmtBytes(s.max_bytes)}</td></tr><tr><td>oldest</td><td colspan="3" class="small">${s.oldest_ingested ? s.oldest_ingested.slice(0, 16).replace('T', ' ') : '–'} · newest ${s.newest_ingested ? s.newest_ingested.slice(0, 16).replace('T', ' ') : '–'}</td></tr></table>`;
+    const [s] = await Promise.all([this.api.lakeSummary(this.mission), this.map.refreshData(this.api, this.mission), this.refreshJobs()]);
+    this.syncMissions(s.missions);
+    $('lkStats').innerHTML = `<table class="stats"><tr><td>cells</td><td class="num">${U.fmtN(s.cells)}</td><td>files</td><td class="num">${U.fmtN(s.files)}</td></tr><tr><td>rows</td><td class="num">${U.fmtN(s.rows)}</td><td>granules</td><td class="num">${U.fmtN(s.granules)}</td></tr><tr><td>size</td><td class="num">${U.fmtBytes(s.bytes)}</td><td>limit</td><td class="num">${U.fmtBytes(s.max_bytes)}</td></tr><tr><td>oldest</td><td colspan="3" class="small">${U.fmtDate(s.oldest_ingested)} · newest ${U.fmtDate(s.newest_ingested)}</td></tr></table>`;
     const u = s.usage || 0; const bar = $('lkBar'); bar.style.width = Math.min(100, u * 100).toFixed(1) + '%'; bar.className = u > 1 ? 'over' : u > 0.85 ? 'warn' : '';
     if (document.activeElement !== $('lkLimit')) $('lkLimit').value = (s.max_bytes / 1e9).toFixed(1);
-    $('lkEvictions').innerHTML = (s.evictions_recent || []).length ? s.evictions_recent.map(e => `<div>${e.evicted_at.slice(0, 16).replace('T', ' ')} · cell ${e.cell} · ${U.fmtBytes(e.bytes)} · ${e.reason}</div>`).join('') : 'none';
+    $('lkEvictions').innerHTML = (s.evictions_recent || []).length ? s.evictions_recent.map(e => `<div>${U.fmtDate(e.evicted_at)} · cell ${e.cell} · ${U.fmtBytes(e.bytes)} · ${e.reason}</div>`).join('') : 'none';
+  }
+  syncMissions(missions) {
+    const sel = this.$('lkMission'), U = AICESAT.util;
+    const list = (missions && missions.length) ? missions : [{mission: 'ICESAT2', product: 'ICESat-2 ATL03'}];
+    const key = list.map(m => m.mission).join(',');
+    if (sel.dataset.key !== key) {   // rebuild options only when the set of collections changes
+      sel.innerHTML = list.map(m => `<option value="${m.mission}">${m.product}${m.cells != null ? ` · ${U.fmtN(m.cells)} cells` : ''}</option>`).join('');
+      sel.dataset.key = key;
+    }
+    if (!list.some(m => m.mission === this.mission)) this.mission = list[0].mission;
+    sel.value = this.mission;
   }
   show() { this.root.classList.add('on'); this.refresh(); }
   hide() { this.root.classList.remove('on'); }

@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox"> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting, scale bar / north arrow.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -8,7 +8,7 @@ AICESAT.SceneView = class {
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
 let params = new URLSearchParams(); let sceneId = null;
 let Z_EXAG = 10;
-let SHOW_IMAGERY = true;
+let SHOW_IMAGERY = false;
 
 let scene = null, coreg = null, bounds = null, meshOk = true;
 const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
@@ -89,25 +89,25 @@ function surfaceLayers() {
       }
       for (let q = 0; q < normals.length; q += 3) { const l = Math.hypot(normals[q], normals[q+1], normals[q+2]) || 1; normals[q] /= l; normals[q+1] /= l; normals[q+2] /= l; }
       const img = SHOW_IMAGERY && scene.imagery;
-      let texCoords = null;
-      if (img) {  // drape: texture coordinates from the imagery's local-frame extent
-        texCoords = new Float32Array((pos.length / 3) * 2);
-        for (let q = 0, t = 0; q < pos.length; q += 3, t += 2) {
-          texCoords[t] = (pos[q] - img.x0) / (img.x1 - img.x0);
-          texCoords[t + 1] = 1 - (pos[q + 1] - img.y0) / (img.y1 - img.y0);
-        }
+      // texCoords must ALWAYS exist (SimpleMeshLayer reads the attribute even with no texture); map to the
+      // imagery extent when draping, else to the surface extent (unused, but a valid attribute).
+      const ex = img ? img : {x0, y0, x1: x0 + nx * cell, y1: y0 + ny * cell};
+      const texCoords = new Float32Array((pos.length / 3) * 2);
+      for (let q = 0, t = 0; q < pos.length; q += 3, t += 2) {
+        texCoords[t] = (pos[q] - ex.x0) / (ex.x1 - ex.x0);
+        texCoords[t + 1] = 1 - (pos[q + 1] - ex.y0) / (ex.y1 - ex.y0);
       }
-      const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}};
-      if (texCoords) attrs.texCoords = {value: texCoords, size: 2};
-      layers.push(new SimpleMeshLayer({
+      const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}, texCoords: {value: texCoords, size: 2}};
+      const meshProps = {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
-        texture: img ? api.imageryUrl(sceneId) : undefined,
-        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 160, 185, 55],
-        material: {ambient: 0.45, diffuse: 0.75, shininess: 12, specularColor: [40, 40, 40]},
-        parameters: img ? {} : {depthWriteEnabled: false},
+        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 162, 188, 190],
+        material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         updateTriggers: {getPosition: Z_EXAG},
-      }));
+      };
+      if (img) meshProps.texture = api.imageryUrl(sceneId);      // omit the key entirely when not draping
+      else meshProps.parameters = {depthWriteEnabled: false};    // translucent surface: don't occlude points behind it
+      layers.push(new SimpleMeshLayer(meshProps));
     }
   }
   // faint wireframe (rows + columns), always drawn; also the fallback if the mesh layer fails
@@ -274,6 +274,11 @@ async function loadScene() {
   $('adjGia').checked = adj.gia;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG;
   fitView(); render(); updateLabels(); updateStats();
+  if (coreg && !('gia' in coreg)) {   // saved before the GIA correction existed -> recompute in the background, then refresh
+    $('status').textContent = 'updating co-registration…';
+    api.coregister(sceneId).then(c => { coreg = scene.coreg = c; $('status').textContent = ''; updateStats(); updateLabels(); })
+      .catch(e => { $('status').textContent = ''; console.warn('[aicesat] coreg refresh failed', e); });
+  }
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
 }
 
