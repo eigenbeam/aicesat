@@ -60,17 +60,29 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .exag { position:absolute; top:12px; right:12px; width:320px; background:rgba(224,160,48,.15); border:1px solid var(--amber); color:var(--amber); font-size:11.5px; border-radius:8px; z-index:10; }
 .exag .phead { border-bottom-color:rgba(224,160,48,.3); } .exag .phead .ptitle, .exag .pcaret, .exag .phead .close { color:var(--amber); }
 
-/* ---- scene viewer panels (positions relative to the view) ---- */
-#hud { top:12px; left:12px; max-width:330px; }
-#hud h1 { font-size:15px; margin:0 0 4px; font-weight:600; }
+/* ---- unified drawer: one collapsible, scrollable column that holds every panel ---- */
+:root { --drawer-w: 344px; }
+.view.has-drawer .map, .view.has-drawer .deck { right: var(--drawer-w); transition: right .2s ease; }
+.view.has-drawer.drawer-collapsed .map, .view.has-drawer.drawer-collapsed .deck { right: 0; }
+.drawer { position:absolute; top:0; right:0; bottom:0; width:var(--drawer-w); background:var(--panel); border-left:1px solid var(--hair); backdrop-filter:blur(6px); z-index:16; display:flex; flex-direction:column; transition:transform .2s ease; }
+.drawer.collapsed { transform: translateX(100%); }
+.drawer .dscroll { flex:1; overflow-y:auto; overflow-x:hidden; padding:8px; }
+.dtab { position:absolute; top:50%; right:var(--drawer-w); transform:translateY(-50%); width:24px; height:70px; display:flex; align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--hair); border-right:none; border-radius:9px 0 0 9px; color:var(--muted); cursor:pointer; font-size:13px; z-index:17; transition:right .2s ease; }
+.view.drawer-collapsed .dtab { right:0; }
+/* panels stack inside the drawer instead of floating; collapse (caret), don't close */
+.drawer .panel, .drawer .exag { position:static !important; width:auto !important; max-width:none !important; max-height:none !important; margin:0 0 8px !important; inset:auto !important; }
+.drawer .panel > .pbody, .drawer .exag > .pbody { max-height:none; overflow:visible; }
+.drawer .panel .close, .drawer .exag .close { display:none; }
+.drawer #panelsMenu { display:none; }
+.view.has-drawer > #attrib { right: calc(var(--drawer-w) + 8px) !important; transition: right .2s ease; }
+.view.has-drawer.drawer-collapsed > #attrib { right: 8px !important; }
+
+/* ---- scene viewer panel typography (positioning is handled by the drawer) ---- */
+#hud h1 { font-size:13px; margin:0 0 4px; font-weight:600; }
 #hud .q { color:var(--muted); font-size:12px; margin-bottom:8px; }
 #hud .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
 #hud .legend span { display:inline; }
-#controls { bottom:12px; left:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; max-width:calc(100% - 420px); }
-#stats { top:150px; right:12px; width:310px; max-height:calc(100% - 162px); overflow-y:auto; }
+#controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
-#bench { top:150px; left:12px; width:400px; max-height:calc(100% - 200px); overflow:auto; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
 #status { color:var(--muted); font-size:12px; }
-#exag { top:12px; right:12px; }
-#hud h1 { font-size:13px; margin:0 0 4px; }

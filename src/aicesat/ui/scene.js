@@ -314,7 +314,7 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 
 
 // ---------------------------------------------------------------- closeable panels (shell panel manager)
-AICESAT.util.panels(root, $('panelsMenu'));
+AICESAT.util.drawer(root, null);
 $('stats').addEventListener('reopen', () => updateStats());
 $('scBack').onclick = () => back();
 

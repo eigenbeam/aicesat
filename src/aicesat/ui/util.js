@@ -38,6 +38,33 @@ window.AICESAT = window.AICESAT || {};
     return refresh;
   };
 
+  // unified drawer: gather every floating panel in a view into ONE right-side, scrollable, collapsible column.
+  // Each panel keeps its own collapse caret (via U.panels); the drawer's edge tab collapses the whole column and
+  // the map/scene resizes to fill the freed width. Collapsed state is shared across views (one localStorage key).
+  U.drawer = (root, menu) => {
+    if (root.querySelector(':scope > .drawer')) return;                 // idempotent
+    const drawer = U.el('div', {class: 'drawer'});
+    const scroll = U.el('div', {class: 'dscroll'});
+    drawer.appendChild(scroll);
+    [...root.querySelectorAll(':scope > .panel, :scope > .exag')].forEach(p => scroll.appendChild(p));
+    const tab = U.el('button', {class: 'dtab', title: 'hide panels'}, '⟩');   // sibling of the drawer, so it stays put when the drawer slides away
+    root.append(tab, drawer);
+    U.panels(scroll, menu);
+    const KEY = 'aicesat.drawer.c';
+    const set = (c, persist = true) => {
+      drawer.classList.toggle('collapsed', c);
+      root.classList.toggle('drawer-collapsed', c);
+      tab.textContent = c ? '⟨' : '⟩'; tab.title = c ? 'show panels' : 'hide panels';
+      if (persist) { try { localStorage.setItem(KEY, c ? '1' : '0'); } catch (e) {} }
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 220);   // let deck.gl/map re-fit after the width change
+    };
+    tab.onclick = () => set(!drawer.classList.contains('collapsed'));
+    root.classList.add('has-drawer');
+    let init = false; try { init = localStorage.getItem(KEY) === '1'; } catch (e) {}
+    set(init, false);
+    return drawer;
+  };
+
   // tiny hash router
   U.route = () => { const h = location.hash.replace(/^#\/?/, ''); const [view, ...rest] = h.split('/'); return {view: view || 'explore', arg: rest.join('/')}; };
 })();

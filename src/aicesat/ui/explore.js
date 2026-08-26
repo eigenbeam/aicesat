@@ -38,7 +38,7 @@ AICESAT.ExploreView = class {
       $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
     this.$ = $;
-    AICESAT.util.panels(root, null);
+    AICESAT.util.drawer(root, null);
     this.refresh(); this.timer = setInterval(() => this.refresh(true), 5000);
   }
   async pollJob(jid) {
