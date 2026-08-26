@@ -18,6 +18,9 @@ html.app.fs, html.app.fs body { height: 100vh; }
 #topbar .crumb { color:var(--muted); font-size:12px; }
 #topbar .small { font-size:11px; color:var(--muted); }
 #views { position:absolute; top:40px; left:0; right:0; bottom:0; }
+#apperr { position:absolute; top:40px; left:0; right:0; z-index:25; background:rgba(217,83,79,.18); border-bottom:1px solid var(--red); color:#f3c0bd; padding:9px 40px 9px 12px; font-size:12.5px; line-height:1.45; white-space:pre-wrap; max-height:40vh; overflow:auto; backdrop-filter:blur(6px); }
+#apperr .x { position:absolute; top:5px; right:8px; cursor:pointer; color:#f3c0bd; font-size:16px; background:none; border:none; padding:0 4px; }
+#apperr b { color:#ffdedb; }
 .view { position:absolute; inset:0; display:none; }
 .view.on { display:block; }
 .map, .deck { position:absolute; inset:0; }
@@ -111,6 +114,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
 </div>
+<div id="apperr" hidden></div>
 <div id="views">
   <div class="view" id="view-explore"></div>
   <div class="view" id="view-lake"></div>
@@ -9604,7 +9608,7 @@ AICESAT.ExploreView = class {
     $('exClose').onclick = () => this.map.closePolygon(); root.addEventListener('keydown', e => { if (e.key === 'Enter') this.map.closePolygon(); });
     $('exClear').onclick = () => { this.map.clear(); $('exOut').textContent = ''; };
     $('exRegion').onchange = e => { const r = this.map.state.regions[e.target.value]; if (!r) return; setMode('box'); this.map.setArea({bbox: r.bbox}); this.map.flyTo(r.bbox); };
-    $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; $('exOut').textContent = 'checking CMR…';
+    $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; AICESAT.clearError(); $('exOut').textContent = 'checking CMR…';
       const brk = o => Object.entries(o || {}).map(([k, v]) => `${k}\u2009${v}`).join(' · ') || '—';
       try { const d = await api.coverage(a);
         $('exOut').innerHTML = d.collections.map(c =>
@@ -9612,14 +9616,14 @@ AICESAT.ExploreView = class {
           (c.n_granules == null ? `<span class="no">unavailable</span>` : `<b>${c.n_granules}</b> granules`) +
           (c.by_month && Object.keys(c.by_month).length ? `<div class="small">by month \u2014 ${brk(c.by_month)}</div>` : (c.error ? `<div class="small">${c.error}</div>` : '')) +
           `</div>`).join('');
-      } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
+      } catch (e) { $('exOut').textContent = 'error: ' + e.message; AICESAT.showError(e); } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColBoxes').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
       const body = {...a, max_granules: +$('exMaxG').value, ...flags,
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
-      $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
-      try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
+      AICESAT.clearError(); $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
+      try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; AICESAT.showError(e); $('exBuild').disabled = false; } };
     this.$ = $;
     AICESAT.util.drawer(root, null);
     this.loadCollections();
@@ -9635,7 +9639,7 @@ AICESAT.ExploreView = class {
   async pollJob(jid) {
     const $ = this.$, api = this.api;
     const tick = async () => { const j = await api.job(jid); $('exOut').innerHTML = `<b>job ${j.id}: ${j.status}</b>${j.seconds ? ` (${j.seconds}s)` : ''}\n` + j.log.join('\n') + (j.error ? `\n${j.error}` : '') + (j.status === 'done' && j.scene_id ? `\n<a href="#scene/${j.scene_id}">open the scene →</a>` : '');
-      if (j.status === 'running') setTimeout(tick, 1500); else { $('exBuild').disabled = false; this.refresh(); } };
+      if (j.status === 'running') setTimeout(tick, 1500); else { if (j.error) AICESAT.showError(j.error); $('exBuild').disabled = false; this.refresh(); } };
     tick();
   }
   async refresh(quiet = false) {
@@ -9678,13 +9682,13 @@ AICESAT.LakeView = class {
     const $ = id => root.querySelector('#' + id); this.$ = $;
     this.mission = 'ICESAT2';
     $('lkMission').onchange = e => { this.mission = e.target.value; this.map.clear(); this.refresh(); };
-    this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: false});
+    this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: true});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
     $('lkLoad').onclick = async () => { const cells = [...this.map.state.selected].map(c => BigInt('0x' + c).toString()); $('lkLoad').disabled = true;
-      try { const d = await api.lakeLoad(cells, {max_granules: +$('lkMaxG').value}); this.watch(d.job_id); } catch (e) { alert(e.message); } };
+      try { const d = await api.lakeLoad(cells, {max_granules: +$('lkMaxG').value}); this.watch(d.job_id); } catch (e) { AICESAT.showError(e); $('lkLoad').disabled = false; } };
     $('lkEvict').onclick = async () => { const cells = [...this.map.state.selected].map(c => BigInt('0x' + c).toString());
-      try { const d = await api.lakeEvict(cells); $('lkLimitMsg').textContent = `evicted ${d.evicted.length} cells`; this.map.clear(); this.refresh(); } catch (e) { alert(e.message); } };
+      try { const d = await api.lakeEvict(cells); $('lkLimitMsg').textContent = `evicted ${d.evicted.length} cells`; this.map.clear(); this.refresh(); } catch (e) { AICESAT.showError(e); } };
     $('lkSetLimit').onclick = async () => { const gb = +$('lkLimit').value; if (!(gb > 0)) return;
       try { const d = await api.lakeSettings(Math.round(gb * 1e9)); $('lkLimitMsg').textContent = d.evicted && d.evicted.length ? `limit set; evicted ${d.evicted.length} cells (${U.fmtBytes(d.evicted.reduce((a, e) => a + e.bytes, 0))})` : 'limit set'; this.refresh(); } catch (e) { $('lkLimitMsg').textContent = e.message; } };
     AICESAT.util.drawer(root, null);
@@ -9710,7 +9714,7 @@ AICESAT.LakeView = class {
     if (!body.childElementCount) body.innerHTML = '<div class="small">no activity yet — load or query cells to see the pipeline work</div>';
     if (atBottom) body.scrollTop = body.scrollHeight;
   }
-  watch(jid) { const tick = async () => { await this.refreshJobs(); const j = await this.api.job(jid); if (j.status === 'running') setTimeout(tick, 2000); else this.refresh(); }; tick(); }
+  watch(jid) { const tick = async () => { await this.refreshJobs(); const j = await this.api.job(jid); if (j.status === 'running') setTimeout(tick, 2000); else { if (j.error) AICESAT.showError(j.error); this.refresh(); } }; tick(); }
   async refreshJobs() {
     const jobs = await this.api.jobs().catch(() => []);
     this.$('lkJobs').innerHTML = jobs.length ? jobs.map(j => `<div class="row"><span class="status ${j.status === 'running' ? 'loading' : j.status === 'done' ? 'ready' : 'error'}">${j.status}</span><span class="grow" title="${(j.log || []).join('\n')}">${j.kind} ${j.id}${j.scene_id ? ' → ' + j.scene_id : ''}${j.seconds ? ` (${j.seconds}s)` : ''}<br><span class="small">${(j.log || []).slice(-1)[0] || ''}</span></span></div>`).join('') : 'no jobs';
@@ -10081,6 +10085,19 @@ this.hide = () => root.classList.remove('on');
 
 ;
 /* Shell: tabs, hash router, view lifecycle. Views: explore (map + scenes), lake (grid + stats), scene (3-D viewer). */
+// Prominent, dismissible error banner. Any view calls AICESAT.showError(msg) when an API call fails; Earthdata
+// authentication failures (which only affect fetching, not browsing) are flagged so the user knows what to fix.
+AICESAT.showError = (msg) => {
+  const el = document.getElementById('apperr'); if (!el) return;
+  const s = String((msg && msg.message) || msg || 'unknown error');
+  const auth = /earthdata|earthdata_token|\btoken\b|\blogin\b|\bnetrc\b/i.test(s);
+  el.innerHTML = (auth ? '<b>Earthdata authentication failed — fetching needs a token (browsing the lake does not).</b>\n' : '<b>Error.</b> ') +
+    s.replace(/[<&]/g, c => ({'<': '&lt;', '&': '&amp;'}[c])) + '<button class="x" title="dismiss">×</button>';
+  el.hidden = false;
+  el.querySelector('.x').onclick = () => { el.hidden = true; };
+};
+AICESAT.clearError = () => { const el = document.getElementById('apperr'); if (el) el.hidden = true; };
+
 AICESAT.ready.then(api => {
   const U = AICESAT.util;
   const views = {};

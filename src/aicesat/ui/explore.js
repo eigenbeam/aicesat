@@ -30,7 +30,7 @@ AICESAT.ExploreView = class {
     $('exClose').onclick = () => this.map.closePolygon(); root.addEventListener('keydown', e => { if (e.key === 'Enter') this.map.closePolygon(); });
     $('exClear').onclick = () => { this.map.clear(); $('exOut').textContent = ''; };
     $('exRegion').onchange = e => { const r = this.map.state.regions[e.target.value]; if (!r) return; setMode('box'); this.map.setArea({bbox: r.bbox}); this.map.flyTo(r.bbox); };
-    $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; $('exOut').textContent = 'checking CMR…';
+    $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; AICESAT.clearError(); $('exOut').textContent = 'checking CMR…';
       const brk = o => Object.entries(o || {}).map(([k, v]) => `${k}\u2009${v}`).join(' · ') || '—';
       try { const d = await api.coverage(a);
         $('exOut').innerHTML = d.collections.map(c =>
@@ -38,14 +38,14 @@ AICESAT.ExploreView = class {
           (c.n_granules == null ? `<span class="no">unavailable</span>` : `<b>${c.n_granules}</b> granules`) +
           (c.by_month && Object.keys(c.by_month).length ? `<div class="small">by month \u2014 ${brk(c.by_month)}</div>` : (c.error ? `<div class="small">${c.error}</div>` : '')) +
           `</div>`).join('');
-      } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
+      } catch (e) { $('exOut').textContent = 'error: ' + e.message; AICESAT.showError(e); } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColBoxes').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
       const body = {...a, max_granules: +$('exMaxG').value, ...flags,
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
-      $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
-      try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
+      AICESAT.clearError(); $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
+      try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; AICESAT.showError(e); $('exBuild').disabled = false; } };
     this.$ = $;
     AICESAT.util.drawer(root, null);
     this.loadCollections();
@@ -61,7 +61,7 @@ AICESAT.ExploreView = class {
   async pollJob(jid) {
     const $ = this.$, api = this.api;
     const tick = async () => { const j = await api.job(jid); $('exOut').innerHTML = `<b>job ${j.id}: ${j.status}</b>${j.seconds ? ` (${j.seconds}s)` : ''}\n` + j.log.join('\n') + (j.error ? `\n${j.error}` : '') + (j.status === 'done' && j.scene_id ? `\n<a href="#scene/${j.scene_id}">open the scene →</a>` : '');
-      if (j.status === 'running') setTimeout(tick, 1500); else { $('exBuild').disabled = false; this.refresh(); } };
+      if (j.status === 'running') setTimeout(tick, 1500); else { if (j.error) AICESAT.showError(j.error); $('exBuild').disabled = false; this.refresh(); } };
     tick();
   }
   async refresh(quiet = false) {

@@ -12,6 +12,9 @@ html.app.fs, html.app.fs body { height: 100vh; }
 #topbar .crumb { color:var(--muted); font-size:12px; }
 #topbar .small { font-size:11px; color:var(--muted); }
 #views { position:absolute; top:40px; left:0; right:0; bottom:0; }
+#apperr { position:absolute; top:40px; left:0; right:0; z-index:25; background:rgba(217,83,79,.18); border-bottom:1px solid var(--red); color:#f3c0bd; padding:9px 40px 9px 12px; font-size:12.5px; line-height:1.45; white-space:pre-wrap; max-height:40vh; overflow:auto; backdrop-filter:blur(6px); }
+#apperr .x { position:absolute; top:5px; right:8px; cursor:pointer; color:#f3c0bd; font-size:16px; background:none; border:none; padding:0 4px; }
+#apperr b { color:#ffdedb; }
 .view { position:absolute; inset:0; display:none; }
 .view.on { display:block; }
 .map, .deck { position:absolute; inset:0; }

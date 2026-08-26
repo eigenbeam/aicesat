@@ -1,4 +1,17 @@
 /* Shell: tabs, hash router, view lifecycle. Views: explore (map + scenes), lake (grid + stats), scene (3-D viewer). */
+// Prominent, dismissible error banner. Any view calls AICESAT.showError(msg) when an API call fails; Earthdata
+// authentication failures (which only affect fetching, not browsing) are flagged so the user knows what to fix.
+AICESAT.showError = (msg) => {
+  const el = document.getElementById('apperr'); if (!el) return;
+  const s = String((msg && msg.message) || msg || 'unknown error');
+  const auth = /earthdata|earthdata_token|\btoken\b|\blogin\b|\bnetrc\b/i.test(s);
+  el.innerHTML = (auth ? '<b>Earthdata authentication failed — fetching needs a token (browsing the lake does not).</b>\n' : '<b>Error.</b> ') +
+    s.replace(/[<&]/g, c => ({'<': '&lt;', '&': '&amp;'}[c])) + '<button class="x" title="dismiss">×</button>';
+  el.hidden = false;
+  el.querySelector('.x').onclick = () => { el.hidden = true; };
+};
+AICESAT.clearError = () => { const el = document.getElementById('apperr'); if (el) el.hidden = true; };
+
 AICESAT.ready.then(api => {
   const U = AICESAT.util;
   const views = {};

@@ -52,6 +52,20 @@ If you keep your token in a file instead, drop the `EARTHDATA_TOKEN` line and ei
 or add `"AICESAT_EDL_FILE": "/path/to/your/token"` to `env`. Restart Claude Desktop. The unified UI renders inline as an MCP App; the server also serves it at
 `http://127.0.0.1:8765/` (port via `AICESAT_PORT`) for use in a browser.
 
+### Getting an Earthdata Login token (step by step)
+
+1. **Create a free Earthdata Login account** if you don't have one: <https://urs.earthdata.nasa.gov> → *Register*.
+2. **Sign in**, then open your profile (top-right) → the **Generate Token** tab → **Generate Token**. Copy the long
+   token string (a JWT that starts with `eyJ…`). Tokens last ~60 days — regenerate when one stops working.
+3. **Paste it into the Claude Desktop config** shown above, as the value of `EARTHDATA_TOKEN` in the server's `env`
+   block. The config file is at `~/Library/Application Support/Claude/claude_desktop_config.json` (in Claude Desktop:
+   **Settings → Developer → Edit Config**).
+4. **Restart Claude Desktop.** The Lake view works without a token; building a scene / checking coverage will now
+   authenticate. If it can't, the UI shows an error banner naming what to fix.
+
+A `~/.netrc` with your Earthdata username/password also works, but a token in `env` is the most reliable and is what
+we recommend for sharing the server with a colleague.
+
 Tools: `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),
 `add_glas`, `coregister`, `lake_status`, `lake_load_cells`, `job_status`.
 
