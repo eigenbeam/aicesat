@@ -89,3 +89,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .covrow { margin:0 0 6px; }
 .covrow.ok { color:var(--green); }
 .covrow.no { color:var(--red); }
+.lakelog { max-height:34vh; overflow:auto; font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; }
+.lakelog .logline { white-space:pre-wrap; word-break:break-word; color:var(--muted); border-bottom:1px solid #22222a; padding:1px 0; }
+.lakelog .logline.warn { color:var(--amber); }
+.lakelog .logline.err { color:var(--red); }

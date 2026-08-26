@@ -117,56 +117,75 @@ def _chunked_bytes(raw: bytes, chunk: int, chunk_bytes: int, mime: str) -> dict:
 
 # ----------------------------------------------------------------------------- building scenes (jobs)
 def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, log_fn=lambda m: None, scene_id: str | None = None) -> dict:
-    """Full pipeline for an area: ATL03 via index+lake, imagery, optional GLAS / ATL06 / IceBridge ICESSN and
-    co-registration. Returns the scene doc."""
+                with_atl06=False, with_icessn=False, with_atl03=False, log_fn=lambda m: None,
+                scene_id: str | None = None) -> dict:
+    """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
+    plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
+    optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
+    Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)"""
     bb, poly = geom.normalize_area(bbox, polygon)
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
+
+    def _add(flag, name, fn):
+        if not flag:
+            return
+        try:
+            fn()
+        except Exception as e:
+            log.warning("%s unavailable: %s", name, e); log_fn(f"{name} unavailable: {e}")
+
     try:
         with _lock:
-            log_fn(f"ICESat-2: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
-            arrays, meta = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
-            st = meta.get("access", {})
-            log_fn(f"ICESat-2: {meta['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched ({st.get('bytes', 0) / 1e6:.0f} MB, "
-                   f"{st.get('requests', 0)} requests), {st.get('chunks_skipped_already_materialized', 0)} already in the lake")
-            if st.get("evicted_for_limit"):
-                log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
             doc = scene.new_scene(sid, bb, question, polygon=poly)
-            scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
-            try:
-                scene.add_imagery(doc)
-                log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
-            except Exception as e:  # imagery is a cue, never a blocker
-                log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
-            if with_glas:
+
+            def _atl03():
+                log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
+                arrays, meta = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
+                st = meta.get("access", {})
+                log_fn(f"ATL03: {meta['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched "
+                       f"({st.get('bytes', 0) / 1e6:.0f} MB, {st.get('requests', 0)} requests), "
+                       f"{st.get('chunks_skipped_already_materialized', 0)} already in the lake")
+                if st.get("evicted_for_limit"):
+                    log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
+                scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
+
+            def _glas():
                 from . import glas
                 g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
                 scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
                 log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
-            # ATL06 / IceBridge ICESSN are optional comparison series; their coverage is spottier (flight lines,
-            # land-ice only), so a miss over this area is logged, not fatal — the scene still builds.
-            if with_atl06:
-                try:
-                    from . import atl06
-                    a_arrays, a_meta = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
-                    scene.add_series(doc, "ATL06", a_arrays, a_meta, a_meta["cache_key"])
-                    log_fn(f"ATL06: {a_meta['n']:,} land-ice segments")
-                except Exception as e:
-                    log.warning("ATL06 unavailable: %s", e); log_fn(f"ATL06 unavailable: {e}")
-            if with_icessn:
-                try:
-                    from . import icessn
-                    i_arrays, i_meta = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
-                    scene.add_series(doc, "ICESSN", i_arrays, i_meta, i_meta["cache_key"])
-                    log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
-                except Exception as e:
-                    log.warning("ICESSN unavailable: %s", e); log_fn(f"ICESSN unavailable: {e}")
+
+            def _atl06():
+                from . import atl06
+                a_arrays, a_meta = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
+                scene.add_series(doc, "ATL06", a_arrays, a_meta, a_meta["cache_key"])
+                log_fn(f"ATL06: {a_meta['n']:,} land-ice segments")
+
+            def _icessn():
+                from . import icessn
+                i_arrays, i_meta = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
+                scene.add_series(doc, "ICESSN", i_arrays, i_meta, i_meta["cache_key"])
+                log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
+
+            _add(with_glas, "GLAS", _glas)          # chronological, matching the collection list
+            _add(with_icessn, "ICESSN", _icessn)
+            _add(with_atl06, "ATL06", _atl06)
+            _add(with_atl03, "ATL03", _atl03)
+            if not doc["series"]:
+                raise RuntimeError("no collection returned data over this area (check your selection and the token)")
+            scene.set_surface(doc)                   # DEM base surface, independent of which collections loaded
+            try:
+                scene.add_imagery(doc)
+                log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
+            except Exception as e:
+                log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
             cache.save_scene(sid, doc)
-        if with_coreg and with_glas:
+        can_coreg = "ICESAT2" in doc["series"] and "GLAS" in doc["series"]
+        if with_coreg and can_coreg:
             coregister(sid)
             log_fn("co-registration computed and cached")
-        registry_upsert(sid, status="ready", series=sorted(doc["series"]), coreg=bool(with_coreg and with_glas))
+        registry_upsert(sid, status="ready", series=sorted(doc["series"]), coreg=bool(with_coreg and can_coreg))
     except Exception:
         registry_upsert(sid, status="error")
         raise
@@ -186,6 +205,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
                 doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"), int(params.get("max_granules", 8)),
                                   bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
                                   with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
+                                  with_atl03=bool(params.get("with_atl03", False)),
                                   log_fn=lambda m: job["log"].append(m), scene_id=sid)
                 job.update(status="done", widget_url=_widget_url(doc["scene_id"]))
             else:
@@ -265,6 +285,13 @@ def lake_summary(mission: str = "ICESAT2") -> dict:
     return lake.lake_summary(mission)
 
 
+def lake_log(after: int = 0) -> dict:
+    """Recent pipeline activity for the Lake page's running log (entries with seq > after)."""
+    from . import logbuf
+    logbuf.install()
+    return logbuf.entries(int(after))
+
+
 def lake_settings(max_bytes: int | None = None) -> dict:
     from . import lake
     if max_bytes is not None:
@@ -288,9 +315,13 @@ def list_regions() -> dict:
     return {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()}
 
 
-def check_coverage(bbox=None, polygon=None, atl03_window=None, glas_window=None) -> dict:
+def check_coverage(bbox=None, polygon=None, **_ignored) -> dict:
     bb, _ = geom.normalize_area(bbox, polygon)
-    return coverage.check_coverage(bb, atl03_window, glas_window)
+    return coverage.check_coverage(bb)
+
+
+def list_collections() -> list[dict]:
+    return coverage.collections()
 
 
 def bench() -> dict | None:

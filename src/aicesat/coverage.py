@@ -83,27 +83,36 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
     return granules
 
 
-def check_coverage(bbox, atl03_window=None, glas_window=None) -> dict:
-    atl03_window = atl03_window or regions.DEFAULT_ATL03_WINDOW
-    glas_window = glas_window or regions.DEFAULT_GLAS_WINDOW
-    out = {"bbox": list(bbox), "ATL03": {}, "GLAH06": {}}
+def collections() -> list[dict]:
+    """Canonical list of the altimetry collections the app knows, ordered by science epoch — one source of truth for
+    the Explore build options, the coverage check, and the Lake labels. `flag` is the build_scene keyword; `default`
+    is whether it is selected by default (ATL03 photons are heavy, so off by default)."""
+    return [
+        {"key": "GLAS", "flag": "with_glas", "label": "ICESat / GLAS", "short_name": GLAS_SHORT_NAME, "product": "GLAH06",
+         "version": GLAS_VERSION, "epoch": "2003-2009", "window": list(regions.DEFAULT_GLAS_WINDOW), "default": True},
+        {"key": "ICESSN", "flag": "with_icessn", "label": "IceBridge ATM (ICESSN)", "short_name": ICESSN_SHORT_NAME,
+         "product": "ILATM2", "version": ICESSN_VERSION, "epoch": "2009-2019", "window": list(regions.DEFAULT_ICESSN_WINDOW), "default": True},
+        {"key": "ATL06", "flag": "with_atl06", "label": "ICESat-2 land ice", "short_name": ATL06_SHORT_NAME, "product": "ATL06",
+         "version": ATL06_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL06_WINDOW), "default": True},
+        {"key": "ATL03", "flag": "with_atl03", "label": "ICESat-2 photons", "short_name": ATL03_SHORT_NAME, "product": "ATL03",
+         "version": ATL03_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL03_WINDOW), "default": False},
+    ]
 
-    a = search(ATL03_SHORT_NAME, ATL03_VERSION, bbox, atl03_window)
-    by_month = Counter()
-    for g in a:
-        t = _granule_start(g)
-        by_month[t.strftime("%Y-%m") if t else "?"] += 1
-    out["ATL03"] = {"version": ATL03_VERSION, "window": list(atl03_window), "n_granules": len(a),
-                    "by_month": dict(sorted(by_month.items())),
-                    "granules": [granule_name(g) for g in a][:50]}
 
-    gl = search(GLAS_SHORT_NAME, GLAS_VERSION, bbox, glas_window)
-    by_campaign = Counter()
-    for g in gl:
-        t = _granule_start(g)
-        by_campaign[campaign_for(t.date()) if t else "?"] += 1
-    out["GLAH06"] = {"version": GLAS_VERSION, "window": list(glas_window), "n_granules": len(gl),
-                     "by_campaign": dict(by_campaign),
-                     "granules": [granule_name(g) for g in gl][:50]}
-    out["both_present"] = bool(a) and bool(gl)
-    return out
+def check_coverage(bbox, **_ignored) -> dict:
+    """Granule counts per collection over a bbox (CMR only). Returns {bbox, collections:[{key,label,product,version,
+    epoch,window,n_granules,by_month|error}, ...]} — a clear, uniform list across all collections."""
+    out = []
+    for c in collections():
+        row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
+        try:
+            g = search(c["short_name"], c["version"], bbox, tuple(c["window"]))
+            by = Counter()
+            for gr in g:
+                t = _granule_start(gr)
+                by[t.strftime("%Y-%m") if t else "?"] += 1
+            row.update(n_granules=len(g), by_month=dict(sorted(by.items())))
+        except Exception as e:
+            row.update(n_granules=None, error=str(e)[:140])
+        out.append(row)
+    return {"bbox": list(bbox), "collections": out}

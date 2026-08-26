@@ -20,6 +20,7 @@ AICESAT.LakeView = class {
         <label class="small">granules <input id="lkMaxG" type="number" value="40" min="1" max="200" style="width:56px"></label>
       </div>
       <div class="panel" id="lkActivity" data-title="activity" style="bottom:12px;left:12px;width:420px;max-height:36vh;overflow:auto"><h2>Activity</h2><div id="lkJobs" class="small">no jobs</div></div>
+      <div class="panel" id="lkLog" data-title="lake log"><div class="small" style="margin-bottom:4px">Live pipeline activity — CMR search, chunk fetch/decode, materialize, evict, query.</div><div id="lkLogBody" class="lakelog"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
     this.mission = 'ICESAT2';
@@ -34,7 +35,27 @@ AICESAT.LakeView = class {
     $('lkSetLimit').onclick = async () => { const gb = +$('lkLimit').value; if (!(gb > 0)) return;
       try { const d = await api.lakeSettings(Math.round(gb * 1e9)); $('lkLimitMsg').textContent = d.evicted && d.evicted.length ? `limit set; evicted ${d.evicted.length} cells (${U.fmtBytes(d.evicted.reduce((a, e) => a + e.bytes, 0))})` : 'limit set'; this.refresh(); } catch (e) { $('lkLimitMsg').textContent = e.message; } };
     AICESAT.util.drawer(root, null);
+    this.logSeq = 0;
     this.timer = setInterval(() => this.refresh(true), 10000);
+    this.logTimer = setInterval(() => this.pollLog(), 2000);   // running log updates faster than the summary
+    this.pollLog();
+  }
+  async pollLog() {
+    if (!this.root.classList.contains('on')) return;
+    const U = AICESAT.util, body = this.$('lkLogBody');
+    let d; try { d = await this.api.lakeLog(this.logSeq); } catch (e) { return; }
+    if (d.seq === this.logSeq && body.childElementCount) return;
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+    for (const e of d.entries) {
+      const t = new Date(e.t * 1000).toLocaleTimeString();
+      const div = U.el('div', {class: 'logline ' + (e.level === 'ERROR' ? 'err' : e.level === 'WARNING' ? 'warn' : '')});
+      div.textContent = `${t}  ${e.name}  ${e.msg}`;
+      body.appendChild(div);
+    }
+    while (body.childElementCount > 400) body.removeChild(body.firstChild);
+    this.logSeq = d.seq;
+    if (!body.childElementCount) body.innerHTML = '<div class="small">no activity yet — load or query cells to see the pipeline work</div>';
+    if (atBottom) body.scrollTop = body.scrollHeight;
   }
   watch(jid) { const tick = async () => { await this.refreshJobs(); const j = await this.api.job(jid); if (j.status === 'running') setTimeout(tick, 2000); else this.refresh(); }; tick(); }
   async refreshJobs() {

@@ -121,17 +121,24 @@ def drop_glas_outliers(arrays: dict, meta: dict, frame: dict) -> tuple[dict, dic
     return {k: v[keep] for k, v in arrays.items()}, meta
 
 
+def set_surface(doc: dict) -> dict:
+    """Attach the DEM base surface for the scene's frame (independent of which missions are loaded). Needs z0, so
+    call it after at least one series has been added. No photon-interpolated fallback: no DEM -> no surface."""
+    doc["surface"] = None
+    if doc.get("z0") is None:
+        return doc
+    try:
+        from . import dem
+        doc["surface"] = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
+    except Exception as e:  # DEM is a base layer, never a blocker
+        import logging
+        logging.getLogger(__name__).warning("DEM unavailable, no surface shown: %s", e)
+    return doc
+
+
 def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str) -> dict:
     if doc["z0"] is None:
         doc["z0"] = float(np.median(arrays["h"]))
-    if mission == "ICESAT2":
-        doc["surface"] = None
-        try:
-            from . import dem
-            doc["surface"] = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
-        except Exception as e:  # DEM is a base layer, never a blocker; no photon-interpolated fallback
-            import logging
-            logging.getLogger(__name__).warning("DEM unavailable, no surface shown: %s", e)
     if mission == "GLAS":
         arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
         cache.save(cache_key + "-clean", arrays, meta)

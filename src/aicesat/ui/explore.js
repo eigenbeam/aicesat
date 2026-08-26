@@ -11,11 +11,9 @@ AICESAT.ExploreView = class {
         <div style="margin:8px 0 4px"><button id="exPan" class="on">Navigate</button><button id="exBox">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
           <select id="exRegion"><option value="">regions…</option></select></div>
         <div id="exCoords" class="mono small">no area selected</div>
+        <div style="margin-top:8px"><b class="small">Collections</b> <span id="exColBoxes" class="small">loading…</span></div>
         <div style="margin-top:8px"><button id="exCov" disabled>Check coverage</button><button id="exBuild" disabled>Build scene</button>
-          <label class="small" title="upper bound on how many ATL03/GLAS granules the build will fetch">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label>
-          <label class="small" title="ICESat/GLAS GLAH06 (2003-2009)"><input id="exGlas" type="checkbox" checked> GLAS</label>
-          <label class="small" title="ICESat-2 ATL06 land-ice height (2018-)"><input id="exAtl06" type="checkbox"> ATL06</label>
-          <label class="small" title="Operation IceBridge ATM ICESSN (2009-2019); flight-line coverage only"><input id="exIcessn" type="checkbox"> ICESSN</label></div>
+          <label class="small" title="upper bound on how many granules the build fetches per collection">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
@@ -35,19 +33,30 @@ AICESAT.ExploreView = class {
     $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; $('exOut').textContent = 'checking CMR…';
       const brk = o => Object.entries(o || {}).map(([k, v]) => `${k}\u2009${v}`).join(' · ') || '—';
       try { const d = await api.coverage(a);
-        $('exOut').innerHTML =
-          `<div class="covrow"><b>ATL03</b> <span class="small">v${d.ATL03.version} · ${d.ATL03.window.join(' – ')}</span> · <b>${d.ATL03.n_granules}</b> granules<div class="small">by month — ${brk(d.ATL03.by_month)}</div></div>` +
-          `<div class="covrow"><b>GLAH06</b> <span class="small">v${d.GLAH06.version}</span> · <b>${d.GLAH06.n_granules}</b> granules<div class="small">by campaign — ${brk(d.GLAH06.by_campaign)}</div></div>` +
-          `<div class="covrow ${d.both_present ? 'ok' : 'no'}">${d.both_present ? '✓ both missions present' : '✗ not both missions present'}</div>`;
+        $('exOut').innerHTML = d.collections.map(c =>
+          `<div class="covrow ${c.n_granules ? 'ok' : 'no'}"><b>${c.label}</b> <span class="small">${c.product} v${c.version} \u00b7 ${c.epoch}</span> \u00b7 ` +
+          (c.n_granules == null ? `<span class="no">unavailable</span>` : `<b>${c.n_granules}</b> granules`) +
+          (c.by_month && Object.keys(c.by_month).length ? `<div class="small">by month \u2014 ${brk(c.by_month)}</div>` : (c.error ? `<div class="small">${c.error}</div>` : '')) +
+          `</div>`).join('');
       } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
-      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exGlas').checked,
-        with_atl06: $('exAtl06').checked, with_icessn: $('exIcessn').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
+      const flags = {}; $('exColBoxes').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
+      const body = {...a, max_granules: +$('exMaxG').value, ...flags,
+        with_coreg: !!(flags.with_atl03 && flags.with_glas),
+        question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
     this.$ = $;
     AICESAT.util.drawer(root, null);
+    this.loadCollections();
     this.refresh(); this.timer = setInterval(() => this.refresh(true), 5000);
+  }
+  async loadCollections() {
+    try {
+      const cols = await this.api.collections();
+      this.$('exColBoxes').innerHTML = cols.map(c =>
+        `<label title="${c.product} v${c.version} \u00b7 ${c.epoch}" style="margin-right:8px;white-space:nowrap"><input type="checkbox" data-flag="${c.flag}" ${c.default ? 'checked' : ''}> ${c.label}</label>`).join('');
+    } catch (e) { this.$('exColBoxes').textContent = 'collections unavailable'; }
   }
   async pollJob(jid) {
     const $ = this.$, api = this.api;

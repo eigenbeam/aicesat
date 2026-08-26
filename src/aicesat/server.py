@@ -82,12 +82,16 @@ class Handler(SimpleHTTPRequestHandler):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/api/regions":
             return self._json(200, api.list_regions())
+        if u.path == "/api/collections":
+            return self._json(200, api.list_collections())
         if u.path == "/api/lake_cells":
             return self._json(200, api.lake_cells(stats=False))
         if u.path == "/api/lake/cells":
             return self._json(200, api.lake_cells(stats=True, mission=qs.get("mission", ["ICESAT2"])[0]))
         if u.path == "/api/lake/summary":
             return self._json(200, api.lake_summary(qs.get("mission", ["ICESAT2"])[0]))
+        if u.path == "/api/lake/log":
+            return self._json(200, api.lake_log(int(qs.get("after", ["0"])[0])))
         if u.path == "/api/lake/settings":
             return self._json(200, api.lake_settings())
         if u.path == "/api/scenes":
@@ -179,6 +183,8 @@ def start_http() -> ThreadingHTTPServer:
     else:
         raise RuntimeError(f"no free port in {HTTP_PORT}..{HTTP_PORT + 9}: {last}")
     threading.Thread(target=srv.serve_forever, daemon=True, name="widget-http").start()
+    from . import logbuf
+    logbuf.install()   # start capturing pipeline logs for the Lake page's running log
     log.info("widget server on http://%s:%d", HTTP_HOST, HTTP_PORT)
     return srv
 
@@ -294,10 +300,11 @@ def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | No
 @apps.tool(name="ui_extract", **_APP)
 def ui_extract(bbox: list[float] | None = None, polygon: list[list[float]] | None = None, question: str | None = None,
                max_granules: int = 8, with_glas: bool = True, with_coreg: bool = False,
-               with_atl06: bool = False, with_icessn: bool = False) -> dict:
+               with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False) -> dict:
     geom.normalize_area(bbox, polygon)
     j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question, "max_granules": max_granules,
-                       "with_glas": with_glas, "with_coreg": with_coreg, "with_atl06": with_atl06, "with_icessn": with_icessn})
+                       "with_glas": with_glas, "with_coreg": with_coreg, "with_atl06": with_atl06,
+                       "with_icessn": with_icessn, "with_atl03": with_atl03})
     return {"job_id": j["id"], "scene_id": j["scene_id"]}
 
 
@@ -320,6 +327,16 @@ def ui_coregister(scene_id: str) -> dict:
 @apps.tool(name="ui_lake_cells", **_APP)
 def ui_lake_cells(stats: bool = True, mission: str = "ICESAT2") -> dict:
     return api.lake_cells(stats=stats, mission=mission)
+
+
+@apps.tool(name="ui_collections", **_APP)
+def ui_collections() -> list:
+    return api.list_collections()
+
+
+@apps.tool(name="ui_lake_log", **_APP)
+def ui_lake_log(after: int = 0) -> dict:
+    return api.lake_log(after)
 
 
 @apps.tool(name="ui_lake_summary", **_APP)
@@ -394,12 +411,12 @@ def job_status(job_id: str) -> dict:
 
 
 @mcp.tool()
-def check_coverage(region: str | None = None, bbox: list[float] | None = None,
-                   atl03_window: list[str] | None = None, glas_window: list[str] | None = None) -> dict:
-    """How many ATL03 (ICESat-2) and GLAH06 (ICESat/GLAS) granules touch a region, by month / laser campaign.
-    Give either a region name (see list_regions) or an explicit bbox [W, S, E, N]. No data is fetched."""
+def check_coverage(region: str | None = None, bbox: list[float] | None = None) -> dict:
+    """How many granules of each collection (ICESat/GLAS, IceBridge ICESSN, ICESat-2 ATL06 and ATL03) touch a
+    region, with a per-month breakdown. Give either a region name (see list_regions) or an explicit bbox
+    [W, S, E, N]. No data is fetched. Returns {bbox, collections: [...]}."""
     bb = regions.resolve_bbox(region, tuple(bbox) if bbox else None)
-    return api.check_coverage(list(bb), None, atl03_window, glas_window)
+    return api.check_coverage(list(bb))
 
 
 def main() -> None:
