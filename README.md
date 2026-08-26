@@ -25,25 +25,31 @@ uv sync          # Python 3.13
 uv run pytest    # offline unit tests
 ```
 
-Earthdata Login: a bearer token is read from `~/.edl/token.prod` (override with `AICESAT_EDL_FILE`, or set
-`EARTHDATA_TOKEN`). The server never writes to stdout (stdio MCP transport); logs go to stderr.
+Earthdata Login: **fetching NASA data needs a token; browsing the existing lake does not.** The server resolves a
+token in this order: `EARTHDATA_TOKEN` (env) → a token file at `~/.edl/token.prod` (override the path with
+`AICESAT_EDL_FILE`) → `~/.netrc`. Generate a token at <https://urs.earthdata.nasa.gov> (User Profile → Generate
+Token). The server never writes to stdout (stdio MCP transport); logs go to stderr.
 
 ## Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`, using the absolute path to your checkout:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`, using the absolute path to your checkout.
+**Put your Earthdata token in the `env` block** — this is machine-independent (no token file needed) and the
+recommended way for a new user to configure the server:
 
 ```json
 {
   "mcpServers": {
     "aicesat": {
       "command": "/opt/homebrew/bin/uv",
-      "args": ["--directory", "/ABSOLUTE/PATH/TO/aicesat", "run", "aicesat-server"]
+      "args": ["--directory", "/ABSOLUTE/PATH/TO/aicesat", "run", "aicesat-server"],
+      "env": { "EARTHDATA_TOKEN": "<your Earthdata Login token>" }
     }
   }
 }
 ```
 
-Restart Claude Desktop. The unified UI renders inline as an MCP App; the server also serves it at
+If you keep your token in a file instead, drop the `EARTHDATA_TOKEN` line and either place it at `~/.edl/token.prod`
+or add `"AICESAT_EDL_FILE": "/path/to/your/token"` to `env`. Restart Claude Desktop. The unified UI renders inline as an MCP App; the server also serves it at
 `http://127.0.0.1:8765/` (port via `AICESAT_PORT`) for use in a browser.
 
 Tools: `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),

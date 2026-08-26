@@ -55,6 +55,16 @@ def read_edl_token(path: Path = EDL_FILE) -> str | None:
     return None
 
 
+_AUTH_HELP = (
+    "No working Earthdata Login. Fetching NASA data needs a token — browsing the existing lake does not. "
+    "Provide one of: (1) EARTHDATA_TOKEN in the MCP server config env — in Claude Desktop add "
+    '`"env": {"EARTHDATA_TOKEN": "<token>"}` to the aicesat server entry (this is machine-independent and the '
+    f"recommended way to share the server); or (2) a token file at {EDL_FILE} (override the path with "
+    "AICESAT_EDL_FILE); or (3) a ~/.netrc with your Earthdata credentials. Generate a token at "
+    "https://urs.earthdata.nasa.gov (User Profile -> Generate Token)."
+)
+
+
 def login():
     """Authenticate with Earthdata once per process; returns the earthaccess Auth object."""
     global _auth
@@ -68,10 +78,13 @@ def login():
             os.environ["EARTHDATA_TOKEN"] = tok
             log.info("loaded EARTHDATA_TOKEN from %s", EDL_FILE)
         else:
-            log.warning("no token found in %s; falling back to earthaccess strategy='all'", EDL_FILE)
+            log.warning("no EARTHDATA_TOKEN and no token at %s; trying ~/.netrc (strategy='all')", EDL_FILE)
     strategy = "environment" if os.environ.get("EARTHDATA_TOKEN") else "all"
-    _auth = earthaccess.login(strategy=strategy)
+    try:
+        _auth = earthaccess.login(strategy=strategy)
+    except Exception as e:
+        raise RuntimeError(_AUTH_HELP) from e
     if not getattr(_auth, "authenticated", False):
-        raise RuntimeError("Earthdata login failed (strategy=%s)" % strategy)
+        raise RuntimeError(_AUTH_HELP)
     log.info("Earthdata login ok (strategy=%s)", strategy)
     return _auth
