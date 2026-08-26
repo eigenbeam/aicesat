@@ -1,18 +1,21 @@
+AICESAT.SceneView = class {
+  constructor(root, api, back) {
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="exag" class="exag" data-title="exaggeration label" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Co-registration:</span>\n  <button id="btnOff" class="on">OFF (native)</button>\n  <button id="btnOn">ON (ITRF2014 @ common epoch)</button>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">10</b></span>\n  <input id="zexag" type="range" min="1" max="50" step="1" value="10" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox" checked> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <select id="panelsMenu" style="font:inherit;font-size:12px;background:#22222a;color:var(--ink);border:1px solid var(--hair);border-radius:6px;padding:4px"><option value="">panels…</option></select>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: interpolated surface, paired-shot highlighting + native ghost, scale bar / north / shift arrows. */
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
-const params = new URLSearchParams(location.search);
-const sceneId = params.get('scene');
-let Z_EXAG = parseFloat(params.get('zexag') || '10');
+let params = new URLSearchParams(); let sceneId = null;
+let Z_EXAG = 10;
 let SHOW_IMAGERY = true;
 
 let scene = null, coreg = null, state = 'off', bounds = null, meshOk = true;
-const $ = id => document.getElementById(id);
+const $ = id => root.querySelector('#' + id);
 const GHOST = [170, 170, 180, 70], PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200], BLUE = [55, 138, 221];
 let SHOW_PAIRS = true;
 
 const deckgl = new Deck({
   parent: $('deck'),
+  width: '100%', height: '100%',
   onError: e => { console.error('[aicesat] deck error', e && e.message); if (/mesh/i.test(String(e && e.message))) { meshOk = false; render(); } },
   onLoad: () => console.log('[aicesat] deck loaded'),
   views: new OrbitView({orbitAxis: 'Z', fovy: 45}),
@@ -104,7 +107,7 @@ function surfaceLayers() {
       layers.push(new SimpleMeshLayer({
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
-        texture: img ? img.url : undefined,
+        texture: img ? api.imageryUrl(sceneId) : undefined,
         getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 160, 185, 55],
         material: {ambient: 0.45, diffuse: 0.75, shininess: 12, specularColor: [40, 40, 40]},
         parameters: img ? {} : {depthWriteEnabled: false},
@@ -208,7 +211,7 @@ function fitView() {
   for (let i = 0; i < all.length; i += 3) { minx = Math.min(minx, all[i]); maxx = Math.max(maxx, all[i]); miny = Math.min(miny, all[i + 1]); maxy = Math.max(maxy, all[i + 1]); minz = Math.min(minz, all[i + 2]); maxz = Math.max(maxz, all[i + 2]); }
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
-  const zoom = Math.log2(Math.min(innerWidth, innerHeight) / (span * 1.25));
+  const zoom = Math.log2(Math.min(root.clientWidth, root.clientHeight) / (span * 1.25));
   deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], rotationX: 35, rotationOrbit: -25, zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
 }
 
@@ -240,7 +243,7 @@ function updateStats() {
   drawHist($('histArt'), coreg.artifact, {color: '#E0A030', range: coreg.stats.artifact_range});
   const a = coreg.stats.artifact, c = coreg.comparability;
   $('readout2').innerHTML = `artifact: median <b>${(a.median * 100).toFixed(2)} cm</b> (MAD ${(a.mad * 100).toFixed(2)} cm) from <b>${(coreg.displacement_m * 100).toFixed(1)} cm</b> over ${coreg.years_apart.toFixed(1)} yr; ` +
-    `slope ${c.surface_slope_deg.toFixed(2)}° regional` + (coreg.along_track_slope_deg != null ? ` / ${coreg.along_track_slope_deg.toFixed(2)}° along-beam` : '') +
+    `slope ${c.surface_slope_deg.toFixed(2)}° regional` + (coreg.along_track_slope_deg != null ? ` / ${coreg.along_track_slope_deg.toFixed(2)}° along-beam` : '') + (coreg.dem_slope_deg != null ? ` / ${coreg.dem_slope_deg.toFixed(2)}° DEM` : '') +
     ` <details class="small" style="display:inline"><summary style="display:inline;cursor:pointer">more</summary>${coreg.dh_estimator}; only the along-beam component of the shift is observable; ${coreg.n_pairs.gross_outliers_dropped.native} gross pairs > ${coreg.n_pairs.gross_outliers_dropped.threshold_m} m dropped</details>`;
   $('unresolved').innerHTML = `<b>Unresolved (both states):</b> ${c.unresolved.join(', ')}` +
     (c.dynamic_ice_flag === true ? '<br><b style="color:#D85A30">dynamic ice — ice flow is NOT corrected</b>' : c.dynamic_ice_flag === null ? '<br>Dynamic ice: <b>unknown</b> (no velocity field)' : '') +
@@ -257,13 +260,14 @@ function updateLabels() {
   if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>paired shots n = ${coreg.pair_display_indices.GLAS.length} (ring)</span>`);
   if (coreg) items.push(`<span><span class="dot" style="background:rgb(170,170,180)"></span>ghost = native position (ON)</span>`);
   if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'interpolated from tracks (depth cue)'}</span>`);
+  if (scene.surface && scene.surface.attribution) $('attrib').dataset.dem = scene.surface.attribution;
   $('legend').innerHTML = items.join('');
   const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
   $('framenote').innerHTML = `<details><summary>details</summary>` +
     (scene.surface ? `${scene.surface.note}<br>` : '') +
     (acc ? `data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})<br>` : '') +
     `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
-  $('attrib').textContent = scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '';
+  $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
   if (coreg) {
     $('exag').hidden = false;
     $('exag').innerHTML = `<b>Horizontal offset exaggerated ×${coreg.exaggeration}</b> for visibility (clouds and blue arrow alike); true plate-motion displacement ≈ ` +
@@ -273,9 +277,9 @@ function updateLabels() {
 }
 
 async function loadScene() {
-  const r = await fetch(`/api/scene/${sceneId}`);
-  if (!r.ok) { $('status').textContent = `scene ${sceneId} not found`; return; }
-  scene = await r.json();
+  let doc;
+  try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = `scene ${sceneId}: ${e.message}`; return; }
+  scene = doc;
   coreg = scene.coreg;
   if (params.get('state') === 'on' && coreg) state = 'on';
   $('btnOff').classList.toggle('on', state === 'off'); $('btnOn').classList.toggle('on', state === 'on');
@@ -287,9 +291,7 @@ async function loadScene() {
 async function setState(s) {
   if (s === 'on' && !coreg) {
     $('status').textContent = 'running ITRF+epoch co-registration (pyproj)…'; $('btnOn').disabled = true;
-    const r = await fetch(`/api/coregister/${sceneId}`, {method: 'POST'});
-    if (!r.ok) { $('status').textContent = 'co-registration failed: ' + (await r.text()); $('btnOn').disabled = false; return; }
-    coreg = await r.json();
+    try { coreg = await api.coregister(sceneId); } catch (e) { $('status').textContent = 'co-registration failed: ' + e.message; $('btnOn').disabled = false; return; }
     $('status').textContent = coreg.cached ? 'co-registration (cached)' : `co-registration computed live in ${coreg.compute_seconds}s`;
     updateLabels();
   }
@@ -302,14 +304,12 @@ $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 $('pairs').onchange = e => { SHOW_PAIRS = e.target.checked; render(); };
 $('btnOff').onclick = () => setState('off');
 $('btnOn').onclick = () => setState('on');
-loadScene();
 
 
 // ---------------------------------------------------------------- access-method scoreboard (measured; spec C.3)
 async function loadBench() {
   try {
-    const r = await fetch('/api/bench'); if (!r.ok) return;
-    const b = await r.json();
+    const b = await api.bench(); if (!b) return;
     const rows = Object.entries(b);
     if (!rows.length) return;
     const first = rows[0][1];
@@ -325,23 +325,22 @@ async function loadBench() {
 }
 $('benchBtn').onclick = () => { $('bench').hidden = !$('bench').hidden; };
 $('benchClose').onclick = () => { $('bench').hidden = true; };
-loadBench();
 
 
-// ---------------------------------------------------------------- closeable panels
-(function panels() {
-  const ids = {hud: 'legend & frame', exag: 'exaggeration label', stats: 'Δh panels', bench: 'access comparison'};
-  const menu = $('panelsMenu');
-  for (const [id, label] of Object.entries(ids)) {
-    const el = $(id); if (!el) continue;
-    const b = document.createElement('button'); b.className = 'close'; b.title = 'hide'; b.textContent = '×';
-    b.onclick = () => { el.hidden = true; refresh(); };
-    el.appendChild(b);
+// ---------------------------------------------------------------- closeable panels (shell panel manager)
+AICESAT.util.panels(root, $('panelsMenu'));
+$('stats').addEventListener('reopen', () => updateStats());
+$('scBack').onclick = () => back();
+
+// ---------------------------------------------------------------- view API
+this.open = async (id, query) => {
+  root.classList.add('on');
+  params = new URLSearchParams(query || '');
+  if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
+  if (id !== sceneId) { sceneId = id; scene = null; coreg = null; state = 'off'; bounds = null; deckgl.setProps({layers: []}); await loadScene(); loadBench(); }
+  else deckgl.redraw && deckgl.redraw(true);
+};
+this.hide = () => root.classList.remove('on');
+
   }
-  function refresh() {
-    menu.innerHTML = '<option value="">panels…</option>' + Object.entries(ids).filter(([id]) => $(id) && $(id).hidden).map(([id, l]) => `<option value="${id}">show ${l}</option>`).join('');
-  }
-  menu.onchange = e => { const el = $(e.target.value); if (el) { el.hidden = false; if (e.target.value === 'stats') updateStats(); } e.target.value = ''; refresh(); };
-  const mo = new MutationObserver(refresh); for (const id of Object.keys(ids)) if ($(id)) mo.observe($(id), {attributes: true, attributeFilter: ['hidden']});
-  refresh();
-})();
+};

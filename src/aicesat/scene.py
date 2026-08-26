@@ -146,7 +146,16 @@ def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str
     if doc["z0"] is None:
         doc["z0"] = float(np.median(arrays["h"]))
     if mission == "ICESAT2":
-        doc["surface"] = surface_grid(doc["frame"], arrays, doc["z0"])
+        doc["surface_photon"] = surface_grid(doc["frame"], arrays, doc["z0"])
+        doc["surface"] = doc["surface_photon"]
+        try:
+            from . import dem
+            d = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
+            if d is not None:
+                doc["surface"] = d
+        except Exception as e:  # DEM is a base layer, never a blocker
+            import logging
+            logging.getLogger(__name__).warning("DEM unavailable, using photon-interpolated surface: %s", e)
     if mission == "GLAS":
         arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
         cache.save(cache_key + "-clean", arrays, meta)

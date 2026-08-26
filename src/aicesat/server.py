@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from . import api, atl03, cache, coverage, geom, regions, scene
+from . import api, atl03, cache, coverage, geom, regions, scene, uibuild
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ _lock = api._lock  # serialise compute (one user, one demo)
 
 
 def widget_url(scene_id: str) -> str:
-    return f"http://{HTTP_HOST}:{HTTP_PORT}/?scene={scene_id}"
+    return f"http://{HTTP_HOST}:{HTTP_PORT}/#scene/{scene_id}"
 
 
 # ----------------------------------------------------------------------------- compute (delegated to api.py)
@@ -63,6 +63,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/" or self.path.startswith("/?") or self.path == "/index.html":
+            dist = uibuild.DIST
+            if dist.exists():
+                body = dist.read_bytes()
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+                return self.wfile.write(body)
         if self.path.startswith("/api/scene/") and self.path.endswith("/imagery.jpg"):
             sid = self.path.split("/")[3]
             doc = cache.load_scene(sid)
@@ -155,6 +161,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 def start_http() -> ThreadingHTTPServer:
     global HTTP_PORT
+    try:
+        if uibuild.needs_build():
+            uibuild.build()
+            log.info("built UI %s", uibuild.DIST)
+    except Exception as e:  # the legacy pages still work
+        log.warning("UI build failed: %s", e)
     last = None
     for port in range(HTTP_PORT, HTTP_PORT + 10):
         try:
@@ -244,11 +256,14 @@ def show_photons(region: str | None = None, bbox: list[float] | None = None, pol
 
 
 @mcp.tool()
-def open_area_selector() -> dict:
-    """URL of the map page where the user draws a bounding box or polygon on Sentinel-2 imagery, checks ICESat-2 / GLAS
-    coverage, and builds a scene from it (the page shows which H3 cells are already in the lake)."""
-    return {"url": f"http://{HTTP_HOST}:{HTTP_PORT}/select.html",
-            "how": "draw a box (drag) or polygon (click vertices, double-click to close), then Check coverage / Build scene"}
+def open_ui() -> dict:
+    """URL of the unified UI: Explore (imagery map, draw a box or polygon on Sentinel-2 imagery, coverage check, build
+    scenes, open the 3-D viewer) and Lake (H3 grid with per-cell stats, storage limit, background loading, eviction)."""
+    return {"url": f"http://{HTTP_HOST}:{HTTP_PORT}/#explore", "lake": f"http://{HTTP_HOST}:{HTTP_PORT}/#lake",
+            "how": "Explore: drag a box (or Polygon: click vertices, Enter), Check coverage / Build scene; Lake: click cells, Load in background / Evict"}
+
+
+open_area_selector = open_ui  # backward-compatible name
 
 
 @mcp.tool()

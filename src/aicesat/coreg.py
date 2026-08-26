@@ -231,7 +231,7 @@ def comparability_block(*, coverage_coincides: bool, radius_m: float, slope_deg:
         "coverage_coincides": coverage_coincides,
         "colocation_radius_m": radius_m,
         "surface_slope_deg": slope_deg,
-        "surface_slope_method": "least-squares plane over all ICESat-2 photons in the bbox (regional gradient)",
+        "surface_slope_method": "least-squares plane over all ICESat-2 photons in the bbox (regional gradient); see dem_slope_deg for the DEM-derived local slope",
         "effective_slope_from_artifact_deg": effective_slope_deg,
         "horizontal_to_vertical_sensitivity": sens,
         "plate_motion_corrected": True,
@@ -270,6 +270,12 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
     I, Gd = data["ICESAT2"], data["GLAS"]
     z0 = doc["z0"]
     slope_deg, _ = fit_slope_deg(I["x0"], I["y0"], I["h0"])
+    dem_slope = None
+    try:
+        from . import dem
+        dem_slope = dem.slope_deg(doc.get("surface"), Gd["x0"], Gd["y0"])
+    except Exception:
+        pass
     # Three co-locations:
     #   native : native positions, native heights                       -> OFF histogram
     #   horiz  : co-registered positions, NATIVE heights                -> isolates the horizontal re-pairing artifact
@@ -321,6 +327,7 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         "frame_vertical_shift_m": frame_shift,  # height change from the native-frame -> ITRF2014 Helmert (not plate motion)
         "relative_shift_vector_m": vrel.tolist(),
         "along_track_slope_deg": along_slope_deg,  # median |local along-beam slope| at the pairs (the observable component)
+        "dem_slope_deg": dem_slope,               # median ArcticDEM slope at the GLAS shots (None without a DEM)
         "dh_estimator": f"local along-track linear fit of ICESat-2 photons within {p.colocation_radius_m} m, evaluated at the GLAS footprint centre",
         "exaggeration": exag,
         "exaggeration_auto": p.exaggeration <= 0,

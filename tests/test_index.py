@@ -226,3 +226,27 @@ def test_settings_roundtrip(tmp_path, monkeypatch):
     _synthetic_lake(tmp_path, monkeypatch, n_cells=1)
     assert lake.get_settings()["max_bytes"] == lake.DEFAULT_MAX_BYTES
     assert lake.set_settings(max_bytes=123)["max_bytes"] == 123 and lake.get_settings()["max_bytes"] == 123
+
+
+def test_dem_tile_addressing_and_window_read(tmp_path, monkeypatch):
+    from aicesat import dem
+    import rasterio
+    from rasterio.transform import from_origin
+    # STAC item 24_70 has proj:bbox [2899904, -1700096, 3000096, -1599904]: its centre must map to (24, 70)
+    assert dem.tile_index(2_950_000, -1_650_000) == (24, 70)
+    assert dem.tiles_for_extent(2_950_000, -1_650_000, 3_050_000, -1_550_000) == [(24, 70), (24, 71), (25, 70), (25, 71)]
+    # synthetic COG-like GeoTIFF: a plane z = 0.01 * x_m, nodata outside; read it back onto a coarse grid
+    path = tmp_path / "t.tif"
+    w, h, res = 200, 150, 32.0
+    left, top = 2_900_000.0, -1_600_000.0
+    xs = left + (np.arange(w) + 0.5) * res
+    data = np.tile(0.01 * (xs - left), (h, 1)).astype("f4")
+    with rasterio.open(path, "w", driver="GTiff", width=w, height=h, count=1, dtype="float32", crs="EPSG:3413",
+                       transform=from_origin(left, top, res, res), nodata=-9999.0) as dst:
+        dst.write(data, 1)
+    bounds = (left + 640, top - 3200, left + 3200, top - 640)  # inside the tile
+    arr = dem._read_tile_window(str(path), bounds, (20, 20))
+    assert arr is not None and np.isfinite(arr).all()
+    # values increase with x by 0.01 m per m: across 2560 m -> 25.6 m
+    assert abs((arr[0, -1] - arr[0, 0]) - 0.01 * (2560 - 128)) < 0.5
+    assert abs(arr[0, 0] - arr[-1, 0]) < 1e-3  # no y dependence

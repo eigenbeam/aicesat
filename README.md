@@ -174,6 +174,31 @@ The per-pair artifact panel uses co-registered positions with *native* heights, 
 the ITRF2008→ITRF2014 frame step is reported separately (`frame_vertical_shift_m`) and never counted as slope
 artifact.
 
+## Unified UI (2026-08-26)
+One single-file page, built from `src/aicesat/ui/*` + vendored deck.gl / h3-js by `scripts/build_ui.py` (pure Python;
+the server rebuilds on start when sources are newer) into `src/aicesat/widget/dist/aicesat.html`, served at `/`:
+- **Explore** (`#explore`): imagery map, candidate regions, draw a box or polygon, coverage check, build (background
+  job with live log), scene footprints coloured by status (ready / loading-pulsing / error), scenes list, optional
+  global H3 grid (resolution follows zoom: res 3/4/5/6; loaded cells shaded; hover = aggregated stats).
+- **Lake** (`#lake`): grid on by default, per-cell stats on hover (bytes, rows, files, granules, chunks, age; shading
+  by data age), click-select res-6 cells → *Load in background* (job) or *Evict*; summary with usage vs a storage
+  limit (default 5 GB, editable; exceeding it auto-evicts least-recently-ingested cells and lists them); activity
+  panel of jobs. Coverage is recorded per (chunk, cell) so a partial eviction re-fetches only what was evicted.
+- **Scene** (`#scene/<id>[?state=on&zexag=N]`): the 3-D viewer as a view inside Explore with a Back button; all
+  panels closeable (reopen via the panels menu); pair markers are a thin pale ring (toggle); text condensed with
+  details disclosures.
+The same page will be served to Claude Desktop as an MCP App (Phase 4); `AICESAT.api` is the single data adapter.
+
+## DEM under the imagery
+The drape surface is **ArcticDEM v4.1 32 m** (PGC, AWS Open Data public COGs, EPSG:3413, WGS84-ellipsoid heights — the
+same vertical reference as ATL03 `h_ph`; CC-BY-4.0, citation in `dem.py`). `dem.surface_for_frame` reads the scene's
+extent from the 100 km tiles by `/vsicurl/` window reads with COG overviews (no warp: the frame is already
+EPSG:3413), ~1 s for a 76 km box; cached under `data/cache/dem/`. The photon-interpolated grid is kept as
+`surface_photon` and used as the fallback when the DEM is unavailable. Caveat shown on screen: the mosaic is a
+multi-year median (2007–2022), so decimetre–metre offsets from any single pass are expected and are not the
+comparison signal. The comparability block gains `dem_slope_deg` (median DEM slope at the GLAS shots) next to the
+regional plane fit and the along-beam slope.
+
 ## Area selection, imagery, axes, relief
 - **Area selector** (`/select.html`, MCP tool `open_area_selector`): a 2-D map on Sentinel-2 cloudless imagery with
   the candidate regions outlined and the lake's materialized H3 cells drawn as hexagons. Drag a box, or click polygon
