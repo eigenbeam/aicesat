@@ -1,6 +1,13 @@
 # Cross-Mission Altimetry MCP Server — Design Spec
 
 **Status:** draft / hackweek scope — **Appendix D (Slices 1–3) built and verified on real data 2026-08-25; the §5–§6 index + byte-range access built for ATL03 and the Appendix C comparison measured (C.5b)**; build notes are marked *Build note (2026-08-25)* throughout, measured results in B.10 and C.5b.
+> **Current status (2026-08-26).** This document is the original design record and is kept as written. Two parts have since been superseded by the implementation, and are called out here so a reader isn't misled by the body below:
+>
+> - **The "co-registration reveal" (Appendix B) was retired.** The true plate-motion shift between the GLAS and ICESat-2 epochs is sub-pixel at scene scale, so the exaggerated OFF→ON visual and its animated companion were dropped in favour of honest correction *toggles*: the 3-D clouds always render true positions, and the effect is read from the co-located Δh panel, not from a moved point cloud.
+> - **The demo is no longer Greenland-only.** The Explorer is a global 3-D globe and scene geometry is latitude-aware (`scene.frame_crs`), so scenes render anywhere on Earth. Appendix D's "Demo B" framing and fixed EGIG region are historical.
+>
+> See the README for the current shape of the UI and pipeline.
+
 **One-line:** An MCP server that answers cross-mission elevation questions over GLAS, IceBridge, and ICESat-2 — co-registering samples to a common ITRF frame and epoch so plate motion doesn't misalign footprints, with per-sample provenance — by fetching only the data chunks a question needs, accumulating them into a local persistent Parquet lake, and computing answers locally with DuckDB.
 
 ---

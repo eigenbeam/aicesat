@@ -46,44 +46,6 @@ def local_frame(bbox) -> dict:
             "east_xy": (ev / np.linalg.norm(ev)).round(6).tolist()}
 
 
-def surface_grid(frame: dict, arrays: dict, z0: float, cell_m: float = 500.0, max_cells: int = 40_000) -> dict:
-    """Coarse height field from the ICESat-2 photons: per-cell median where a track crosses the cell, linear
-    interpolation across the gaps between tracks (inside the convex hull only). A depth cue, labelled as such."""
-    from scipy.interpolate import griddata
-
-    x, y = to_local(frame, arrays["lon"], arrays["lat"])
-    z = np.asarray(arrays["h"], dtype="f8") - z0
-    x0, y0, x1, y1 = bbox_extent(frame)  # full box, so the imagery drape and axes cover the requested area
-    cell = float(cell_m)
-    while ((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) > max_cells:
-        cell *= 1.5
-    nx, ny = int(np.ceil((x1 - x0) / cell)) + 1, int(np.ceil((y1 - y0) / cell)) + 1
-    ix = ((x - x0) / cell).astype(np.int64); iy = ((y - y0) / cell).astype(np.int64)
-    key = iy * nx + ix
-    order = np.argsort(key, kind="stable")
-    ks, zs = key[order], z[order]
-    uniq, start = np.unique(ks, return_index=True)
-    med = np.array([np.median(chunk) for chunk in np.split(zs, start[1:])])
-    cxs, cys = x0 + (uniq % nx) * cell, y0 + (uniq // nx) * cell
-    gx, gy = np.meshgrid(x0 + np.arange(nx) * cell, y0 + np.arange(ny) * cell)
-    if uniq.size >= 3:
-        grid = griddata((cxs, cys), med, (gx, gy), method="linear")
-        outside = ~np.isfinite(grid)
-        # outside the hull: distance-weighted mean of the nearest observed cells (smooth), not a nearest-cell cliff
-        from scipy.spatial import cKDTree
-        tree = cKDTree(np.column_stack([cxs, cys]))
-        dist, nn = tree.query(np.column_stack([gx[outside], gy[outside]]), k=min(8, cxs.size))
-        wgt = 1.0 / np.maximum(dist, 1.0) ** 2
-        grid[outside] = (med[nn] * wgt).sum(axis=1) / wgt.sum(axis=1)
-    else:
-        grid, outside = np.full(gx.shape, np.nan), np.ones(gx.shape, bool)
-    zlist = [None if not np.isfinite(v) else round(float(v), 2) for v in grid.ravel()]
-    return {"x0": float(x0), "y0": float(y0), "cell": cell, "nx": nx, "ny": ny, "z": zlist,
-            "n_cells_observed": int(uniq.size), "n_cells_extrapolated": int(outside.sum()),
-            "note": (f"interpolated from ICESat-2 tracks ({uniq.size} of {nx * ny} cells observed, {cell:.0f} m grid; "
-                     f"{int(outside.sum())} cells outside the track hull nearest-filled); depth cue only")}
-
-
 def bbox_extent(frame: dict) -> tuple[float, float, float, float]:
     """Local-metre extent of the bbox polygon (its four corners, since the projection is not axis-aligned)."""
     w, s, e, n = frame["bbox"]
@@ -163,16 +125,13 @@ def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str
     if doc["z0"] is None:
         doc["z0"] = float(np.median(arrays["h"]))
     if mission == "ICESAT2":
-        doc["surface_photon"] = surface_grid(doc["frame"], arrays, doc["z0"])
-        doc["surface"] = doc["surface_photon"]
+        doc["surface"] = None
         try:
             from . import dem
-            d = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
-            if d is not None:
-                doc["surface"] = d
-        except Exception as e:  # DEM is a base layer, never a blocker
+            doc["surface"] = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
+        except Exception as e:  # DEM is a base layer, never a blocker; no photon-interpolated fallback
             import logging
-            logging.getLogger(__name__).warning("DEM unavailable, using photon-interpolated surface: %s", e)
+            logging.getLogger(__name__).warning("DEM unavailable, no surface shown: %s", e)
     if mission == "GLAS":
         arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
         cache.save(cache_key + "-clean", arrays, meta)

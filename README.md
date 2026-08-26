@@ -80,11 +80,13 @@ azimuthal-equidistant projection elsewhere, so scenes render anywhere on Earth.
 
 ## DEM and imagery
 
-The scene surface is **ArcticDEM v4.1** (PGC, public COGs, WGS84-ellipsoid heights — the same vertical reference as
-ATL03), read by window over `/vsicurl/` and cached; outside its coverage the surface falls back to a height field
-interpolated from the photons (labelled as such). Scene imagery is **Sentinel-2 cloudless** (EOX, CC BY-NC-SA 4.0),
-mosaicked into the scene frame and draped on the surface. The Explore/Lake globe basemap is Natural Earth (public
-domain). Attributions appear on screen.
+The scene surface is a real DEM chosen by region, always on **WGS84-ellipsoid heights** (the same vertical reference as
+ATL03), read by window over `/vsicurl/` and cached: **ArcticDEM v4.1** (Arctic, EPSG:3413) and **REMA v2.0** (Antarctic,
+EPSG:3031) — both already ellipsoidal — and **Copernicus GLO-30** elsewhere, whose EGM2008 orthometric heights are
+converted to ellipsoidal by adding the NGA egm08 geoid undulation (`h = H + N`). There is no photon-interpolated
+fallback: a scene shows a DEM only where one covers it. Scene imagery is **Sentinel-2 cloudless** (EOX, CC BY-NC-SA 4.0),
+draped on the surface. The Explore/Lake globe basemap is Natural Earth 50 m land (public domain). Attributions appear
+on screen.
 
 ## Scripts
 

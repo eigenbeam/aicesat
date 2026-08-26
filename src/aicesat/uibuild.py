@@ -18,7 +18,7 @@ def build() -> Path:
     js = "\n;\n".join((UI / f).read_text() for f in SOURCES if (UI / f).exists())
     deck = next(VENDOR.glob("deck.gl-*.min.js")).read_text()
     h3js = next(VENDOR.glob("h3-js-*.umd.js")).read_text()
-    land = (VENDOR / "ne_land_110m.js").read_text()
+    land = (VENDOR / "ne_land_50m.js").read_text()
     bridge = bridge_as_classic_script(next(VENDOR.glob("ext-apps-*.app-with-deps.js")).read_text())
     # </script> inside inlined code would terminate the tag
     safe = lambda s: s.replace("</script", "<\\/script")
