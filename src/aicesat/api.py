@@ -116,9 +116,10 @@ def _chunked_bytes(raw: bytes, chunk: int, chunk_bytes: int, mime: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- building scenes (jobs)
-def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False, log_fn=lambda m: None,
-                scene_id: str | None = None) -> dict:
-    """Full pipeline for an area: ATL03 via index+lake, imagery, optional GLAS and co-registration. Returns the scene doc."""
+def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
+                with_atl06=False, with_icessn=False, log_fn=lambda m: None, scene_id: str | None = None) -> dict:
+    """Full pipeline for an area: ATL03 via index+lake, imagery, optional GLAS / ATL06 / IceBridge ICESSN and
+    co-registration. Returns the scene doc."""
     bb, poly = geom.normalize_area(bbox, polygon)
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
@@ -143,6 +144,24 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
                 scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
                 log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
+            # ATL06 / IceBridge ICESSN are optional comparison series; their coverage is spottier (flight lines,
+            # land-ice only), so a miss over this area is logged, not fatal — the scene still builds.
+            if with_atl06:
+                try:
+                    from . import atl06
+                    a_arrays, a_meta = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
+                    scene.add_series(doc, "ATL06", a_arrays, a_meta, a_meta["cache_key"])
+                    log_fn(f"ATL06: {a_meta['n']:,} land-ice segments")
+                except Exception as e:
+                    log.warning("ATL06 unavailable: %s", e); log_fn(f"ATL06 unavailable: {e}")
+            if with_icessn:
+                try:
+                    from . import icessn
+                    i_arrays, i_meta = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
+                    scene.add_series(doc, "ICESSN", i_arrays, i_meta, i_meta["cache_key"])
+                    log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
+                except Exception as e:
+                    log.warning("ICESSN unavailable: %s", e); log_fn(f"ICESSN unavailable: {e}")
             cache.save_scene(sid, doc)
         if with_coreg and with_glas:
             coregister(sid)
@@ -165,7 +184,9 @@ def start_job(params: dict, kind: str = "scene") -> dict:
         try:
             if kind == "scene":
                 doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"), int(params.get("max_granules", 8)),
-                                  bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)), lambda m: job["log"].append(m), scene_id=sid)
+                                  bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
+                                  with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
+                                  log_fn=lambda m: job["log"].append(m), scene_id=sid)
                 job.update(status="done", widget_url=_widget_url(doc["scene_id"]))
             else:
                 from . import planner

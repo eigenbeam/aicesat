@@ -9556,7 +9556,9 @@ AICESAT.ExploreView = class {
         <div id="exCoords" class="mono small">no area selected</div>
         <div style="margin-top:8px"><button id="exCov" disabled>Check coverage</button><button id="exBuild" disabled>Build scene</button>
           <label class="small" title="upper bound on how many ATL03/GLAS granules the build will fetch">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label>
-          <label class="small"><input id="exGlas" type="checkbox" checked> GLAS</label></div>
+          <label class="small" title="ICESat/GLAS GLAH06 (2003-2009)"><input id="exGlas" type="checkbox" checked> GLAS</label>
+          <label class="small" title="ICESat-2 ATL06 land-ice height (2018-)"><input id="exAtl06" type="checkbox"> ATL06</label>
+          <label class="small" title="Operation IceBridge ATM ICESSN (2009-2019); flight-line coverage only"><input id="exIcessn" type="checkbox"> ICESSN</label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
@@ -9582,7 +9584,8 @@ AICESAT.ExploreView = class {
           `<div class="covrow ${d.both_present ? 'ok' : 'no'}">${d.both_present ? '✓ both missions present' : '✗ not both missions present'}</div>`;
       } catch (e) { $('exOut').textContent = 'error: ' + e.message; } };
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
-      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exGlas').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
+      const body = {...a, max_granules: +$('exMaxG').value, with_glas: $('exGlas').checked, with_coreg: $('exGlas').checked,
+        with_atl06: $('exAtl06').checked, with_icessn: $('exIcessn').checked, question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       $('exBuild').disabled = true; $('exOut').textContent = 'starting build…';
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; $('exBuild').disabled = false; } };
     this.$ = $;

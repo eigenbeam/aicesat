@@ -12,6 +12,8 @@ log = logging.getLogger(__name__)
 
 ATL03_SHORT_NAME, ATL03_VERSION = "ATL03", "007"
 GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
+ATL06_SHORT_NAME, ATL06_VERSION = "ATL06", "007"
+ICESSN_SHORT_NAME, ICESSN_VERSION = "ILATM2", "2"
 
 
 def granule_name(g) -> str:

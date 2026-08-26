@@ -40,6 +40,8 @@ DEFAULT_REGION = "egig_west_flank"
 # season so the demo's "epoch" is well defined; widen if coverage is thin.
 DEFAULT_ATL03_WINDOW = ("2020-03-01", "2020-05-31")
 DEFAULT_GLAS_WINDOW = ("2003-02-20", "2009-10-11")
+DEFAULT_ATL06_WINDOW = ("2019-03-01", "2019-05-31")   # ICESat-2 land-ice, same spring season as ATL03
+DEFAULT_ICESSN_WINDOW = ("2009-01-01", "2019-12-31")  # Operation IceBridge ATM, fills the ICESat -> ICESat-2 gap
 
 
 def resolve_bbox(region: str | None = None, bbox: BBox | None = None) -> BBox:

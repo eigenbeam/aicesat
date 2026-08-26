@@ -28,7 +28,7 @@ def frame_crs(lat: float, lon: float) -> str:
 def _tr(crs: str) -> Transformer:
     return Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 
-COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48]}
+COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48], "ATL06": [80, 200, 160], "ICESSN": [190, 120, 210]}
 
 
 def local_frame(bbox) -> dict:
