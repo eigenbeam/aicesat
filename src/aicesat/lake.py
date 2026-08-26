@@ -11,6 +11,9 @@ import logging
 import zlib
 from datetime import datetime, timezone
 
+import threading
+import time
+
 import duckdb
 import numpy as np
 import pyarrow as pa
@@ -88,10 +91,37 @@ EVICTION_LOG = INDEX_DIR / "evictions.jsonl"
 DEFAULT_MAX_BYTES = 5 << 30  # 5 GB
 
 
-def meta_conn() -> duckdb.DuckDBPyConnection:
-    """Coverage is recorded per (chunk, cell): a chunk materialized into three cells has three rows, so evicting one
-    cell leaves the other two marked and the planner re-fetches the chunk only for the evicted cell."""
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+_META_LOCK = threading.RLock()  # DuckDB takes an exclusive file lock; serialise all opens in this process
+
+
+class _Meta:
+    """Context manager: hold the process lock for the whole open->query->close, with a short retry if another
+    process (a stray CLI, a second server) still holds the OS lock."""
+
+    def __enter__(self) -> duckdb.DuckDBPyConnection:
+        _META_LOCK.acquire()
+        INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        for attempt in range(20):
+            try:
+                self.con = _open_meta()
+                return self.con
+            except duckdb.IOException:
+                if attempt == 19:
+                    _META_LOCK.release(); raise
+                time.sleep(0.1)
+
+    def __exit__(self, *exc):
+        try:
+            self.con.close()
+        finally:
+            _META_LOCK.release()
+
+
+def meta_db() -> "_Meta":
+    return _Meta()
+
+
+def _open_meta() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(META_DB))
     con.execute("""CREATE TABLE IF NOT EXISTS coverage_cells (
         mission VARCHAR, granule VARCHAR, beam VARCHAR, chunk_index INTEGER, h3_cell UBIGINT, ingested_at TIMESTAMP,
@@ -104,22 +134,24 @@ def meta_conn() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def meta_conn() -> duckdb.DuckDBPyConnection:  # legacy: unlocked open (tests/CLI); server paths use meta_db()
+    return _open_meta()
+
+
 def mark_ingested(mission: str, granule: str, beam: str, chunk_cells: dict[int, list[int]]) -> None:
-    con = meta_conn()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)",
-                    [(mission, granule, beam, int(k), int(c), now) for k, cells in chunk_cells.items() for c in cells])
-    con.close()
+    with meta_db() as con:
+        con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)",
+                        [(mission, granule, beam, int(k), int(c), now) for k, cells in chunk_cells.items() for c in cells])
 
 
 def ingested_chunk_cells(mission: str, granules: list[str]) -> set[tuple[str, str, int, int]]:
     """(granule, beam, chunk_index, h3_cell) tuples already materialized."""
     if not META_DB.exists() or not granules:
         return set()
-    con = meta_conn()
-    rows = con.execute("SELECT granule, beam, chunk_index, h3_cell FROM coverage_cells WHERE mission = ? AND granule IN (" +
-                       ",".join("?" * len(granules)) + ")", [mission, *granules]).fetchall()
-    con.close()
+    with meta_db() as con:
+        rows = con.execute("SELECT granule, beam, chunk_index, h3_cell FROM coverage_cells WHERE mission = ? AND granule IN (" +
+                           ",".join("?" * len(granules)) + ")", [mission, *granules]).fetchall()
     return {(g, b, int(k), int(c)) for g, b, k, c in rows}
 
 
@@ -151,13 +183,13 @@ def cell_stats(mission: str = "ICESAT2") -> dict[int, dict]:
                      "granules": sorted({f.name.split("__")[0] for f in files}), "beams": sorted({f.stem.split("__")[1] for f in files}),
                      "chunks": 0, "first_ingested": None, "last_ingested": None}
     if META_DB.exists() and out:
-        con = meta_conn()
-        for cell, n, first, last in con.execute("SELECT h3_cell, count(*), min(ingested_at), max(ingested_at) FROM coverage_cells "
-                                                "WHERE mission = ? GROUP BY h3_cell", [mission]).fetchall():
+        with meta_db() as con:
+            grp = con.execute("SELECT h3_cell, count(*), min(ingested_at), max(ingested_at) FROM coverage_cells "
+                              "WHERE mission = ? GROUP BY h3_cell", [mission]).fetchall()
+        for cell, n, first, last in grp:
             if int(cell) in out:
                 out[int(cell)].update(chunks=int(n), first_ingested=first.isoformat() if first else None,
                                       last_ingested=last.isoformat() if last else None)
-        con.close()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for st in out.values():
         st["age_s"] = (now - datetime.fromisoformat(st["last_ingested"])).total_seconds() if st["last_ingested"] else None
@@ -190,17 +222,16 @@ def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual") -> list
 
     stats = cell_stats(mission)
     evicted = []
-    con = meta_conn()
-    for c in cells:
-        c = int(c)
-        st = stats.get(c)
-        if st is None:
-            continue
-        shutil.rmtree(cell_dir(mission, c), ignore_errors=True)
-        con.execute("DELETE FROM coverage_cells WHERE mission = ? AND h3_cell = ?", [mission, c])
-        evicted.append({"cell": c, "bytes": st["bytes"], "rows": st["rows"], "last_ingested": st["last_ingested"], "reason": reason,
-                        "evicted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-    con.close()
+    with meta_db() as con:
+        for c in cells:
+            c = int(c)
+            st = stats.get(c)
+            if st is None:
+                continue
+            shutil.rmtree(cell_dir(mission, c), ignore_errors=True)
+            con.execute("DELETE FROM coverage_cells WHERE mission = ? AND h3_cell = ?", [mission, c])
+            evicted.append({"cell": c, "bytes": st["bytes"], "rows": st["rows"], "last_ingested": st["last_ingested"], "reason": reason,
+                            "evicted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     if evicted:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         with EVICTION_LOG.open("a") as f:

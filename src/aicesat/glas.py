@@ -93,7 +93,7 @@ def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[s
     paths = earthaccess.download(granules, local_path=str(raw_dir), threads=8, show_progress=False)
     parts, prov = [], []
     for path in sorted(map(str, paths)):  # download order is not guaranteed: provenance is the file itself
-        name = path.rsplit("/", 1)[-1]
+        name = path.rsplit("/", 1)[-1]  # already the .h5 basename
         t0 = time.time()
         with h5py.File(path, "r") as f:
             d = _extract_granule(f, bbox)

@@ -113,7 +113,7 @@ def ensure_cells(cells, window, max_granules: int = 40, force: bool = False, thr
 def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox) -> dict:
     t0 = time.time()
     granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[:max_granules]
-    names = [g["meta"]["native-id"] for g in granules]
+    names = [coverage.granule_name(g) for g in granules]
     idx = index.ensure_index(granules)
     refs_cells = index.chunk_refs(cells, granules=names)
     refs = index.chunk_refs(cells, granules=names, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through

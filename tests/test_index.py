@@ -250,3 +250,46 @@ def test_dem_tile_addressing_and_window_read(tmp_path, monkeypatch):
     # values increase with x by 0.01 m per m: across 2560 m -> 25.6 m
     assert abs((arr[0, -1] - arr[0, 0]) - 0.01 * (2560 - 128)) < 0.5
     assert abs(arr[0, 0] - arr[-1, 0]) < 1e-3  # no y dependence
+
+
+class _FakeGranule(dict):
+    def __init__(self, native_id, url):
+        super().__init__(); self["meta"] = {"native-id": native_id}; self._url = url
+    def data_links(self, access=None):
+        return [self._url] if self._url else []
+
+
+def test_granule_name_prefers_h5_basename_over_concept_id():
+    from aicesat import coverage
+    g = _FakeGranule("SC:ATL03.007:318231820", "https://data.nsidc.earthdatacloud.nasa.gov/x/ATL03_20200312172457_11760603_007_01.h5")
+    assert coverage.granule_name(g) == "ATL03_20200312172457_11760603_007_01.h5"
+    # index can then parse it
+    assert index.parse_granule_name(coverage.granule_name(g))["cycle"] == 6
+    # no data link -> fall back to native-id (won't be indexed, but must not crash the name step)
+    g2 = _FakeGranule("ATL03_20200313060950_11840605_007_01.h5", None)
+    assert coverage.granule_name(g2) == "ATL03_20200313060950_11840605_007_01.h5"
+
+
+def test_dedup_granules_collapses_revision_duplicates():
+    from aicesat import coverage
+    url = "https://x/ATL03_20200312172457_11760603_007_01.h5"
+    gs = [_FakeGranule("ATL03_20200312172457_11760603_007_01.h5", url), _FakeGranule("SC:ATL03.007:1", url),
+          _FakeGranule("ATL03_20200313060950_11840605_007_01.h5", "https://x/ATL03_20200313060950_11840605_007_01.h5")]
+    out = coverage.dedup_granules(gs)
+    assert [coverage.granule_name(g) for g in out] == ["ATL03_20200312172457_11760603_007_01.h5", "ATL03_20200313060950_11840605_007_01.h5"]
+
+
+def test_meta_db_lock_serialises_concurrent_access(tmp_path, monkeypatch):
+    import threading
+    cells = _synthetic_lake(tmp_path, monkeypatch, n_cells=2)
+    errors = []
+    def worker():
+        try:
+            for _ in range(15):
+                lake.cell_stats(); lake.mark_ingested("ICESAT2", "GX", "gt1r", {0: cells})
+        except Exception as e:
+            errors.append(e)
+    ts = [threading.Thread(target=worker) for _ in range(4)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert not errors, errors

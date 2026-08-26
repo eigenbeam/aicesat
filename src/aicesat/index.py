@@ -69,9 +69,10 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
     import earthaccess
 
     auth.login()
-    name = granule["meta"]["native-id"]
-    info = parse_granule_name(name)
+    from .coverage import granule_name
     url = granule.data_links()[0]
+    name = granule_name(granule)
+    info = parse_granule_name(name)
     s3 = (granule.data_links(access="direct") or [""])[0]
     t0 = time.time()
     rows = {k: [] for k in ("granule", "url", "s3url", "revision", "sc_orient", "sdp_epoch", "beam", "strong", "cycle", "rgt",

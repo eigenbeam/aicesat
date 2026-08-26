@@ -14,6 +14,30 @@ ATL03_SHORT_NAME, ATL03_VERSION = "ATL03", "007"
 GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
 
 
+def granule_name(g) -> str:
+    """Canonical granule identity: the .h5 filename from the data link, not the CMR native-id (which is sometimes a
+    concept-id like 'SC:ATL03.007:NNN' for revision duplicates). Falls back to the native-id."""
+    try:
+        links = g.data_links()
+        if links:
+            base = links[0].rsplit("/", 1)[-1]
+            if base.endswith(".h5") or base.endswith(".H5"):
+                return base
+    except Exception:
+        pass
+    return g["meta"]["native-id"]
+
+
+def dedup_granules(granules: list) -> list:
+    """Keep one entry per .h5 file (drops CMR revision duplicates), preserving order."""
+    seen, out = set(), []
+    for g in granules:
+        n = granule_name(g)
+        if n not in seen:
+            seen.add(n); out.append(g)
+    return out
+
+
 def _granule_start(g) -> datetime | None:
     try:
         rng = g["umm"]["TemporalExtent"]["RangeDateTime"]
@@ -47,7 +71,7 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
     kw = dict(short_name=short_name, version=version, bounding_box=tuple(bbox))
     if window:
         kw["temporal"] = tuple(window)
-    granules = earthaccess.search_data(count=-1, **kw)
+    granules = dedup_granules(earthaccess.search_data(count=-1, **kw))
     log.info("%s v%s: %d granules over %s %s", short_name, version, len(granules), bbox, window)
     try:
         cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -69,7 +93,7 @@ def check_coverage(bbox, atl03_window=None, glas_window=None) -> dict:
         by_month[t.strftime("%Y-%m") if t else "?"] += 1
     out["ATL03"] = {"version": ATL03_VERSION, "window": list(atl03_window), "n_granules": len(a),
                     "by_month": dict(sorted(by_month.items())),
-                    "granules": [g["meta"]["native-id"] for g in a][:50]}
+                    "granules": [granule_name(g) for g in a][:50]}
 
     gl = search(GLAS_SHORT_NAME, GLAS_VERSION, bbox, glas_window)
     by_campaign = Counter()
@@ -78,6 +102,6 @@ def check_coverage(bbox, atl03_window=None, glas_window=None) -> dict:
         by_campaign[campaign_for(t.date()) if t else "?"] += 1
     out["GLAH06"] = {"version": GLAS_VERSION, "window": list(glas_window), "n_granules": len(gl),
                      "by_campaign": dict(by_campaign),
-                     "granules": [g["meta"]["native-id"] for g in gl][:50]}
+                     "granules": [granule_name(g) for g in gl][:50]}
     out["both_present"] = bool(a) and bool(gl)
     return out
