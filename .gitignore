@@ -1,7 +1,12 @@
+
 __pycache__/
 .claude/.cc-writes/
 .claude/settings.local.json
 .pytest_cache/
 .venv/
+*.jpeg
+*.jpg
+*.png
 *.pyc
+# personal screenshots
 data/
