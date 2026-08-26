@@ -15,7 +15,13 @@ AICESAT.MapView = class {
     this.deck = new Deck({
       parent: container, views: new Globe({resolution: 12}),
       initialViewState: {...this.state.viewState, minZoom: 0, maxZoom: 12}, controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}, layers: [],
-      onViewStateChange: ({viewState}) => { this.state.viewState = viewState; this._renderSoon(); },
+      onViewStateChange: ({viewState, interactionState}) => {
+        this.state.viewState = viewState;
+        const act = interactionState && (interactionState.isDragging || interactionState.isZooming || interactionState.isPanning || interactionState.inTransition);
+        this._interacting = !!act;
+        this._renderSoon();
+        if (act) { clearTimeout(this._settle); this._settle = setTimeout(() => { this._interacting = false; this.render(); }, 180); }   // rebuild the grid once the view settles
+      },
       getCursor: () => 'crosshair',
       onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; this.deck.setProps({controller: false}); } },
       onDrag: (info) => { if (this.state.drawing && info.coordinate) { this.state.box.b = info.coordinate; this.render(); } },
@@ -94,26 +100,39 @@ AICESAT.MapView = class {
     }
     return {cells: [], res};
   }
+  // Build the grid layers, but MEMOIZE them: the H3 tessellation is expensive, so rebuild only when the facing cell,
+  // resolution or lake data changes — and never while the globe is being dragged/zoomed (reuse the cached layers so
+  // the frame just re-projects). This keeps rotation smooth instead of re-tessellating thousands of hexagons/frame.
+  gridLayers(H3HexagonLayer) {
+    const s = this.state, vs = s.viewState;
+    const res0 = this.resForZoom(vs.zoom);
+    let center = null; try { center = h3.latLngToCell(vs.latitude, vs.longitude, res0); } catch (e) {}
+    const key = center + '|' + res0;
+    const c = this._gridCache;
+    if (c && (this._interacting || (c.key === key && c.cellsRef === s.cells))) return c.layers;
+    const {cells, res} = this.gridCells();
+    s.gridRes = res;
+    const agg = this.gridData();
+    const patch = new Set(cells);
+    const fill = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
+    const grid = new H3HexagonLayer({id: 'grid', data: cells.map(hx => agg[hx] || {hexagon: hx, stats: null}), getHexagon: d => d.hexagon, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
+      getFillColor: fill, getLineColor: d => (d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40], lineWidthMinPixels: 1, pickable: true});
+    const loaded = Object.values(agg).filter(a => !patch.has(a.hexagon));   // loaded cells outside the patch -> always drawn
+    const layers = loaded.length
+      ? [grid, new H3HexagonLayer({id: 'grid-data', data: loaded, getHexagon: d => d.hexagon, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
+          getFillColor: fill, getLineColor: [120, 190, 255, 160], lineWidthMinPixels: 1, pickable: true})]
+      : [grid];
+    this._gridCache = {key, cellsRef: s.cells, layers};
+    return layers;
+  }
   render() {
     const {TileLayer, BitmapLayer, PolygonLayer, PathLayer, TextLayer, GeoJsonLayer, H3HexagonLayer, ScatterplotLayer, SolidPolygonLayer} = deck;
     const s = this.state, U = AICESAT.util, layers = [];
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
-    const fill = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
     if (s.grid) {
-      const {cells, res} = this.gridCells();
-      s.gridRes = res;
-      const agg = this.gridData();
-      const patch = new Set(cells);
-      // 1) the background grid patch around the facing point (empty cells faint, any loaded cells within it shaded)
-      layers.push(new H3HexagonLayer({id: 'grid', data: cells.map(hx => agg[hx] || {hexagon: hx, stats: null}), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true, extruded: false,
-        getFillColor: fill, getLineColor: d => (d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40], lineWidthMinPixels: 1, pickable: true,
-        updateTriggers: {getFillColor: [s.cells], getLineColor: [s.cells]}}));
-      // 2) loaded cells ALWAYS drawn, even outside the current patch, so they never vanish when the globe rotates
-      const loaded = Object.values(agg).filter(a => !patch.has(a.hexagon));
-      if (loaded.length) layers.push(new H3HexagonLayer({id: 'grid-data', data: loaded, getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true, extruded: false,
-        getFillColor: fill, getLineColor: [120, 190, 255, 160], lineWidthMinPixels: 1, pickable: true, updateTriggers: {getFillColor: [s.cells]}}));
+      for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
     }
