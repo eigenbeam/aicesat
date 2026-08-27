@@ -88,7 +88,7 @@ AICESAT.LakeView = class {
       if (seq !== this._viewSeq) return;                      // a newer mode/collection selection superseded this one
       this.map.state.cells = null;                            // hide materialized-data cells
       this.map.setIndexCells(d.cells || []);
-      $('lkHint').textContent = 'Sub-granule H3 index — which cells are addressable (index-only; data is fetched on demand).';
+      $('lkHint').textContent = 'Sub-granule H3 index (index-only; data fetched on demand). Colour = distinct cycles per cell (temporal depth). Hover a cell for its status.';
       $('lkBarWrap').style.display = 'none';
       $('lkStats').innerHTML = d.indexed
         ? `<div class="idxstat"><span class="idxswatch"></span><b>${this.collLabel()}</b> index (res ${d.res})</div><table class="stats"><tr><td>granules</td><td class="num">${U.fmtN(d.granules)}</td><td>cells</td><td class="num">${U.fmtN((d.cells || []).length)}</td></tr></table>`

@@ -297,7 +297,7 @@ def index_status(collection: str = "ATL06") -> dict:
     d, res = _index_source(collection)
     if d is None:
         return {"collection": collection, "indexed": False, "res": None, "granules": 0, "cells": []}
-    c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "cells": set()})
+    c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "info": {}})   # info: cell -> [n_granules, {cycles}, yr_min, yr_max]
     for pth in (d.glob("*.parquet") if d.exists() else []):
         try:
             mt = pth.stat().st_mtime
@@ -306,13 +306,24 @@ def index_status(collection: str = "ATL06") -> dict:
         if c["seen"].get(pth.name) == mt:
             continue
         try:
-            col = pq.read_table(pth, columns=["h3_cell"])["h3_cell"].to_pylist()
+            t = pq.read_table(pth, columns=["h3_cell", "cycle"])
         except Exception:
             continue   # parquet mid-write; skip this poll
-        c["cells"].update(int(x) for x in col)
+        h3c, cyc = t["h3_cell"].to_pylist(), t["cycle"].to_pylist()
+        cy = int(cyc[0]) if cyc else 0                    # one granule per parquet -> one cycle
+        try:
+            yr = int(pth.stem[6:10])                       # ATL0x_YYYYMMDD... -> year
+        except ValueError:
+            yr = 0
+        for cell in {int(x) for x in h3c}:
+            inf = c["info"].setdefault(cell, [0, set(), 9999, 0])
+            inf[0] += 1; inf[1].add(cy)
+            if yr:
+                inf[2] = min(inf[2], yr); inf[3] = max(inf[3], yr)
         c["seen"][pth.name] = mt
-    return {"collection": collection, "indexed": True, "res": res, "granules": len(c["seen"]),
-            "cells": [h3.int_to_str(x) for x in c["cells"]]}
+    cells = [{"h": h3.int_to_str(cell), "g": inf[0], "c": len(inf[1]),
+              "y0": (inf[2] if inf[2] != 9999 else 0), "y1": inf[3]} for cell, inf in c["info"].items()]
+    return {"collection": collection, "indexed": True, "res": res, "granules": len(c["seen"]), "cells": cells}
 
 
 def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:

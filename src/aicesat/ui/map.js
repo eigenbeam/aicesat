@@ -68,6 +68,7 @@ AICESAT.MapView = class {
     let html = null;
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
+    else if (info.layer && info.layer.id === 'index-cov' && info.object) { const o = info.object; html = `<b>cell ${o.h}</b><br>${o.g} granule${o.g === 1 ? '' : 's'} · <b>${o.c}</b> cycle${o.c === 1 ? '' : 's'} indexed<br>${o.y0}\u2013${o.y1}`; }
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
     this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
@@ -173,9 +174,10 @@ AICESAT.MapView = class {
     } else if (s.cells) {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
     }
-    if (s.indexCells && s.indexCells.length) {   // ATL06 sub-granule index coverage (Data Lake build view)
-      layers.push(new H3HexagonLayer({id: 'index-cov', data: s.indexCells, getHexagon: d => d, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
-        getFillColor: [80, 220, 200, 55], getLineColor: [80, 220, 200, 150], lineWidthMinPixels: 1}));
+    if (s.indexCells && s.indexCells.length) {   // sub-granule index coverage; colour = distinct cycles (temporal depth)
+      const ramp = c => { const t = Math.min(1, (c || 1) / 21); return [70 + t * 185, 220 - t * 30, 200 - t * 150, 115]; };
+      layers.push(new H3HexagonLayer({id: 'index-cov', data: s.indexCells, getHexagon: d => d.h, highPrecision: 'auto', filled: true, stroked: true, extruded: false, pickable: true,
+        getFillColor: d => ramp(d.c), getLineColor: [90, 230, 210, 110], lineWidthMinPixels: 0.4, updateTriggers: {getFillColor: s.indexCells.length}}));
     }
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
