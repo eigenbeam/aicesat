@@ -6,6 +6,34 @@ window.AICESAT = window.AICESAT || {};
   U.fmtN = n => n == null ? '–' : Number(n).toLocaleString();
   // ISO timestamp -> readable local date; naive (no tz) timestamps are treated as UTC
   U.fmtDate = s => { if (!s) return '–'; const iso = /[zZ]|[+]\d\d:?\d\d$/.test(s) ? s : s.replace(' ', 'T') + 'Z'; const d = new Date(iso); return isNaN(d) ? s : d.toLocaleString(undefined, {year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+
+  // Plain-language glossary for the jargon a newcomer hits. Attach via U.help(text) — opt-in help, never forced.
+  U.GLOSSARY = {
+    coreg: 'Co-registration aligns the two missions to a common reference frame and time (epoch) so their footprints line up before their heights are compared.',
+    plate: 'Plate motion: the tectonic plate drifts between the mission dates; removing it keeps that drift from looking like elevation change.',
+    gia: 'GIA (glacial isostatic adjustment): slow vertical bedrock rebound after past ice loss; removing it separates ice-surface change from ground motion.',
+    dh: 'The height difference at the same spot, here ICESat-2 minus ICESat-1. Negative means ICESat-2 is lower (surface lowering).',
+    granules: 'Granules are the data files a mission publishes over an area and time span; max granules caps how many the build fetches.',
+    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), and ICESat-2 (ATL03 photons / ATL06 land ice).',
+    coverage: 'Asks the NASA catalog how many granules of each mission exist over your area, before you fetch anything.',
+  };
+  // A small "?" affordance that reveals a plain-language explanation on hover/click. Returns a DOM node to append.
+  U.help = (text) => {
+    const el = U.el('span', {class: 'help', tabindex: '0', role: 'button', 'aria-label': 'help'}, '?');
+    let tip = null;
+    const hide = () => { if (tip) { tip.remove(); tip = null; } };
+    const show = () => {
+      if (tip) return;
+      tip = U.el('div', {class: 'helptip'}); tip.textContent = text; document.body.appendChild(tip);
+      const r = el.getBoundingClientRect(), w = tip.offsetWidth;
+      tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+      tip.style.top = (r.bottom + 6) + 'px';
+    };
+    el.addEventListener('mouseenter', show); el.addEventListener('mouseleave', hide);
+    el.addEventListener('focus', show); el.addEventListener('blur', hide);
+    el.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); tip ? hide() : show(); });
+    return el;
+  };
   U.el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); } if (html) e.innerHTML = html; return e; };
   U.bboxOfPolygon = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
   U.areaRing = a => a.bbox ? [[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[1]], [a.bbox[2], a.bbox[3]], [a.bbox[0], a.bbox[3]]] : a.polygon;

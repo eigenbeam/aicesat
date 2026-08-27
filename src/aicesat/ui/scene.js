@@ -343,6 +343,12 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 
 
 // ---------------------------------------------------------------- closeable panels (shell panel manager)
+// opt-in "?" help on the jargon-heaviest labels (Corrections group, Δh panel)
+{ const U = AICESAT.util, G = U.GLOSSARY, heads = root.querySelectorAll('#controls .ctl-head');
+  if (heads[0]) heads[0].appendChild(U.help(G.coreg));
+  const dhH = root.querySelector('#stats h2'); if (dhH) dhH.appendChild(U.help(G.dh));
+  const lp = $('lblPlate'); if (lp) lp.appendChild(U.help(G.plate));
+  const lg = $('lblGia'); if (lg) lg.appendChild(U.help(G.gia)); }
 AICESAT.util.drawer(root, null);
 $('stats').addEventListener('reopen', () => updateStats());
 // 3-D navigation hint over the canvas, auto-dismissed on first interaction (or after a few seconds)

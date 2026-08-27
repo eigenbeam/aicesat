@@ -11,7 +11,7 @@ AICESAT.ExploreView = class {
         <div style="margin:8px 0 4px"><button id="exPan" class="on">Navigate</button><button id="exBox">Box</button><button id="exPoly">Polygon</button><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
           <select id="exRegion"><option value="">regions…</option></select></div>
         <div id="exCoords" class="mono small">no area selected</div>
-        <div style="margin-top:8px"><b class="small">Collections</b> <span id="exColBoxes" class="small">loading…</span></div>
+        <div style="margin-top:8px"><b class="small" id="exCollLbl">Collections</b> <span id="exColBoxes" class="small">loading…</span></div>
         <div style="margin-top:8px"><button id="exCov" disabled>Check coverage</button><button id="exBuild" disabled>Build scene</button>
           <label class="small" title="upper bound on how many granules the build fetches per collection">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label></div>
         <div id="exOut" class="small mono" style="white-space:pre-wrap;max-height:30vh;overflow:auto;margin-top:8px"></div>
@@ -55,6 +55,10 @@ AICESAT.ExploreView = class {
       try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exOut').textContent = 'error: ' + e.message; AICESAT.showError(e); $('exBuild').disabled = false; } };
     this.$ = $;
     AICESAT.util.drawer(root, null);
+    { const U = AICESAT.util, G = U.GLOSSARY;
+      const cl = $('exCollLbl'); if (cl) cl.appendChild(U.help(G.collections));
+      const mg = $('exMaxG') && $('exMaxG').closest('label'); if (mg) mg.appendChild(U.help(G.granules));
+      const cov = $('exCov'); if (cov && cov.parentElement) cov.parentElement.insertBefore(U.help(G.coverage), cov.nextSibling); }
     this.loadCollections();
     this.refresh(); this.timer = setInterval(() => this.refresh(true), 5000);
   }

@@ -55,6 +55,16 @@ table.stats td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .status.error { background:rgba(217,83,79,.2); color:var(--red); }
 @keyframes pulse { 50% { opacity:.5; } }
 .tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px; padding:6px 8px; font-size:11px; z-index:30; max-width:280px; }
+.help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; border:1px solid var(--hair); color:var(--muted); font-size:9px; font-weight:600; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; }
+.help:hover, .help:focus { color:var(--ink); border-color:var(--muted); outline:none; }
+.helptip { position:fixed; z-index:40; max-width:260px; background:var(--panel); border:1px solid var(--hair); border-radius:8px; padding:8px 10px; font-size:12px; line-height:1.4; color:var(--ink); box-shadow:0 6px 20px rgba(0,0,0,.45); pointer-events:none; backdrop-filter:blur(6px); }
+#helpBtn { font-weight:600; }
+#helppanel { position:absolute; top:48px; right:12px; z-index:26; width:340px; max-height:calc(100% - 60px); overflow:auto; background:var(--panel); border:1px solid var(--hair); border-radius:10px; padding:14px 16px; box-shadow:0 8px 28px rgba(0,0,0,.5); backdrop-filter:blur(8px); }
+#helppanel h3 { margin:0 0 6px; font-size:14px; }
+#helppanel ol { margin:6px 0 10px; padding-left:20px; } #helppanel li { margin:3px 0; font-size:12.5px; }
+#helppanel .hp-close { position:absolute; top:8px; right:10px; background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; }
+#helppanel p, #helppanel .hp-gloss { font-size:12.5px; color:var(--muted); line-height:1.5; }
+#helppanel .hp-gloss b { color:var(--ink); }
 #attrib { position:absolute; bottom:4px; right:8px; font-size:10px; color:var(--muted); z-index:10; }
 .legend .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:5px; }
 .legend span { display:block; font-size:12px; color:var(--muted); }

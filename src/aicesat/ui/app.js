@@ -40,6 +40,9 @@ AICESAT.ready.then(api => {
   }
   document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.onclick = () => { location.hash = '#' + t.dataset.view; });
   $('topBack').onclick = () => { location.hash = '#' + lastList; };
+  // opt-in help: the "?" toggles a Help/About panel (never shown automatically)
+  $('helpBtn').onclick = () => { $('helppanel').hidden = !$('helppanel').hidden; };
+  $('helppanel').querySelector('.hp-close').onclick = () => { $('helppanel').hidden = true; };
   window.addEventListener('hashchange', route);
 
   // ---- MCP App specifics

@@ -15,10 +15,25 @@
   <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
+  <button id="helpBtn" class="tab" title="What is this? How it works">?</button>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
 </div>
 <div id="apperr" hidden></div>
+<div id="helppanel" hidden>
+  <button class="hp-close" title="close">×</button>
+  <h3>Cross-mission altimetry</h3>
+  <p>Compare ground- and ice-surface elevations from three NASA missions over the same place, across time:
+    <b>ICESat-1</b> (2003–09), <b>IceBridge</b> (2009–19), and <b>ICESat-2</b> (2018–).</p>
+  <h3 style="font-size:12.5px">How it works</h3>
+  <ol>
+    <li><b>Explore</b> — pick an area on the globe (draw a box or polygon, or choose a region).</li>
+    <li><b>Build a scene</b> — fetch the missions you selected over that area.</li>
+    <li><b>Compare</b> — view each mission alone or together, and co-register ICESat-1 ↔ ICESat-2 to read the height difference (Δh).</li>
+  </ol>
+  <div class="hp-gloss"><b>Co-registration</b> aligns two missions to a common frame and time before comparing. <b>Δh</b> is the
+    height difference at the same spot. Hover the <b>?</b> next to any control for more.</div>
+</div>
 <div id="views">
   <div class="view" id="view-explore"></div>
   <div class="view" id="view-lake"></div>
