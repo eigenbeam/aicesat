@@ -5,7 +5,9 @@ html, body { margin:0; height:100vh; position:relative; background:var(--bg); co
 html.app, html.app body { height: var(--app-h, 660px); }
 html.app.fs, html.app.fs body { height: 100vh; }
 #topbar { position:absolute; top:0; left:0; right:0; height:40px; display:flex; align-items:center; gap:6px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--hair); z-index:20; backdrop-filter:blur(6px); }
-#topbar .brand { font-weight:600; margin-right:10px; }
+#topbar .brand { font-weight:600; margin-right:8px; }
+#topbar .tagline { font-size:11px; color:var(--muted); margin-right:14px; white-space:nowrap; }
+@media (max-width:720px) { #topbar .tagline { display:none; } }
 #topbar .tab { padding:5px 12px; border-radius:8px; border:1px solid transparent; cursor:pointer; color:var(--muted); background:none; font:inherit; font-size:13px; }
 #topbar .tab.on { color:var(--ink); border-color:var(--hair); background:#22222a; }
 #topbar .spacer { flex:1; }

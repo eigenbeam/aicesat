@@ -19,8 +19,15 @@ AICESAT.ExploreView = class {
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
+    const fmtArea = a => {
+      if (a && a.bbox) { const [w, s, e, n] = a.bbox;
+        const la = v => `${Math.abs(v).toFixed(2)}\u00b0${v >= 0 ? 'N' : 'S'}`, lo = v => `${Math.abs(v).toFixed(2)}\u00b0${v >= 0 ? 'E' : 'W'}`;
+        const hkm = (n - s) * 111, wkm = (e - w) * 111 * Math.cos((s + n) / 2 * Math.PI / 180);
+        return `${la(s)}\u2013${la(n)}, ${lo(w)}\u2013${lo(e)}  \u00b7  ~${Math.abs(wkm).toFixed(0)}\u00d7${Math.abs(hkm).toFixed(0)} km`; }
+      return a && a.polygon ? `polygon \u00b7 ${a.polygon.length} vertices` : '';
+    };
     this.map = new AICESAT.MapView($('exMap'), {grid: true, selectCells: false, draw: true, footprints: true});
-    this.map.onSelect = a => { $('exCoords').textContent = a ? JSON.stringify(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
+    this.map.onSelect = a => { $('exCoords').textContent = a ? fmtArea(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
     this.map.onOpenScene = sc => { if (sc.status === 'ready') openScene(sc.scene_id); };
     const modeBtns = {pan: $('exPan'), box: $('exBox'), poly: $('exPoly')};
     const setMode = m => { this.map.setMode(m); for (const k in modeBtns) modeBtns[k].classList.toggle('on', k === m); };

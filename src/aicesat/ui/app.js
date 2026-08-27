@@ -16,7 +16,7 @@ AICESAT.ready.then(api => {
   const U = AICESAT.util;
   const views = {};
   const $ = id => document.getElementById(id);
-  $('adapterInfo').textContent = api.kind === 'app' ? 'inside Claude' : 'localhost';
+  $('adapterInfo').textContent = '';   // (was a dev 'localhost/inside Claude' label)
   function get(name) {
     if (views[name]) return views[name];
     const root = $('view-' + name);

@@ -11,7 +11,9 @@ html, body { margin:0; height:100vh; position:relative; background:var(--bg); co
 html.app, html.app body { height: var(--app-h, 660px); }
 html.app.fs, html.app.fs body { height: 100vh; }
 #topbar { position:absolute; top:0; left:0; right:0; height:40px; display:flex; align-items:center; gap:6px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--hair); z-index:20; backdrop-filter:blur(6px); }
-#topbar .brand { font-weight:600; margin-right:10px; }
+#topbar .brand { font-weight:600; margin-right:8px; }
+#topbar .tagline { font-size:11px; color:var(--muted); margin-right:14px; white-space:nowrap; }
+@media (max-width:720px) { #topbar .tagline { display:none; } }
 #topbar .tab { padding:5px 12px; border-radius:8px; border:1px solid transparent; cursor:pointer; color:var(--muted); background:none; font:inherit; font-size:13px; }
 #topbar .tab.on { color:var(--ink); border-color:var(--hair); background:#22222a; }
 #topbar .spacer { flex:1; }
@@ -116,8 +118,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 <body>
 <div id="topbar">
   <span class="brand">Cross-mission altimetry</span>
-  <button class="tab" data-view="explore">Explore</button>
-  <button class="tab" data-view="lake">Lake</button>
+  <span class="tagline">compare ICESat-1, IceBridge &amp; ICESat-2 elevations</span>
+  <button class="tab" data-view="explore" title="Pick an area on the globe, then build a scene from the missions there">Explore</button>
+  <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
@@ -9606,8 +9609,15 @@ AICESAT.ExploreView = class {
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
+    const fmtArea = a => {
+      if (a && a.bbox) { const [w, s, e, n] = a.bbox;
+        const la = v => `${Math.abs(v).toFixed(2)}\u00b0${v >= 0 ? 'N' : 'S'}`, lo = v => `${Math.abs(v).toFixed(2)}\u00b0${v >= 0 ? 'E' : 'W'}`;
+        const hkm = (n - s) * 111, wkm = (e - w) * 111 * Math.cos((s + n) / 2 * Math.PI / 180);
+        return `${la(s)}\u2013${la(n)}, ${lo(w)}\u2013${lo(e)}  \u00b7  ~${Math.abs(wkm).toFixed(0)}\u00d7${Math.abs(hkm).toFixed(0)} km`; }
+      return a && a.polygon ? `polygon \u00b7 ${a.polygon.length} vertices` : '';
+    };
     this.map = new AICESAT.MapView($('exMap'), {grid: true, selectCells: false, draw: true, footprints: true});
-    this.map.onSelect = a => { $('exCoords').textContent = a ? JSON.stringify(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
+    this.map.onSelect = a => { $('exCoords').textContent = a ? fmtArea(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected'); $('exCov').disabled = $('exBuild').disabled = !a; $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3); };
     this.map.onOpenScene = sc => { if (sc.status === 'ready') openScene(sc.scene_id); };
     const modeBtns = {pan: $('exPan'), box: $('exBox'), poly: $('exPoly')};
     const setMode = m => { this.map.setMode(m); for (const k in modeBtns) modeBtns[k].classList.toggle('on', k === m); };
@@ -9772,7 +9782,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">1</b></span>\n  <input id="zexag" type="range" min="1" max="10" step="1" value="1" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox"> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured, not modelled: same bbox, same granules, same photon subset. Bytes are shown even where the paths are close (spec C.3) — the real wins are granules opened, structure parses and round-trips.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <span>Adjustments:</span>\n  <button id="btnCoreg">Co-register</button>\n  <label id="lblPlate" class="small" hidden><input id="adjPlate" type="checkbox" checked> plate motion</label>\n  <label id="lblGia" class="small" hidden><input id="adjGia" type="checkbox" checked> GIA</label>\n  <span id="status"></span>\n  <span style="margin-left:14px">Vertical ×<b id="zexagVal">1</b></span>\n  <input id="zexag" type="range" min="1" max="10" step="1" value="1" style="width:120px">\n  <label style="font-size:12px;color:var(--muted)"><input id="imagery" type="checkbox"> imagery</label>\n  <label style="font-size:12px;color:var(--muted)"><input id="pairs" type="checkbox" checked> pairs</label>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Co-located Δh (ICESat-2 − GLAS)</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:8px">Per-pair plate-motion artifact (horizontal re-pairing only, native heights)</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting, scale bar / north arrow.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -10075,7 +10085,7 @@ async function loadScene() {
 
 async function ensureCoreg() {
   if (coreg) return true;
-  $('status').textContent = 'computing plate-motion co-registration (pyproj)…'; $('btnCoreg').disabled = true;
+  $('status').textContent = 'co-registering \u2014 aligning the missions to a common reference frame and epoch\u2026'; $('btnCoreg').disabled = true;
   try { coreg = await api.coregister(sceneId); } catch (e) { $('status').textContent = 'co-registration failed: ' + e.message; $('btnCoreg').disabled = false; return false; }
   $('status').textContent = coreg.cached ? 'co-registration cached' : `co-registration computed in ${coreg.compute_seconds}s`;
   updateLabels(); return true;
@@ -10146,7 +10156,7 @@ AICESAT.ready.then(api => {
   const U = AICESAT.util;
   const views = {};
   const $ = id => document.getElementById(id);
-  $('adapterInfo').textContent = api.kind === 'app' ? 'inside Claude' : 'localhost';
+  $('adapterInfo').textContent = '';   // (was a dev 'localhost/inside Claude' label)
   function get(name) {
     if (views[name]) return views[name];
     const root = $('view-' + name);
