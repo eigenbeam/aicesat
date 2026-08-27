@@ -9539,9 +9539,9 @@ AICESAT.MapView = class {
         if (act) { clearTimeout(this._settle); this._settle = setTimeout(() => { this._interacting = false; this.render(); }, 180); }   // rebuild the grid once the view settles
       },
       getCursor: ({isDragging}) => (this.opts.draw && this.state.mode !== 'pan') ? 'crosshair' : (isDragging ? 'grabbing' : 'grab'),
-      onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; this.deck.setProps({controller: false}); } },
+      onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; } },
       onDrag: (info) => { if (this.state.drawing && info.coordinate) { this.state.box.b = info.coordinate; this.render(); } },
-      onDragEnd: (info) => { if (this.state.drawing) { this.state.drawing = false; if (info.coordinate) this.state.box.b = info.coordinate; this.deck.setProps({controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}}); this.render(); this.onSelect(this.area()); } },
+      onDragEnd: (info) => { if (this.state.drawing) { this.state.drawing = false; if (info.coordinate) this.state.box.b = info.coordinate; this.render(); this.onSelect(this.area()); } },
       onClick: (info) => this.click(info),
       onHover: (info) => this.hover(info),
     });
@@ -9556,6 +9556,12 @@ AICESAT.MapView = class {
     this.state.mode = m;
     const txt = {box: 'Box mode — drag a rectangle on the globe', poly: 'Polygon mode — click points, then Close (or Enter)'};
     if (this.badge) { this.badge.textContent = txt[m] || ''; this.badge.hidden = !txt[m]; }
+    // Box mode: a drag must DRAW, not rotate — disable controller drag up front (deck won't cancel an
+    // in-flight gesture if we only flip this in onDragStart, which let the drag rotate the globe too).
+    // Keep scroll-zoom so you can still zoom while boxing. Navigate/Polygon keep normal drag.
+    this.deck.setProps({controller: m === 'box'
+      ? {dragPan: false, dragRotate: false, scrollZoom: true, doubleClickZoom: false}
+      : {dragPan: true, dragRotate: true, doubleClickZoom: false}});
   }
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
