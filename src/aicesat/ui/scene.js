@@ -290,7 +290,7 @@ function updateLabels() {
 
 async function loadScene() {
   let doc;
-  try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = `scene ${sceneId}: ${e.message}`; return; }
+  try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = 'could not load this scene'; AICESAT.showError(`scene ${sceneId}: ${e.message}`); return; }
   scene = doc;
   coreg = scene.coreg;
   Object.keys(scene.series).forEach(m => { visible[m] = true; });   // all missions on by default for a new scene

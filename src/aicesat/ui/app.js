@@ -30,7 +30,7 @@ AICESAT.ready.then(api => {
     const r = U.route();
     const name = ['explore', 'lake', 'scene'].includes(r.view) ? r.view : 'explore';
     if (name === 'explore' || name === 'lake') lastList = name;
-    if (current && current !== name) get(current).hide();
+    if (current && current !== name) { AICESAT.clearError(); get(current).hide(); }
     document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
     $('topBack').hidden = name !== 'scene';
     $('crumb').textContent = name === 'scene' ? '› scene ' + r.arg.split('?')[0] : '';
