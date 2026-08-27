@@ -185,6 +185,7 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
             if not doc["series"]:
                 raise RuntimeError("no collection returned data over this area (check your selection and the token)")
             scene.set_surface(doc)                   # DEM base surface, independent of which collections loaded
+            log_fn("surface: DEM base surface")
             try:
                 scene.add_imagery(doc)
                 log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")

@@ -27,7 +27,7 @@ AICESAT.ExploreView = class {
           <div class="step-head"><span class="step-n">3</span> Build the scene</div>
           <div class="row"><button id="exBuild" disabled>Build scene</button>
             <label class="small" title="upper bound on how many granules the build fetches per collection">max granules <input id="exMaxG" type="number" value="12" min="1" max="250" style="width:54px"></label></div>
-          <div id="exBuildOut" class="small mono buildout"></div>
+          <div id="exBuildOut" class="small buildout"></div>
         </div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:300px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
@@ -86,7 +86,7 @@ AICESAT.ExploreView = class {
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true; $('exBuildOut').textContent = 'starting build…';
-      try { const d = await api.extract(body); this.pollJob(d.job_id); await this.refresh(); } catch (e) { $('exBuildOut').textContent = 'error: ' + e.message; AICESAT.showError(e); $('exBuild').disabled = false; } };
+      try { const d = await api.extract(body); this.pollJob(d.job_id, body); await this.refresh(); } catch (e) { $('exBuildOut').textContent = 'error: ' + e.message; AICESAT.showError(e); $('exBuild').disabled = false; } };
 
     AICESAT.util.drawer(root, null);
     { const G = U.GLOSSARY;   // opt-in "?" help on the jargon
@@ -103,11 +103,49 @@ AICESAT.ExploreView = class {
         `<label title="${c.product} v${c.version} · ${c.epoch}" style="display:inline-block;margin:1px 8px 1px 0;white-space:nowrap"><input type="checkbox" data-flag="${c.flag}" ${c.default ? 'checked' : ''}> ${c.label}</label>`).join('');
     } catch (e) { this.$('exColBoxes').textContent = 'collections unavailable'; }
   }
-  async pollJob(jid) {
+  // Turn the job's flat log into a checklist: one row per requested collection + surface + imagery + coreg,
+  // each pending / active / done / failed, with the result detail pulled from the matching log line.
+  async pollJob(jid, plan = {}) {
     const $ = this.$, api = this.api;
-    const tick = async () => { const j = await api.job(jid);
-      $('exBuildOut').innerHTML = `<b>${j.status}</b>${j.seconds ? ` (${j.seconds}s)` : ''}\n` + j.log.join('\n') + (j.error ? `\n${j.error}` : '') + (j.status === 'done' && j.scene_id ? `\n<a href="#scene/${j.scene_id}">open the scene →</a>` : '');
-      if (j.status === 'running') setTimeout(tick, 1500); else { if (j.error) AICESAT.showError(j.error); $('exBuild').disabled = false; this.refresh(); } };
+    const STEPS = [
+      ['GLAS', 'ICESat-1 · GLAS', plan.with_glas],
+      ['ICESSN', 'IceBridge · ATM', plan.with_icessn],
+      ['ATL06', 'ICESat-2 · land ice', plan.with_atl06],
+      ['ATL03', 'ICESat-2 · photons', plan.with_atl03],
+      ['surface', 'DEM surface', true],
+      ['imagery', 'Satellite imagery', true],
+      ['coreg', 'Co-registration', plan.with_coreg],
+    ].filter(s => s[2]).map(([key, label]) => ({key, label}));
+    const detailOf = l => l.includes(': ') ? l.slice(l.indexOf(': ') + 2) : '';
+    const classify = (key, log) => {
+      const fail = log.find(l => l.startsWith(key + ' unavailable'));
+      if (fail) return {state: 'failed', detail: detailOf(fail)};
+      if (key === 'imagery' && log.some(l => l.startsWith('imagery unavailable'))) return {state: 'warn', detail: 'skipped (optional)'};
+      let done;
+      if (key === 'ATL03') done = log.find(l => /^ATL03: [\d,]+ photons/.test(l));
+      else if (key === 'coreg') done = log.find(l => /co-registration/i.test(l));
+      else done = log.find(l => l.startsWith(key + ':'));
+      return done ? {state: 'done', detail: detailOf(done)} : {state: 'pending'};
+    };
+    const ICON = {done: '✓', pending: '○', skipped: '–', failed: '✕', warn: '!'};
+    const render = j => {
+      const log = j.log || [], running = j.status === 'running';
+      const rows = STEPS.map(s => ({s, st: classify(s.key, log)}));
+      if (running) { const a = rows.find(r => r.st.state === 'pending'); if (a) a.st.state = 'active'; }
+      else rows.forEach(r => { if (r.st.state === 'pending') r.st.state = 'skipped'; });
+      const head = j.error ? '<div class="prog-head err">✕ Build failed</div>'
+        : running ? `<div class="prog-head"><span class="spin-sm"></span> Building the scene…${j.seconds ? ' · ' + j.seconds + 's' : ''}</div>`
+        : `<div class="prog-head ok">✓ Scene ready${j.seconds ? ' · ' + j.seconds + 's' : ''}</div>`;
+      const body = rows.map(r => {
+        const ic = r.st.state === 'active' ? '<span class="spin-sm"></span>' : (ICON[r.st.state] || '○');
+        return `<div class="pstep ${r.st.state}"><span class="picon">${ic}</span><b>${r.s.label}</b>${r.st.detail ? ` <span class="pdetail">${r.st.detail}</span>` : ''}</div>`;
+      }).join('');
+      const link = (j.status === 'done' && j.scene_id) ? `<a class="prog-open" href="#scene/${j.scene_id}">Open the scene →</a>` : '';
+      $('exBuildOut').innerHTML = head + body + link;
+    };
+    render({status: 'running', log: [], seconds: 0});
+    const tick = async () => { const j = await api.job(jid); render(j);
+      if (j.status === 'running') setTimeout(tick, 1200); else { if (j.error) AICESAT.showError(j.error); $('exBuild').disabled = false; this.refresh(); } };
     tick();
   }
   async refresh(quiet = false) {
