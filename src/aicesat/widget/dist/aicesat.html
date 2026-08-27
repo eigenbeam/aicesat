@@ -222,6 +222,20 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .tscand.on { border-color:var(--amber); background:rgba(224,160,48,.13); }
 .tschart { width:100%; display:block; margin:4px 0; }
 .tscaveat { color:var(--amber); margin-top:5px; line-height:1.35; }
+
+/* Scene time-series: per-cell confidence badge + breakdown */
+.conf-badge { display:inline-block; padding:0 6px; border-radius:5px; font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; vertical-align:middle; }
+.conf-badge.high { background:rgba(76,175,125,.22); color:var(--green); }
+.conf-badge.medium { background:rgba(224,160,48,.2); color:var(--amber); }
+.conf-badge.low { background:rgba(217,83,79,.2); color:var(--red); }
+.conf-why { margin:5px 0 3px; line-height:1.4; color:var(--ink); }
+.tscomp summary { cursor:pointer; color:var(--muted); }
+.tscomp-body { margin-top:5px; display:flex; flex-direction:column; gap:4px; }
+.comp-row { display:flex; align-items:center; gap:7px; font-size:11.5px; }
+.comp-lbl { flex:1 1 auto; color:var(--muted); }
+.comp-val { flex:0 0 auto; color:var(--ink); font-variant-numeric:tabular-nums; }
+.comp-bar { flex:0 0 46px; height:5px; background:#2a2a33; border-radius:3px; overflow:hidden; }
+.comp-bar i { display:block; height:100%; background:var(--blue); }
 </style>
 </head>
 <body>
@@ -10104,7 +10118,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="8" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -10432,7 +10446,7 @@ $('stats').addEventListener('reopen', () => updateStats());
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1;
-const H3_EDGE_M = {8: 461, 9: 174, 10: 66, 11: 25};
+const H3_EDGE_M = {7: 1220, 8: 461, 9: 174, 10: 66, 11: 25};
 const missionColor = m => (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (H3_EDGE_M[r] || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
@@ -10441,7 +10455,7 @@ function initTimeSeries() {
   const present = Object.keys(scene.series);
   $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '" checked> ' + ((MISSIONS[m] || {}).name || m) + '</label>').join('');
   $('tsRef').querySelectorAll('input').forEach(i => i.onchange = () => findCandidates());
-  tsLabels(); renderCandList(); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = '';
+  tsLabels(); renderCandList(); renderConf(null); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = '';
 }
 async function findCandidates() {
   if (!scene) return;
@@ -10452,16 +10466,29 @@ async function findCandidates() {
     $('tsStatus').textContent = candidates.length + (candidates.length === 1 ? ' cell' : ' cells');
     $('tsCaveat').hidden = !candidates.length;
     renderCandList(); render();
-    if (candidates.length) selectCand(0); else { $('tsChart').hidden = true; $('tsReadout').textContent = 'no cells with 3+ time windows — try a larger cell size or a wider time window'; }
+    if (candidates.length) selectCand(0); else { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'no cells with 3+ time windows — try a larger cell size or a wider time window'; }
   } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); }
   $('tsFind').disabled = false;
 }
 function renderCandList() {
   $('tsList').innerHTML = candidates.map((c, i) =>
-    '<div class="tscand ' + (i === candSel ? 'on' : '') + '" data-i="' + i + '"><b>' + c.n_bins + ' epochs</b> · ' + c.span_years + ' yr · ' + c.slope_deg + '° slope <span class="small">' + c.n_points + ' pts</span></div>').join('');
+    '<div class="tscand ' + (i === candSel ? 'on' : '') + '" data-i="' + i + '"><span class="conf-badge ' + c.level + '" title="confidence ' + c.confidence + '">' + c.level + '</span> <b>' + c.n_bins + ' epochs</b> · ' + c.span_years + ' yr · ' + c.slope_deg + '° <span class="small">' + c.n_points + ' pts</span></div>').join('');
   $('tsList').querySelectorAll('.tscand').forEach(el => el.onclick = () => selectCand(+el.dataset.i));
 }
-function selectCand(i) { candSel = i; renderCandList(); drawChart(); render(); }
+function selectCand(i) { candSel = i; renderCandList(); drawChart(); renderConf(candidates[i]); render(); }
+function compRow(label, val, score) { return '<div class="comp-row"><span class="comp-lbl">' + label + '</span><span class="comp-val">' + val + '</span><span class="comp-bar"><i style="width:' + Math.round((score || 0) * 100) + '%"></i></span></div>'; }
+function renderConf(c) {
+  const el = $('tsConf'); if (!el) return;
+  if (!c) { el.innerHTML = ''; return; }
+  const m = c.components, sc = m.scores;
+  el.innerHTML = '<div class="conf-why"><span class="conf-badge ' + c.level + '">' + c.level + '</span> ' + c.why + '</div>' +
+    '<details class="tscomp"><summary>confidence breakdown (' + c.confidence + ')</summary><div class="tscomp-body">' +
+    compRow('within-cell roughness', m.roughness_m + ' m', sc.roughness) +
+    compRow('epochs (time windows)', m.epochs, sc.epochs) +
+    compRow('baseline', m.span_yr + ' yr', sc.span) +
+    compRow('reference points', m.ref_pts, sc.density) +
+    '</div></details>';
+}
 function linfit(x, y) { const n = x.length; if (n < 2) return 0; const mx = x.reduce((a, b) => a + b, 0) / n, my = y.reduce((a, b) => a + b, 0) / n; let sxy = 0, sxx = 0; for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; } return sxx ? sxy / sxx : 0; }
 function drawChart() {
   const cv = $('tsChart'); if (candSel < 0 || !candidates[candSel]) { cv.hidden = true; return; }
