@@ -116,6 +116,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .ctl-status { color:var(--muted); font-size:11.5px; }
 .ctl-status:empty { display:none; }
 .hist-cap { font-size:10.5px; color:var(--muted); margin:3px 0 0; line-height:1.35; }
+#navhint { position:absolute; left:12px; bottom:10px; z-index:12; font-size:12px; color:var(--muted); background:rgba(20,20,26,.7); border:1px solid var(--hair); border-radius:7px; padding:5px 10px; pointer-events:none; transition:opacity .6s ease; backdrop-filter:blur(4px); }
+#navhint.hide { opacity:0; }
+#topbar .backbtn { color:var(--ink); border-color:var(--hair); }
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
 #status { color:var(--muted); font-size:12px; }
@@ -132,6 +135,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 <div id="topbar">
   <span class="brand">Cross-mission altimetry</span>
   <span class="tagline">compare ICESat-1, IceBridge &amp; ICESat-2 elevations</span>
+  <button id="topBack" class="tab backbtn" hidden title="Back to where you came from">← Back</button>
   <button class="tab" data-view="explore" title="Pick an area on the globe, then build a scene from the missions there">Explore</button>
   <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
@@ -9795,7 +9799,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="hud" class="panel" data-title="legend">\n  <button id="scBack" style="float:right;margin:-4px 18px 0 0">← Explore</button>\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting, scale bar / north arrow.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -10140,7 +10144,9 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 // ---------------------------------------------------------------- closeable panels (shell panel manager)
 AICESAT.util.drawer(root, null);
 $('stats').addEventListener('reopen', () => updateStats());
-$('scBack').onclick = () => back();
+// 3-D navigation hint over the canvas, auto-dismissed on first interaction (or after a few seconds)
+{ const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
+void back;   // Back now lives in the top bar; the legacy in-legend button was removed
 
 // ---------------------------------------------------------------- view API
 this.open = async (id, query) => {
@@ -10180,21 +10186,24 @@ AICESAT.ready.then(api => {
     const root = $('view-' + name);
     if (name === 'explore') views[name] = new AICESAT.ExploreView(root, api, id => { location.hash = '#scene/' + id; });
     if (name === 'lake') views[name] = new AICESAT.LakeView(root, api);
-    if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#explore'; });
+    if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#' + lastList; });
     return views[name];
   }
-  let current = null;
+  let current = null, lastList = 'explore';   // the list view (explore/lake) a scene was opened from
   function route() {
     const r = U.route();
     const name = ['explore', 'lake', 'scene'].includes(r.view) ? r.view : 'explore';
+    if (name === 'explore' || name === 'lake') lastList = name;
     if (current && current !== name) get(current).hide();
-    document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === (name === 'scene' ? 'explore' : name)));
+    document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
+    $('topBack').hidden = name !== 'scene';
     $('crumb').textContent = name === 'scene' ? '› scene ' + r.arg.split('?')[0] : '';
     const v = get(name);
     if (name === 'scene') { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show();
     current = name;
   }
   document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.onclick = () => { location.hash = '#' + t.dataset.view; });
+  $('topBack').onclick = () => { location.hash = '#' + lastList; };
   window.addEventListener('hashchange', route);
 
   // ---- MCP App specifics

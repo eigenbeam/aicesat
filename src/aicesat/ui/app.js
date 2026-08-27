@@ -22,21 +22,24 @@ AICESAT.ready.then(api => {
     const root = $('view-' + name);
     if (name === 'explore') views[name] = new AICESAT.ExploreView(root, api, id => { location.hash = '#scene/' + id; });
     if (name === 'lake') views[name] = new AICESAT.LakeView(root, api);
-    if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#explore'; });
+    if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#' + lastList; });
     return views[name];
   }
-  let current = null;
+  let current = null, lastList = 'explore';   // the list view (explore/lake) a scene was opened from
   function route() {
     const r = U.route();
     const name = ['explore', 'lake', 'scene'].includes(r.view) ? r.view : 'explore';
+    if (name === 'explore' || name === 'lake') lastList = name;
     if (current && current !== name) get(current).hide();
-    document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === (name === 'scene' ? 'explore' : name)));
+    document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
+    $('topBack').hidden = name !== 'scene';
     $('crumb').textContent = name === 'scene' ? '› scene ' + r.arg.split('?')[0] : '';
     const v = get(name);
     if (name === 'scene') { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show();
     current = name;
   }
   document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.onclick = () => { location.hash = '#' + t.dataset.view; });
+  $('topBack').onclick = () => { location.hash = '#' + lastList; };
   window.addEventListener('hashchange', route);
 
   // ---- MCP App specifics
