@@ -275,6 +275,37 @@ def coregister(scene_id: str, common_epoch: float | None = None, colocation_radi
     return result
 
 
+_INDEX_STATUS = {"res": None, "seen": {}, "cells": set()}   # incremental cache for the live index-build view
+
+
+def index_status(res=None) -> dict:
+    """Indexed H3 cells + granule count for the ATL06 sub-granule index (drives the Data Lake build view).
+    Incremental: only newly-written parquets are read each call, so it stays cheap as the index grows."""
+    import pyarrow.parquet as pq
+    import h3
+    from . import index_atl06
+    res = int(res) if res else index_atl06.ATL06_RES
+    d = index_atl06._index_dir(res)
+    c = _INDEX_STATUS
+    if c["res"] != res:
+        c.update(res=res, seen={}, cells=set())
+    for pth in (d.glob("*.parquet") if d.exists() else []):
+        try:
+            mt = pth.stat().st_mtime
+        except OSError:
+            continue
+        if c["seen"].get(pth.name) == mt:
+            continue
+        try:
+            col = pq.read_table(pth, columns=["h3_cell"])["h3_cell"].to_pylist()
+        except Exception:
+            continue   # parquet mid-write (shouldn't happen with atomic writes); skip this poll
+        c["cells"].update(int(x) for x in col)
+        c["seen"][pth.name] = mt
+    return {"mission": "ATL06", "res": res, "granules": len(c["seen"]),
+            "cells": [h3.int_to_str(x) for x in c["cells"]]}
+
+
 def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
     """Candidate coincident-observation cells + their elevation time series for a built scene."""
     from . import timeseries

@@ -8,7 +8,7 @@ AICESAT.MapView = class {
     const Globe = GlobeView || _GlobeView;
     this.opts = Object.assign({grid: false, gridStats: true, selectCells: false, draw: true, footprints: true}, opts);
     this.container = container;
-    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, cellStats: {},
+    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, indexCells: null, cellStats: {},
                   scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
@@ -51,6 +51,7 @@ AICESAT.MapView = class {
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
+  setIndexCells(cells) { this.state.indexCells = cells; this.render(); }
   click(info) {
     const s = this.state;
     if (info.layer && info.layer.id === 'scenes' && info.object) { this.onOpenScene(info.object); return; }
@@ -171,6 +172,10 @@ AICESAT.MapView = class {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
+    }
+    if (s.indexCells && s.indexCells.length) {   // ATL06 sub-granule index coverage (Data Lake build view)
+      layers.push(new H3HexagonLayer({id: 'index-cov', data: s.indexCells, getHexagon: d => d, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
+        getFillColor: [80, 220, 200, 55], getLineColor: [80, 220, 200, 150], lineWidthMinPixels: 1}));
     }
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));

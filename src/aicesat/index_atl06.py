@@ -148,7 +148,9 @@ def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     d = _index_dir(res)
     d.mkdir(parents=True, exist_ok=True)
-    pq.write_table(tbl, d / f"{name}.parquet")
+    tmp = d / f".{name}.parquet.tmp"
+    pq.write_table(tbl, tmp)
+    tmp.replace(d / f"{name}.parquet")   # atomic rename: a concurrent reader never sees a partial file
     log.info("indexed ATL06 %s: %d (chunk,cell) rows, %d beams, %.1fs (%d GETs, %.1f MB)",
              name, tbl.num_rows, len({*rows["beam"]}), time.time() - t0, reader.stats.requests, reader.stats.bytes / 1e6)
     return tbl

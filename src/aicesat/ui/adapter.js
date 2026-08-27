@@ -11,6 +11,7 @@ window.AICESAT = window.AICESAT || {};
     kind: 'fetch',
     regions: () => j('/api/regions'),
     scenes: () => j('/api/scenes'),
+    indexStatus: res => j('/api/index_status' + (res ? '?res=' + res : '')),
     sceneDoc: id => j(`/api/scene/${id}`),
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
     imageryUrl: id => `/api/scene/${id}/imagery.jpg`,
@@ -57,6 +58,7 @@ window.AICESAT = window.AICESAT || {};
       kind: 'app', app,
       regions: () => call('ui_regions'),
       scenes: async () => (await call('ui_scenes')).scenes,
+      indexStatus: res => call('ui_index_status', res ? {res} : {}),
       sceneDoc: async (id, budget = 150000) => {
         const meta = await call('ui_scene_part', {scene_id: id, part: 'meta'});
         const doc = {...meta, series: {}, coreg: null, surface: null};

@@ -9,6 +9,7 @@ AICESAT.LakeView = class {
         <h2>Lake</h2>
         <div class="small" style="margin-bottom:6px"><b>Collections</b> <span id="lkCollBoxes">loading…</span></div>
         <div id="lkStats" class="small">loading…</div>
+        <div id="lkIndex" class="small idxstat"></div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
@@ -38,6 +39,7 @@ AICESAT.LakeView = class {
     this.logSeq = 0;
     this.timer = setInterval(() => this.refresh(true), 10000);
     this.logTimer = setInterval(() => this.pollLog(), 2000);   // running log updates faster than the summary
+    this.idxTimer = setInterval(() => this.pollIndex(), 6000); this.pollIndex();   // live ATL06 index-build coverage
     this.pollLog();
   }
   async pollLog() {
@@ -56,6 +58,12 @@ AICESAT.LakeView = class {
     this.logSeq = d.seq;
     if (!body.childElementCount) body.innerHTML = '<div class="small">no activity yet — load or query cells to see the pipeline work</div>';
     if (atBottom) body.scrollTop = body.scrollHeight;
+  }
+  async pollIndex() {
+    let d; try { d = await this.api.indexStatus(); } catch (e) { return; }
+    this.map.setIndexCells(d.cells || []);
+    const el = this.$('lkIndex'), nc = (d.cells || []).length;
+    if (el) el.innerHTML = d.granules ? `<span class="idxswatch"></span><b>ATL06 index</b> (res ${d.res}) — <b>${d.granules.toLocaleString()}</b> granules · <b>${nc.toLocaleString()}</b> cells` : '';
   }
   watch(jid) { const tick = async () => { await this.refreshJobs(); const j = await this.api.job(jid); if (j.status === 'running') setTimeout(tick, 2000); else { if (j.error) AICESAT.showError(j.error); this.refresh(); } }; tick(); }
   async refreshJobs() {

@@ -236,6 +236,10 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .comp-val { flex:0 0 auto; color:var(--ink); font-variant-numeric:tabular-nums; }
 .comp-bar { flex:0 0 46px; height:5px; background:#2a2a33; border-radius:3px; overflow:hidden; }
 .comp-bar i { display:block; height:100%; background:var(--blue); }
+
+/* Data Lake: ATL06 index-build coverage readout */
+.idxstat { margin-top:5px; color:var(--ink); line-height:1.5; }
+.idxswatch { display:inline-block; width:10px; height:10px; border-radius:3px; background:rgba(80,220,200,.55); border:1px solid rgba(80,220,200,.9); margin-right:5px; vertical-align:middle; }
 </style>
 </head>
 <body>
@@ -9485,6 +9489,7 @@ window.AICESAT = window.AICESAT || {};
     kind: 'fetch',
     regions: () => j('/api/regions'),
     scenes: () => j('/api/scenes'),
+    indexStatus: res => j('/api/index_status' + (res ? '?res=' + res : '')),
     sceneDoc: id => j(`/api/scene/${id}`),
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
     imageryUrl: id => `/api/scene/${id}/imagery.jpg`,
@@ -9531,6 +9536,7 @@ window.AICESAT = window.AICESAT || {};
       kind: 'app', app,
       regions: () => call('ui_regions'),
       scenes: async () => (await call('ui_scenes')).scenes,
+      indexStatus: res => call('ui_index_status', res ? {res} : {}),
       sceneDoc: async (id, budget = 150000) => {
         const meta = await call('ui_scene_part', {scene_id: id, part: 'meta'});
         const doc = {...meta, series: {}, coreg: null, surface: null};
@@ -9597,7 +9603,7 @@ AICESAT.MapView = class {
     const Globe = GlobeView || _GlobeView;
     this.opts = Object.assign({grid: false, gridStats: true, selectCells: false, draw: true, footprints: true}, opts);
     this.container = container;
-    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, cellStats: {},
+    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, indexCells: null, cellStats: {},
                   scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
@@ -9640,6 +9646,7 @@ AICESAT.MapView = class {
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
+  setIndexCells(cells) { this.state.indexCells = cells; this.render(); }
   click(info) {
     const s = this.state;
     if (info.layer && info.layer.id === 'scenes' && info.object) { this.onOpenScene(info.object); return; }
@@ -9760,6 +9767,10 @@ AICESAT.MapView = class {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
+    }
+    if (s.indexCells && s.indexCells.length) {   // ATL06 sub-granule index coverage (Data Lake build view)
+      layers.push(new H3HexagonLayer({id: 'index-cov', data: s.indexCells, getHexagon: d => d, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
+        getFillColor: [80, 220, 200, 55], getLineColor: [80, 220, 200, 150], lineWidthMinPixels: 1}));
     }
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
@@ -10021,6 +10032,7 @@ AICESAT.LakeView = class {
         <h2>Lake</h2>
         <div class="small" style="margin-bottom:6px"><b>Collections</b> <span id="lkCollBoxes">loading…</span></div>
         <div id="lkStats" class="small">loading…</div>
+        <div id="lkIndex" class="small idxstat"></div>
         <div class="bar"><div id="lkBar" style="width:0%"></div></div>
         <div class="small">limit <input id="lkLimit" type="number" min="0.1" step="0.5" style="width:70px"> GB <button id="lkSetLimit">set</button> <span id="lkLimitMsg"></span></div>
         <details class="small" style="margin-top:6px"><summary>recent evictions</summary><div id="lkEvictions"></div></details>
@@ -10050,6 +10062,7 @@ AICESAT.LakeView = class {
     this.logSeq = 0;
     this.timer = setInterval(() => this.refresh(true), 10000);
     this.logTimer = setInterval(() => this.pollLog(), 2000);   // running log updates faster than the summary
+    this.idxTimer = setInterval(() => this.pollIndex(), 6000); this.pollIndex();   // live ATL06 index-build coverage
     this.pollLog();
   }
   async pollLog() {
@@ -10068,6 +10081,12 @@ AICESAT.LakeView = class {
     this.logSeq = d.seq;
     if (!body.childElementCount) body.innerHTML = '<div class="small">no activity yet — load or query cells to see the pipeline work</div>';
     if (atBottom) body.scrollTop = body.scrollHeight;
+  }
+  async pollIndex() {
+    let d; try { d = await this.api.indexStatus(); } catch (e) { return; }
+    this.map.setIndexCells(d.cells || []);
+    const el = this.$('lkIndex'), nc = (d.cells || []).length;
+    if (el) el.innerHTML = d.granules ? `<span class="idxswatch"></span><b>ATL06 index</b> (res ${d.res}) — <b>${d.granules.toLocaleString()}</b> granules · <b>${nc.toLocaleString()}</b> cells` : '';
   }
   watch(jid) { const tick = async () => { await this.refreshJobs(); const j = await this.api.job(jid); if (j.status === 'running') setTimeout(tick, 2000); else { if (j.error) AICESAT.showError(j.error); this.refresh(); } }; tick(); }
   async refreshJobs() {
