@@ -2,7 +2,7 @@ AICESAT.SceneView = class {
   constructor(root, api, back) {
     root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
-   plus visual cues: DEM surface, paired-shot highlighting, scale bar / north arrow.
+   plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
    sub-pixel, so the 3-D clouds do not visibly move (no exaggeration, no animated snap, no shift arrow). */
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
@@ -13,7 +13,7 @@ let SHOW_IMAGERY = false;
 let scene = null, coreg = null, bounds = null, meshOk = true;
 const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
 const $ = id => root.querySelector('#' + id);
-const PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200];
+const PAIR_RING = [220, 200, 150, 180];
 let SHOW_PAIRS = true;
 // The three missions, as users know them (the legend doubles as show/hide controls). Keyed by the internal series
 // name; ICESat-2 appears as two products (ATL03 photons + ATL06 land ice).
@@ -131,12 +131,6 @@ function surfaceLayers() {
 }
 
 // ---------------------------------------------------------------- orientation cues
-function niceLength(span) { const t = span / 5; const p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
-function arrow(from, dir, len, head = 0.18) {
-  const [dx, dy] = dir, to = [from[0] + dx * len, from[1] + dy * len, from[2]];
-  const px = -dy, py = dx, h = len * head;
-  return [[from, to], [[to[0] - (dx * 0.7 + px * 0.5) * h, to[1] - (dy * 0.7 + py * 0.5) * h, to[2]], to, [to[0] - (dx * 0.7 - px * 0.5) * h, to[1] - (dy * 0.7 - py * 0.5) * h, to[2]]]];
-}
 function niceStep(len) { const t = len / 4, p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
 function axesLayers() {
   if (!bounds) return [];
@@ -173,32 +167,10 @@ function axesLayers() {
   ];
 }
 
-function cueLayers() {
-  if (!bounds) return [];
-  const {minx, maxx, miny, maxy, minz} = bounds;
-  const span = Math.max(maxx - minx, maxy - miny), zc = minz * Z_EXAG - 0.02 * span;
-  const paths = [], texts = [];
-  // scale bar
-  const L = niceLength(span), bx = minx, by = miny - 0.06 * span, tick = 0.012 * span;
-  paths.push({p: [[bx, by, zc], [bx + L, by, zc]], c: CUE, w: 2});
-  paths.push({p: [[bx, by - tick, zc], [bx, by + tick, zc]], c: CUE, w: 2}); paths.push({p: [[bx + L, by - tick, zc], [bx + L, by + tick, zc]], c: CUE, w: 2});
-  texts.push({position: [bx + L / 2, by - 0.03 * span, zc], text: L >= 1000 ? `${L / 1000} km` : `${L} m`, color: CUE});
-  // north arrow
-  const [nx_, ny_] = scene.frame.north_xy, nb = [bx + L + 0.12 * span, by, zc], nl = 0.12 * span;
-  for (const seg of arrow(nb, [nx_, ny_], nl)) paths.push({p: seg, c: CUE, w: 2});
-  texts.push({position: [nb[0] + nx_ * nl * 1.25, nb[1] + ny_ * nl * 1.25, zc], text: 'N', color: CUE});
-  return [
-    new PathLayer({id: 'cues', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels'}),
-    new TextLayer({id: 'cue-text', data: texts, getPosition: d => d.position, getText: d => d.text, getColor: d => d.color, getTextAnchor: d => d.anchor || 'middle',
-      getSize: 13, sizeUnits: 'pixels', billboard: true, fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
-      background: true, getBackgroundColor: [20, 20, 26, 190], backgroundPadding: [4, 2]}),
-  ];
-}
-
 // ---------------------------------------------------------------- render / view
 function render() {
   if (!scene) return;
-  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...cueLayers(), ...axesLayers()]});
+  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...axesLayers()]});
 }
 
 function fitView() {
