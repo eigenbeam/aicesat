@@ -55,3 +55,21 @@ def test_icessn_asterisk_fill_becomes_nan(tmp_path):
     )
     d = icessn._parse_file(str(p), (-46, 69.5, -44, 70.5))
     assert d is not None and d["h"].size == 1 and abs(d["h"][0] - 2500.0) < 1e-6
+
+
+def test_lake_write_points_materializes(tmp_path, monkeypatch):
+    """A point collection (GLAS/ATL06/ICESSN) written to the lake shows up in cell_stats and missions()."""
+    import numpy as np
+    from aicesat import lake
+    monkeypatch.setattr(lake, "LAKE_DIR", tmp_path / "lake")
+    n = 300
+    arrays = {"lon": np.linspace(-45, -43, n), "lat": np.linspace(69.8, 70.2, n), "h": np.full(n, 2500.0),
+              "t": np.array(["2005-05-01"] * n, dtype="datetime64[ms]"), "granule_idx": np.zeros(n, "i2")}
+    meta = {"granules": [{"granule": "GLAH06_x.h5"}], "height_ref": "WGS84 ellipsoid"}
+    cells = lake.write_points("GLAS", arrays, meta)
+    assert len(cells) > 0
+    st = lake.cell_stats("GLAS")
+    assert len(st) == len(cells)
+    assert sum(c["rows"] for c in st.values()) == n
+    assert any(c["granules"] == ["GLAH06_x"] for c in st.values())          # .h5 stripped, filename-safe
+    assert "GLAS" in [m["mission"] for m in lake.missions()]

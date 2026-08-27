@@ -69,6 +69,41 @@ def write_photons(mission: str, granule: str, beam: str, ph: dict[str, np.ndarra
 ROW_GROUP_ROWS = 65_536
 
 
+def write_points(mission: str, arrays: dict, meta: dict) -> list[int]:
+    """Materialize a per-scene point collection (GLAS / ATL06 / ICESSN) into the lake so it appears in the Lake view
+    as its own collection. Minimal schema (native lon/lat/height/t + provenance) written per H3 res-6 cell, one file
+    per (granule, cell) named `<granule>__pts.parquet` — cell_stats reads only Parquet metadata + the filename, so
+    this is enough to show cells, rows, bytes and granules. Returns the cells written."""
+    from . import index, planner
+
+    lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8")
+    h = np.asarray(arrays["h"], "f8"); t = np.asarray(arrays["t"]).astype("datetime64[ms]")
+    gidx = np.asarray(arrays.get("granule_idx", np.zeros(lon.size, "i2")))
+    names = [g["granule"] for g in meta.get("granules", [])] or ["points"]
+    ok = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(h)
+    if not ok.any():
+        return []
+    cells = np.zeros(lon.size, "u8")
+    cells[ok] = planner._cells_vectorized(lat[ok], lon[ok], index.H3_RES)
+    ref = meta.get("height_ref", "WGS84 ellipsoid")
+    written = set()
+    for gi in np.unique(gidx[ok]):
+        gname = names[int(gi)] if int(gi) < len(names) else f"g{int(gi)}"
+        gname = gname.rsplit(".", 1)[0].replace("/", "_").replace("__", "_")   # safe, unambiguous filename stem
+        gm = ok & (gidx == gi)
+        for cell in np.unique(cells[gm]):
+            m = gm & (cells == cell)
+            nn = int(m.sum())
+            tbl = pa.table({"native_lon": lon[m], "native_lat": lat[m], "native_height": h[m],
+                            "t": pa.array(t[m]), "height_ref": pa.array([ref] * nn).dictionary_encode(),
+                            "source_granule": pa.array([gname] * nn).dictionary_encode()})
+            d = cell_dir(mission, int(cell)); d.mkdir(parents=True, exist_ok=True)
+            pq.write_table(tbl, d / f"{gname}__pts.parquet", compression="zstd", row_group_size=ROW_GROUP_ROWS)
+            written.add(int(cell))
+    log.info("%s: materialized %d points into %d lake cells", mission, int(ok.sum()), len(written))
+    return sorted(written)
+
+
 def relayout(mission: str = "ICESAT2") -> dict:
     """Rewrite existing lake files with ROW_GROUP_ROWS-row groups (no network). Idempotent."""
     import time

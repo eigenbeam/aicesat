@@ -127,6 +127,13 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
 
+    def _mat(mission, arrays, meta):
+        try:
+            from . import lake
+            lake.write_points(mission, arrays, meta)
+        except Exception as e:
+            log.warning("%s: lake materialization failed: %s", mission, e)
+
     def _add(flag, name, fn):
         if not flag:
             return
@@ -154,18 +161,21 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 from . import glas
                 g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
                 scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
+                _mat("GLAS", g_arrays, g_meta)
                 log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
 
             def _atl06():
                 from . import atl06
                 a_arrays, a_meta = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
                 scene.add_series(doc, "ATL06", a_arrays, a_meta, a_meta["cache_key"])
+                _mat("ATL06", a_arrays, a_meta)
                 log_fn(f"ATL06: {a_meta['n']:,} land-ice segments")
 
             def _icessn():
                 from . import icessn
                 i_arrays, i_meta = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
                 scene.add_series(doc, "ICESSN", i_arrays, i_meta, i_meta["cache_key"])
+                _mat("ICESSN", i_arrays, i_meta)
                 log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
 
             _add(with_glas, "GLAS", _glas)          # chronological, matching the collection list
