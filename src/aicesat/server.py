@@ -161,6 +161,17 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:  # surfaced to the widget status line
                 log.exception("coregister failed")
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/candidates/"):
+            sid = self.path.split("/")[3].split("?")[0]
+            body = self._body()
+            try:
+                return self._json(200, api.scene_candidates(sid, h3_res=body.get("h3_res", 9), delta_t=body.get("delta_t", 1.0),
+                                                             ref_missions=body.get("ref_missions"), min_bins=body.get("min_bins", 3)))
+            except KeyError:
+                return self._json(404, {"error": "no such scene"})
+            except Exception as e:
+                log.exception("candidates failed")
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         self.send_error(404)
 
 
@@ -322,6 +333,11 @@ def ui_jobs() -> dict:
 @apps.tool(name="ui_coregister", **_APP)
 def ui_coregister(scene_id: str) -> dict:
     return api.coregister(scene_id)
+
+
+@apps.tool(name="ui_candidates", **_APP)
+def ui_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions: list[str] | None = None, min_bins: int = 3) -> dict:
+    return api.scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
 
 
 @apps.tool(name="ui_lake_cells", **_APP)

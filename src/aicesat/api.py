@@ -275,6 +275,17 @@ def coregister(scene_id: str, common_epoch: float | None = None, colocation_radi
     return result
 
 
+def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
+    """Candidate coincident-observation cells + their elevation time series for a built scene."""
+    from . import timeseries
+    doc = cache.load_scene(scene_id)
+    if doc is None:
+        raise KeyError(scene_id)
+    with _lock:
+        return timeseries.candidates(doc, h3_res=int(h3_res), delta_t=float(delta_t),
+                                     ref_missions=ref_missions, min_bins=int(min_bins))
+
+
 # ----------------------------------------------------------------------------- lake
 def lake_cells(stats: bool = True, mission: str = "ICESAT2") -> dict:
     """Materialized H3 cells as GeoJSON; with per-cell stats in properties when stats=True."""

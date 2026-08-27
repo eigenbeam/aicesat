@@ -32,7 +32,7 @@ def _parse_file(path: str, bbox) -> dict[str, np.ndarray] | None:
     if a.ndim != 2 or a.shape[0] == 0 or a.shape[1] < 11:
         return None
     seconds, lat, lon = a[:, 0], a[:, 1], a[:, 2]
-    elev, rms_cm = a[:, 3], a[:, 6]
+    elev, sn_slope, we_slope, rms_cm = a[:, 3], a[:, 4], a[:, 5], a[:, 6]
     track = a[:, 10]
     lon = ((lon + 180.0) % 360.0) - 180.0                             # 0..360 E -> -180..180
     keep = (track == 0) & np.isfinite(elev) & np.isfinite(lat) & np.isfinite(lon) & (rms_cm < MAX_RMS_CM)
@@ -46,6 +46,7 @@ def _parse_file(path: str, bbox) -> dict[str, np.ndarray] | None:
     t0 = np.datetime64(day.isoformat(), "ms")
     t = t0 + (seconds[keep] * 1000).astype("timedelta64[ms]")
     return {"lon": lon[keep], "lat": lat[keep], "h": elev[keep], "t": t,
+            "sn_slope": sn_slope[keep], "we_slope": we_slope[keep],   # ILATM2 platelet is a local plane fit
             "rms_cm": rms_cm[keep], "npt_used": a[:, 7][keep].astype("i4")}
 
 
