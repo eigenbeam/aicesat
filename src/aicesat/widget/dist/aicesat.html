@@ -9607,21 +9607,46 @@ AICESAT.MapView = class {
     for (const a of Object.values(agg)) a.stats.granules = [...a.stats.granules];
     return agg;
   }
-  // A hexagonal patch of cells around the point the globe is facing. gridDisk (not a lon/lat rectangle) so it works
-  // uniformly at ANY latitude — including over the pole, where a lat/lon box degenerates and the grid used to vanish.
+  // Precomputed global H3 grid (cell indexes + centroids) for a resolution, built once and cached. The whole
+  // res-2/3 grid builds in a few ms and one cellToLatLng is ~2us, so this is cheap to keep in memory and reuse.
+  _globalGrid(res) {
+    this._gg = this._gg || {};
+    if (this._gg[res]) return this._gg[res];
+    const idx = [];
+    try { for (const c of h3.getRes0Cells()) for (const cc of h3.cellToChildren(c, res)) idx.push(cc); }
+    catch (e) { return {idx: [], lat: new Float64Array(0), lng: new Float64Array(0)}; }
+    const lat = new Float64Array(idx.length), lng = new Float64Array(idx.length);
+    for (let i = 0; i < idx.length; i++) { const ll = h3.cellToLatLng(idx[i]); lat[i] = ll[0]; lng[i] = ll[1]; }
+    return this._gg[res] = {idx, lat, lng};
+  }
+  // A patch of cells covering the visible cap around the point the globe faces — uniform at ANY latitude (works over
+  // the pole, where a lon/lat box degenerates). At low resolution the cap is wide and h3.gridDisk(k) is pathologically
+  // slow in JS (k=40 ~114ms), so we filter the precomputed global centroids by angular distance instead (sub-ms). At
+  // high resolution the cap is small, so gridDisk(k) with a small k is cheap and avoids materializing a huge grid.
   gridCells() {
     const vs = this.state.viewState, cLat = vs.latitude, cLon = vs.longitude;
     const EDGE_KM = [1107, 418, 158, 59.8, 22.6, 8.54, 3.23];   // mean H3 edge length by resolution
     const halfDeg = Math.min(80, 70 / Math.pow(1.7, Math.max(0, vs.zoom)));   // visible angular half-extent
+    const D2R = Math.PI / 180;
     let res = this.resForZoom(vs.zoom);
     for (let i = 0; i < 7; i++) {
-      let cells = [];
+      if (res <= 3) {   // wide cap -> precomputed-centroid distance filter (no gridDisk)
+        const g = this._globalGrid(res);
+        const capDeg = Math.min(88, halfDeg + 8), cosR = Math.cos(capDeg * D2R);
+        const sla = Math.sin(cLat * D2R), cla = Math.cos(cLat * D2R), clo = cLon * D2R, cells = [];
+        for (let j = 0; j < g.idx.length; j++) {
+          const la = g.lat[j] * D2R, lo = g.lng[j] * D2R;
+          if (sla * Math.sin(la) + cla * Math.cos(la) * Math.cos(lo - clo) >= cosR) cells.push(g.idx[j]);
+        }
+        return {cells, res};
+      }
+      let cells = [];   // narrow cap (zoomed in) -> gridDisk is cheap
       try {
         const center = h3.latLngToCell(cLat, cLon, res);
         const k = Math.max(1, Math.min(40, Math.round(halfDeg * 111 / EDGE_KM[res])));   // rings to span the visible face
         cells = h3.gridDisk(center, k);
       } catch (err) { cells = []; }
-      if (cells.length > 5000 && res > 0) { res--; continue; }   // safety: too many -> coarser resolution
+      if (cells.length > 5000 && res > 0) { res--; continue; }   // safety: too many -> coarser (may drop to the filter path)
       return {cells, res};
     }
     return {cells: [], res};
