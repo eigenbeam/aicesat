@@ -99,7 +99,7 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/jobs":
             return self._json(200, api.jobs())
         if u.path == "/api/index_status":
-            return self._json(200, api.index_status(qs.get("res", [None])[0]))
+            return self._json(200, api.index_status(qs.get("collection", ["ATL06"])[0]))
         if u.path.startswith("/api/scene/") and u.path.endswith("/part"):
             sid = u.path.split("/")[3]
             try:
@@ -333,8 +333,8 @@ def ui_jobs() -> dict:
 
 
 @apps.tool(name="ui_index_status", **_APP)
-def ui_index_status(res: int | None = None) -> dict:
-    return api.index_status(res)
+def ui_index_status(collection: str = "ATL06") -> dict:
+    return api.index_status(collection)
 
 
 @apps.tool(name="ui_coregister", **_APP)

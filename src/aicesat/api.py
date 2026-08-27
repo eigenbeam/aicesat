@@ -275,20 +275,29 @@ def coregister(scene_id: str, common_epoch: float | None = None, colocation_radi
     return result
 
 
-_INDEX_STATUS = {"res": None, "seen": {}, "cells": set()}   # incremental cache for the live index-build view
+_INDEX_CACHE: dict = {}   # collection -> {"seen": {name: mtime}, "cells": set()} incremental cache for the live view
 
 
-def index_status(res=None) -> dict:
-    """Indexed H3 cells + granule count for the ATL06 sub-granule index (drives the Data Lake build view).
+def _index_source(collection: str):
+    """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet."""
+    from . import index_atl06
+    from . import index as atl03_index
+    if collection == "ATL06":
+        return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES
+    if collection in ("ICESAT2", "ATL03"):
+        return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES
+    return None, None   # GLAS, ICESSN: not indexed yet
+
+
+def index_status(collection: str = "ATL06") -> dict:
+    """Indexed H3 cells + granule count for a collection's sub-granule index (drives the Data Lake index view).
     Incremental: only newly-written parquets are read each call, so it stays cheap as the index grows."""
     import pyarrow.parquet as pq
     import h3
-    from . import index_atl06
-    res = int(res) if res else index_atl06.ATL06_RES
-    d = index_atl06._index_dir(res)
-    c = _INDEX_STATUS
-    if c["res"] != res:
-        c.update(res=res, seen={}, cells=set())
+    d, res = _index_source(collection)
+    if d is None:
+        return {"collection": collection, "indexed": False, "res": None, "granules": 0, "cells": []}
+    c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "cells": set()})
     for pth in (d.glob("*.parquet") if d.exists() else []):
         try:
             mt = pth.stat().st_mtime
@@ -299,10 +308,10 @@ def index_status(res=None) -> dict:
         try:
             col = pq.read_table(pth, columns=["h3_cell"])["h3_cell"].to_pylist()
         except Exception:
-            continue   # parquet mid-write (shouldn't happen with atomic writes); skip this poll
+            continue   # parquet mid-write; skip this poll
         c["cells"].update(int(x) for x in col)
         c["seen"][pth.name] = mt
-    return {"mission": "ATL06", "res": res, "granules": len(c["seen"]),
+    return {"collection": collection, "indexed": True, "res": res, "granules": len(c["seen"]),
             "cells": [h3.int_to_str(x) for x in c["cells"]]}
 
 
