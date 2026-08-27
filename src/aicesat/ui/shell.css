@@ -129,6 +129,23 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .covrow { margin:0 0 6px; }
 .covrow.ok { color:var(--green); }
 .covrow.no { color:var(--red); }
+/* Explore guided flow: steps, segmented mode picker, numeric bbox, on-map mode badge */
+.step { padding:9px 0; border-top:1px solid var(--hair); }
+.step:first-child { border-top:none; padding-top:2px; }
+.step-head { font-size:12.5px; font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
+.step-n { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; background:var(--blue); color:#fff; font-size:11px; font-weight:600; flex:0 0 auto; }
+.step-hint { margin:4px 0; color:var(--muted); }
+#exTools .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
+.seg { display:inline-flex; border:1px solid var(--hair); border-radius:8px; overflow:hidden; margin:2px 0; }
+.seg button { margin:0; border:none; border-radius:0; border-right:1px solid var(--hair); background:#1b1b22; color:var(--muted); padding:5px 12px; }
+.seg button:last-child { border-right:none; }
+.seg button.on { background:var(--blue); color:#fff; }
+.area-readout { margin:6px 0; color:var(--ink); }
+.bbox-entry { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin:6px 0; }
+.bbox-entry input { width:54px; }
+.covout { max-height:26vh; overflow:auto; margin-top:6px; }
+.buildout { white-space:pre-wrap; max-height:26vh; overflow:auto; margin-top:6px; }
+.mode-badge { position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:14; background:rgba(20,20,26,.85); border:1px solid var(--blue); color:var(--ink); border-radius:16px; padding:5px 12px; font-size:12px; pointer-events:none; backdrop-filter:blur(6px); }
 .lakelog { max-height:34vh; overflow:auto; font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; }
 .lakelog .logline { white-space:pre-wrap; word-break:break-word; color:var(--muted); border-bottom:1px solid #22222a; padding:1px 0; }
 .lakelog .logline.warn { color:var(--amber); }

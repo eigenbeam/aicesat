@@ -11,6 +11,7 @@ AICESAT.MapView = class {
     this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, cellStats: {},
                   scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
+    this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
     this.onSelect = () => {}; this.onOpenScene = () => {}; this.onCellsSelected = () => {};
     this.deck = new Deck({
       parent: container, views: new Globe({resolution: 12}),
@@ -22,7 +23,7 @@ AICESAT.MapView = class {
         this._renderSoon();
         if (act) { clearTimeout(this._settle); this._settle = setTimeout(() => { this._interacting = false; this.render(); }, 180); }   // rebuild the grid once the view settles
       },
-      getCursor: () => 'crosshair',
+      getCursor: ({isDragging}) => (this.opts.draw && this.state.mode !== 'pan') ? 'crosshair' : (isDragging ? 'grabbing' : 'grab'),
       onDragStart: (info) => { if (this.opts.draw && this.state.mode === 'box' && info.coordinate) { this.state.drawing = true; this.state.box = {a: info.coordinate, b: info.coordinate}; this.state.poly = []; this.state.polyClosed = false; this.deck.setProps({controller: false}); } },
       onDrag: (info) => { if (this.state.drawing && info.coordinate) { this.state.box.b = info.coordinate; this.render(); } },
       onDragEnd: (info) => { if (this.state.drawing) { this.state.drawing = false; if (info.coordinate) this.state.box.b = info.coordinate; this.deck.setProps({controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}}); this.render(); this.onSelect(this.area()); } },
@@ -36,7 +37,11 @@ AICESAT.MapView = class {
     if (s.polyClosed && s.poly.length >= 3) return {polygon: s.poly.map(p => [+p[0].toFixed(4), +p[1].toFixed(4)])}; return null; }
   setArea(a) { this.state.poly = []; this.state.polyClosed = false; this.state.box = a && a.bbox ? {a: [a.bbox[0], a.bbox[1]], b: [a.bbox[2], a.bbox[3]]} : null; if (a && a.polygon) { this.state.poly = a.polygon; this.state.polyClosed = true; } this.render(); this.onSelect(this.area()); }
   clear() { this.setArea(null); this.state.selected.clear(); this.onCellsSelected([]); this.render(); }
-  setMode(m) { this.state.mode = m; }
+  setMode(m) {
+    this.state.mode = m;
+    const txt = {box: 'Box mode — drag a rectangle on the globe', poly: 'Polygon mode — click points, then Close (or Enter)'};
+    if (this.badge) { this.badge.textContent = txt[m] || ''; this.badge.hidden = !txt[m]; }
+  }
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
