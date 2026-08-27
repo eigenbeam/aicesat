@@ -51,6 +51,16 @@ def _granule_start(g) -> datetime | None:
 CMR_CACHE_TTL_S = 24 * 3600  # granule lists for a (product, bbox, window) change only when NSIDC reprocesses
 
 
+def sample_evenly(granules: list, n) -> list:
+    """Take up to n granules spread evenly across the (time-ordered) granule list, so a capped extraction
+    still spans the full record instead of truncating to the earliest N (CMR returns them oldest-first)."""
+    if not n or n <= 0 or n >= len(granules):
+        return granules
+    import numpy as np
+    idx = sorted(set(np.linspace(0, len(granules) - 1, int(n)).round().astype(int).tolist()))
+    return [granules[i] for i in idx]
+
+
 def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
     """CMR granule search, cached on disk for CMR_CACHE_TTL_S: the search is ~1 s per call and every warm query paid it."""
     import pickle

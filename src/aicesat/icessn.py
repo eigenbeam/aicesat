@@ -64,7 +64,7 @@ def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[st
     if not granules:
         raise RuntimeError(f"no ILATM2 granules over {bbox} in {window}")
     n_found = len(granules)
-    granules = granules[:max_granules]
+    granules = coverage.sample_evenly(granules, max_granules)
     raw_dir = cache.DATA_DIR / "raw" / "ilatm2"     # small CSVs (~0.5-10 MB): download beats remote text reads
     raw_dir.mkdir(parents=True, exist_ok=True)
     paths = earthaccess.download(granules, local_path=str(raw_dir), threads=8, show_progress=False)

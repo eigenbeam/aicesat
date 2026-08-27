@@ -86,7 +86,7 @@ def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[s
     if not granules:
         raise RuntimeError(f"no GLAH06 granules over {bbox} in {window}")
     n_found = len(granules)
-    granules = granules[:max_granules]
+    granules = coverage.sample_evenly(granules, max_granules)
     # GLAH06 granules are ~4 MB each: bulk parallel download beats hundreds of remote opens.
     raw_dir = cache.DATA_DIR / "raw" / "glah06"
     raw_dir.mkdir(parents=True, exist_ok=True)

@@ -79,7 +79,7 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     if not granules:
         raise RuntimeError(f"no ATL06 granules over {bbox} in {window}")
     n_found = len(granules)
-    granules = granules[:max_granules]
+    granules = coverage.sample_evenly(granules, max_granules)
     files = earthaccess.open(granules)   # fsspec file objects; h5py reads only the chunks a small bbox touches
     parts, prov = [], []
     for gr, fh in zip(granules, files):
