@@ -335,7 +335,8 @@ function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked
 function initTimeSeries() {
   candidates = []; candSel = -1;
   const present = Object.keys(scene.series);
-  $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '" checked> ' + ((MISSIONS[m] || {}).name || m) + '</label>').join('');
+  const defRef = present.includes('GLAS') ? ['GLAS'] : present;   // same rule as timeseries._reference_set: earliest-epoch, single-sensor anchor
+  $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '"' + (defRef.includes(m) ? ' checked' : '') + '> ' + ((MISSIONS[m] || {}).name || m) + '</label>').join('');
   $('tsRef').querySelectorAll('input').forEach(i => i.onchange = () => findCandidates());
   tsLabels(); renderCandList(); renderConf(null); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = '';
 }

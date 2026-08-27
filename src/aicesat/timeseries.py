@@ -1,9 +1,10 @@
 """Candidate coincident-observation cells and their elevation time series.
 
 For a built scene: bin every mission's points into H3 cells and fixed time windows, keep cells observed
-in >= min_bins distinct windows, fit ONE local reference plane per cell (from the user-chosen
-mission(s)) to remove surface slope, and report each window's median residual about that plane as a
-height anomaly -> a time series. Positions are first propagated to a common epoch (plate motion).
+in >= min_bins distinct windows, fit ONE local reference plane per cell (from the reference mission(s):
+GLAS by default when the scene has it, see _reference_set) to remove surface slope, and report each window's
+median residual about that plane as a height anomaly -> a time series. Positions are first propagated to a
+common epoch (plate motion).
 
 Deliberately NOT applied (and surfaced to the user): inter-campaign / inter-sensor bias adjustment and
 GIA. The plane-fit is what keeps slope from masquerading as elevation change; a raw median-per-window
@@ -22,7 +23,21 @@ MISSION_LABEL = {"GLAS": "ICESat-1", "ICESSN": "IceBridge ATM", "ATL06": "ICESat
 _MAX_PTS_PER_MISSION = 80_000   # cap per-point H3 assignment cost; median residuals are robust to subsampling
 _MIN_BIN_PTS = 3                # a time window needs this many points in the cell to be a usable series point
 _MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
-_BLUNDER_MAD = 6.0            # drop residuals beyond this many (scaled) MADs from the cell median
+_BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
+DEFAULT_REF_MISSION = "GLAS"  # earliest epoch + single sensor: an anchored zero, no inter-sensor bias in the plane's tilt
+
+
+def _reference_set(ref_missions, present) -> set:
+    """Missions whose points fit each cell's reference plane. Explicit choice wins when any of it is in the
+    scene; otherwise GLAS if present, else every mission. GLAS is the default because it is the earliest epoch
+    and one sensor: residuals then read as 'height relative to the ICESat-1-era surface'. Pooling all missions
+    would (a) absorb the mean of any real change into the plane and (b) let an inter-sensor offset tilt the
+    plane whenever the missions sample different parts of the cell."""
+    present = set(present)
+    chosen = (set(ref_missions) & present) if ref_missions else set()
+    if chosen:
+        return chosen
+    return {DEFAULT_REF_MISSION} if DEFAULT_REF_MISSION in present else present
 
 
 def _load_all(doc: dict, common_epoch: float) -> list[dict]:
@@ -82,12 +97,11 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
                min_bins: int = 3, common_epoch: float = 2005.0, max_candidates: int = 60) -> dict:
     recs = _load_all(doc, common_epoch)
     present = [r["mission"] for r in recs]
-    ref_set = (set(ref_missions) & set(present)) if ref_missions else set(present)
-    if not ref_set:
-        ref_set = set(present)
+    ref_set = _reference_set(ref_missions, present)
     params = {"h3_res": int(h3_res), "delta_t": float(delta_t), "min_bins": int(min_bins),
               "common_epoch": common_epoch, "ref_missions": sorted(ref_set), "missions_present": present,
-              "notes": "residuals about a per-cell reference plane; positions plate-motion propagated; "
+              "notes": "residuals about a per-cell reference plane fit to ref_missions (default GLAS: earliest epoch, "
+                       "single sensor); positions plate-motion propagated; "
                        "no inter-campaign/inter-sensor bias adjustment and no GIA correction applied"}
     if not recs:
         return {"params": params, "candidates": []}
@@ -126,10 +140,18 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
         except Exception:
             continue
         resid = gh - (coef[0] + coef[1] * (gx - xc) + coef[2] * (gy - yc))
-        med = float(np.median(resid)); mad = float(np.median(np.abs(resid - med))) or 1e-6
-        good = np.abs(resid - med) <= _BLUNDER_MAD * 1.4826 * mad
+        # Blunder clip: distance from the point's OWN time window's median, scaled by the pooled within-window
+        # scatter. Clipping about the cell-wide median would drop real change between windows (or a whole
+        # inter-sensor offset) once it exceeds a few MADs of the scatter -- with a single-epoch reference that
+        # silently removed the reference epoch itself from the series.
+        dev = np.empty_like(resid)
+        for bval in np.unique(bins_here):
+            m = bins_here == bval
+            dev[m] = resid[m] - np.median(resid[m])
+        scale = float(1.4826 * np.median(np.abs(dev))) or 1e-6
+        good = np.abs(dev) <= _BLUNDER_MAD * scale
         ref_resid = resid[rmask & good]                      # reference-point residuals about the plane
-        plane_rms = float(1.4826 * np.median(np.abs(ref_resid - np.median(ref_resid)))) if ref_resid.size >= 3 else float(1.4826 * mad)
+        plane_rms = float(1.4826 * np.median(np.abs(ref_resid - np.median(ref_resid)))) if ref_resid.size >= 3 else scale
 
         series = []; rough_pool = []
         for bval in np.unique(bins_here):
