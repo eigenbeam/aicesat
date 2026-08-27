@@ -323,7 +323,16 @@ def index_status(collection: str = "ATL06") -> dict:
         c["seen"][pth.name] = mt
     cells = [{"h": h3.int_to_str(cell), "g": inf[0], "c": len(inf[1]),
               "y0": (inf[2] if inf[2] != 9999 else 0), "y1": inf[3]} for cell, inf in c["info"].items()]
-    return {"collection": collection, "indexed": True, "res": res, "granules": len(c["seen"]), "cells": cells}
+    granules = len(c["seen"]); target = None
+    mf = d / "_build.json"
+    if mf.exists():
+        try:
+            target = int(json.loads(mf.read_text()).get("target"))
+        except Exception:
+            target = None
+    pct = (min(100, round(100 * granules / target)) if target else None)
+    return {"collection": collection, "indexed": True, "res": res, "granules": granules,
+            "target": target, "pct": pct, "cells": cells}
 
 
 def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:

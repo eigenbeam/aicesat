@@ -239,3 +239,8 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lkview { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 .lkcoll { flex:1 1 auto; min-width:0; }
 .lkhint { color:var(--muted); line-height:1.35; margin-bottom:6px; }
+
+/* Data Lake: index-build progress */
+.bar > div.building { background:var(--blue); }
+.idxbuild { color:var(--amber); margin-top:4px; line-height:1.35; }
+.tiptip { color:#9fe6da; }

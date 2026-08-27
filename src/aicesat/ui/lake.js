@@ -87,11 +87,13 @@ AICESAT.LakeView = class {
       let d; try { d = await api.indexStatus(coll); } catch (e) { d = {indexed: false, cells: []}; }   // fast: index-only
       if (seq !== this._viewSeq) return;                      // a newer mode/collection selection superseded this one
       this.map.state.cells = null;                            // hide materialized-data cells
-      this.map.setIndexCells(d.cells || []);
+      this.map.setIndexCells(d.cells || [], d.pct);
       $('lkHint').textContent = 'Sub-granule H3 index (index-only; data fetched on demand). Colour = distinct cycles per cell (temporal depth). Hover a cell for its status.';
-      $('lkBarWrap').style.display = 'none';
+      const building = d.pct != null && d.pct < 100;
+      $('lkBarWrap').style.display = building ? '' : 'none';
+      if (building) { const bar = $('lkBar'); bar.style.width = d.pct + '%'; bar.className = 'building'; }
       $('lkStats').innerHTML = d.indexed
-        ? `<div class="idxstat"><span class="idxswatch"></span><b>${this.collLabel()}</b> index (res ${d.res})</div><table class="stats"><tr><td>granules</td><td class="num">${U.fmtN(d.granules)}</td><td>cells</td><td class="num">${U.fmtN((d.cells || []).length)}</td></tr></table>`
+        ? `<div class="idxstat"><span class="idxswatch"></span><b>${this.collLabel()}</b> index (res ${d.res})</div><table class="stats"><tr><td>granules</td><td class="num">${U.fmtN(d.granules)}${d.target ? ' / ' + U.fmtN(d.target) : ''}</td><td>cells</td><td class="num">${U.fmtN((d.cells || []).length)}</td></tr></table>` + (building ? `<div class="small idxbuild">building index — <b>${d.pct}%</b> of granules done; per-cell counts still rising (roughly uniformly).</div>` : (d.pct === 100 ? '<div class="small">index complete for this area.</div>' : ''))
         : `<div class="small">${this.collLabel()} is not indexed yet — no sub-granule index built for this collection.</div>`;
     } else {
       await this.map.refreshData(api, coll).catch(() => {});  // regions + footprints + this collection's data cells

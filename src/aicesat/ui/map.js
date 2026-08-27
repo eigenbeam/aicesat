@@ -51,7 +51,7 @@ AICESAT.MapView = class {
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
-  setIndexCells(cells) { this.state.indexCells = cells; this.render(); }
+  setIndexCells(cells, pct) { this.state.indexCells = cells; this.state.indexPct = pct; this.render(); }
   click(info) {
     const s = this.state;
     if (info.layer && info.layer.id === 'scenes' && info.object) { this.onOpenScene(info.object); return; }
@@ -68,7 +68,7 @@ AICESAT.MapView = class {
     let html = null;
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
-    else if (info.layer && info.layer.id === 'index-cov' && info.object) { const o = info.object; html = `<b>cell ${o.h}</b><br>${o.g} granule${o.g === 1 ? '' : 's'} · <b>${o.c}</b> cycle${o.c === 1 ? '' : 's'} indexed<br>${o.y0}\u2013${o.y1}`; }
+    else if (info.layer && info.layer.id === 'index-cov' && info.object) { const o = info.object, p = s.indexPct; html = `<b>cell ${o.h}</b><br>${o.g} granule${o.g === 1 ? '' : 's'} · <b>${o.c}</b> cycle${o.c === 1 ? '' : 's'} indexed so far<br>${o.y0}\u2013${o.y1}` + (p != null && p < 100 ? `<br><span class="tiptip">index build ${p}% done — counts still rising</span>` : ''); }
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
     this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }

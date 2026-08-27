@@ -45,6 +45,9 @@ def main():
     todo = [g for n, g in names.items() if n not in done]
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
+    import json, pathlib
+    md = index_atl06._index_dir(res); md.mkdir(parents=True, exist_ok=True)
+    (md / "_build.json").write_text(json.dumps({"bbox": bbox, "res": res, "target": len(names), "started": time.time()}))
     if not todo:
         log.info("nothing to do — index complete"); return
 
