@@ -8,6 +8,7 @@ AICESAT.ExploreView = class {
     this._covSeq = 0;        // guards against a stale coverage response overwriting a newer one
     root.innerHTML = `
       <div class="map" id="exMap"></div>
+      <div id="mapLegend" class="map-legend"><b>Map key</b><span><i class="swf" style="--c:#378ADD"></i>data &amp; selection</span><span><i class="swo" style="--c:#4caf7d"></i>scene ready</span><span><i class="swo" style="--c:#E0A030"></i>building</span><span><i class="swo" style="--c:#d9534f"></i>error</span><span><i class="swo" style="--c:#a882e6"></i>suggested region</span></div>
       <div class="panel" id="exTools" data-title="build a scene" style="top:12px;left:12px;width:344px">
         <div class="step">
           <div class="step-head"><span class="step-n">1</span> Pick an area</div>

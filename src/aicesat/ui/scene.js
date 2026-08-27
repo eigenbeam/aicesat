@@ -197,8 +197,8 @@ function drawHist(canvas, values, {color, refLine = 0, range} = {}) {
   counts.forEach((c, i) => { const h = c / max * (H - 18 * devicePixelRatio); ctx.fillRect(i * bw + 1, H - h - 14 * devicePixelRatio, bw - 2, h); });
   const x0 = (refLine - lo) / (hi - lo) * W;
   ctx.strokeStyle = '#ddd'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H - 14 * devicePixelRatio); ctx.stroke(); ctx.setLineDash([]);
-  if (refLine >= lo && refLine <= hi) { ctx.fillStyle = '#cfcfcf'; ctx.font = `${9 * devicePixelRatio}px sans-serif`; ctx.fillText('0', x0 + 3 * devicePixelRatio, 10 * devicePixelRatio); }
-  ctx.fillStyle = '#999'; ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+  if (refLine >= lo && refLine <= hi) { ctx.fillStyle = '#d6d6d6'; ctx.font = `${11 * devicePixelRatio}px sans-serif`; ctx.fillText('0', x0 + 3 * devicePixelRatio, 12 * devicePixelRatio); }
+  ctx.fillStyle = '#aaa'; ctx.font = `${12 * devicePixelRatio}px sans-serif`;
   ctx.fillText(`${lo.toFixed(2)} m`, 2, H - 2); const t = `${hi.toFixed(2)} m`; ctx.fillText(t, W - ctx.measureText(t).width - 2, H - 2);
 }
 
