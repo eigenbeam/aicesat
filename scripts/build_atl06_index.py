@@ -1,0 +1,61 @@
+"""Build the ATL06 sub-granule H3 index over a bbox — resumable and parallel. Re-run to resume (each granule
+writes its own Parquet under data/index/atl06/res<R>/, so finished granules are skipped on a re-run).
+
+Usage:  uv run python scripts/build_atl06_index.py W S E N [res] [workers]
+Example (SW Greenland incl. Jakobshavn + K-transect):
+        uv run python scripts/build_atl06_index.py -52 62 -44 70 5 8
+"""
+import concurrent.futures as cf
+import logging
+import sys
+import time
+
+from aicesat import auth, coverage, index_atl06
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("build_atl06_index")
+    a = sys.argv[1:]
+    if len(a) < 4:
+        print(__doc__); sys.exit(2)
+    bbox = [float(x) for x in a[:4]]
+    res = int(a[4]) if len(a) > 4 else index_atl06.ATL06_RES
+    workers = int(a[5]) if len(a) > 5 else 8
+
+    auth.login()
+    log.info("enumerating ATL06 granules over %s (full record) ...", bbox)
+    granules = coverage.search("ATL06", "007", bbox, None)
+    names = {coverage.granule_name(g): g for g in granules}
+    done = index_atl06.indexed_atl06_granules(res)
+    todo = [g for n, g in names.items() if n not in done]
+    log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
+             res, len(names), len(done & set(names)), len(todo), workers)
+    if not todo:
+        log.info("nothing to do — index complete"); return
+
+    t0 = time.time(); ok = err = rows = 0
+
+    def do(g):
+        try:
+            t = index_atl06.build_atl06_index(g, res=res)
+            return (coverage.granule_name(g), t.num_rows, None)
+        except Exception as e:  # per-granule tolerance: log and keep going, resume picks it up next run
+            return (coverage.granule_name(g), 0, f"{type(e).__name__}: {e}")
+
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        for i, (name, nrows, e) in enumerate(ex.map(do, todo), 1):
+            if e:
+                err += 1; log.warning("FAIL %s: %s", name, e)
+            else:
+                ok += 1; rows += nrows
+            if i % 25 == 0 or i == len(todo):
+                el = time.time() - t0; rate = i / el if el else 0
+                log.info("%d/%d (%d ok, %d err, %d rows) | %.2f gran/s | elapsed %.1fm | ETA %.1fm",
+                         i, len(todo), ok, err, rows, rate, el / 60, (len(todo) - i) / rate / 60 if rate else 0)
+    log.info("DONE res %d: %d ok, %d err, %d rows in %.1fm -> %s",
+             res, ok, err, rows, (time.time() - t0) / 60, index_atl06._index_dir(res))
+
+
+if __name__ == "__main__":
+    main()

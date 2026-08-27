@@ -26,9 +26,26 @@ from .index import BEAMS, _chunk_manifest, _filters, strong_beams   # reuse the 
 log = logging.getLogger(__name__)
 
 H3_RES = 6
+ATL06_RES = 5   # per-collection choice: ATL06's 400 km chunks make res 5 the sweet spot (finer buys ~nothing on
+                # scene-sized queries but multiplies index/scan cost) — see the resolution analysis.
 ATL06_INDEX_VERSION = "1"
 ATL06_DATASETS = ("latitude", "longitude", "h_li", "delta_time", "atl06_quality_summary")
 ATL06_INDEX_DIR = cache.DATA_DIR / "index" / "atl06"
+
+
+def _index_dir(res: int):
+    return ATL06_INDEX_DIR / f"res{res}"
+
+
+def indexed_atl06_granules(res: int = ATL06_RES) -> set[str]:
+    """Granule names (stems, with .h5) already indexed at this res with the current schema — for resumable builds."""
+    out = set()
+    d = _index_dir(res)
+    for p in (d.glob("*.parquet") if d.exists() else []):
+        meta = pq.read_schema(p).metadata or {}
+        if meta.get(b"aicesat_atl06_index_version", b"").decode() == ATL06_INDEX_VERSION:
+            out.add(p.stem)
+    return out
 _NAME_RE = re.compile(r"ATL06_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5")
 
 
@@ -40,7 +57,7 @@ def parse_granule_name(name: str) -> dict:
             "version": int(m.group(5)), "release": int(m.group(6))}
 
 
-def build_atl06_index(granule, res: int = H3_RES) -> pa.Table:
+def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
     """Parse one ATL06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows."""
     import earthaccess
 
@@ -129,8 +146,9 @@ def build_atl06_index(granule, res: int = H3_RES) -> pa.Table:
     tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
     tbl = tbl.replace_schema_metadata({"aicesat_atl06_index_version": ATL06_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
-    ATL06_INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    pq.write_table(tbl, ATL06_INDEX_DIR / f"{name}.parquet")
+    d = _index_dir(res)
+    d.mkdir(parents=True, exist_ok=True)
+    pq.write_table(tbl, d / f"{name}.parquet")
     log.info("indexed ATL06 %s: %d (chunk,cell) rows, %d beams, %.1fs (%d GETs, %.1f MB)",
              name, tbl.num_rows, len({*rows["beam"]}), time.time() - t0, reader.stats.requests, reader.stats.bytes / 1e6)
     return tbl
@@ -143,17 +161,18 @@ def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.nda
     return base + (delta_time * 1000.0).astype("timedelta64[ms]")
 
 
-def fetch_bbox(bbox, window=None, strong_only: bool = True, quality_zero: bool = True) -> tuple[dict, dict]:
+def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True) -> tuple[dict, dict]:
     """Index-driven ATL06 fetch: only the chunks whose cells touch the bbox are byte-range fetched and decoded —
     no whole-granule downloads. Returns (arrays, stats). `window` filters granules by their start time (YYYY-MM-DD)."""
     from . import planner
     from .access import RangeReader, decode_chunk
 
-    if not ATL06_INDEX_DIR.exists():
-        raise RuntimeError("no ATL06 index built yet")
-    want_cells = set(planner.cells_for_bbox(bbox, res=H3_RES))
+    d = _index_dir(res)
+    if not d.exists():
+        raise RuntimeError(f"no ATL06 index built at res {res} yet")
+    want_cells = set(planner.cells_for_bbox(bbox, res=res))
     w, s, e, n = bbox
-    files = sorted(ATL06_INDEX_DIR.glob("*.parquet"))
+    files = sorted(d.glob("*.parquet"))
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
         files = [p for p in files if lo <= p.stem.split("_")[1][:8] <= hi]
