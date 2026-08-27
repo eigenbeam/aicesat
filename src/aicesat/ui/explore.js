@@ -69,10 +69,13 @@ AICESAT.ExploreView = class {
 
     $('exCov').onclick = async () => { const a = this.map.area(); if (!a) return; AICESAT.clearError(); $('exCovOut').textContent = 'checking the NASA catalog…';
       const brk = o => Object.entries(o || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || '—';
+      const cav = c => c.key === 'GLAS'
+          ? ' <span class="cov-caveat" title="ICESat-1/GLAS granules are matched to your area by orbit, not a true footprint, so this is an upper bound. The scene keeps only points that actually fall inside your area — expect fewer.">upper bound ⓘ</span>'
+          : (c.key === 'ICESSN' ? ' <span class="cov-caveat" title="IceBridge ATM catalog footprints can over-claim area. The scene keeps only points inside your area.">approx ⓘ</span>' : '');
       try { const d = await api.coverage(a);
         $('exCovOut').innerHTML = d.collections.map(c =>
           `<div class="covrow ${c.n_granules ? 'ok' : 'no'}"><b>${c.label}</b> <span class="small">${c.product} v${c.version} · ${c.epoch}</span> · ` +
-          (c.n_granules == null ? `<span class="no">unavailable</span>` : `<b>${c.n_granules}</b> granules`) +
+          (c.n_granules == null ? `<span class="no">unavailable</span>` : `<b>${c.n_granules}</b> granules` + cav(c)) +
           (c.by_month && Object.keys(c.by_month).length ? `<div class="small">by month — ${brk(c.by_month)}</div>` : (c.error ? `<div class="small">${c.error}</div>` : '')) +
           `</div>`).join('');
       } catch (e) { $('exCovOut').textContent = 'error: ' + e.message; AICESAT.showError(e); } };
