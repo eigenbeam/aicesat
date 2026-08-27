@@ -113,6 +113,13 @@ AICESAT.ExploreView = class {
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;
     await this.map.refreshData(this.api);
+    // populate "jump to region…" once regions have loaded (humanize the snake_case keys; note -> tooltip)
+    const rsel = this.$('exRegion');
+    if (rsel && rsel.options.length <= 1) {
+      const regs = this.map.state.regions || {};
+      const human = k => k.replace(/_/g, ' ').replace(/\b(egig|negis|ne|nw|se|sw|k)\b/gi, m => m.toUpperCase()).replace(/\b\w/g, c => c.toUpperCase());
+      Object.entries(regs).forEach(([k, v]) => { const o = document.createElement('option'); o.value = k; o.textContent = human(k); if (v && v.note) o.title = v.note; rsel.appendChild(o); });
+    }
     const list = this.$('exSceneList');
     list.innerHTML = this.map.state.scenes.map(sc => `<div class="row"><span class="status ${sc.status}">${sc.status}</span><span class="grow" title="${sc.question || ''}">${sc.question || sc.scene_id}<br><span class="small">${(sc.series || []).join(' + ') || '…'}${sc.coreg ? ' · coreg' : ''} · ${(sc.created || '').slice(0, 16).replace('T', ' ')}</span></span>` +
       (sc.status === 'ready' ? `<button data-open="${sc.scene_id}">Open</button>` : '') + `</div>`).join('') || '<div class="small">no scenes yet — pick an area and build one</div>';

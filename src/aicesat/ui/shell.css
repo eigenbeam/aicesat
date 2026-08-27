@@ -1,4 +1,4 @@
-:root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; }
+:root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; --violet:#a882e6; --ink-dim:#cbc8bf; }
 html, body { margin:0; height:100vh; position:relative; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 /* MCP App inline: the host sizes the iframe to content height, and an absolute+100% layout collapses to 0.
    Pin a concrete height so the app is visible; fullscreen (⛶) uses the host viewport. */
@@ -24,7 +24,7 @@ html.app.fs, html.app.fs body { height: 100vh; }
 /* panel header (collapse caret + title + close) and collapsible body */
 .panel .phead, .exag .phead { display:flex; align-items:center; gap:6px; padding:5px 6px 5px 8px; cursor:default; border-bottom:1px solid var(--hair); }
 .panel.collapsed .phead, .exag.collapsed .phead { border-bottom:none; }
-.panel .phead .ptitle, .exag .phead .ptitle { flex:1; font-weight:600; font-size:11.5px; letter-spacing:.02em; text-transform:uppercase; color:var(--muted); cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.panel .phead .ptitle, .exag .phead .ptitle { flex:1; font-weight:600; font-size:11.5px; letter-spacing:.02em; text-transform:uppercase; color:var(--ink-dim); cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .panel .pcaret, .exag .pcaret { border:none; background:none; color:var(--muted); font-size:11px; padding:0 2px; margin:0; cursor:pointer; line-height:1; }
 .panel .phead .close, .exag .phead .close { position:static; border:none; background:none; color:var(--muted); font-size:14px; padding:0 4px; margin:0; cursor:pointer; }
 .panel .pbody, .exag .pbody { padding:8px 10px; }

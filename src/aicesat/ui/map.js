@@ -144,8 +144,8 @@ AICESAT.MapView = class {
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
     const regs = Object.entries(s.regions).map(([k, v]) => ({name: k, poly: U.areaRing({bbox: v.bbox}), bbox: v.bbox}));
-    layers.push(new PolygonLayer({id: 'regions', data: regs, getPolygon: d => d.poly, filled: false, stroked: true, getLineColor: [224, 160, 48, 160], lineWidthMinPixels: 1}));
-    layers.push(new TextLayer({id: 'region-labels', data: regs, getPosition: d => [(d.bbox[0] + d.bbox[2]) / 2, d.bbox[3]], getText: d => d.name, getSize: 11, getColor: [224, 160, 48, 200], getTextAnchor: 'middle', getAlignmentBaseline: 'bottom', characterSet: 'auto', background: true, getBackgroundColor: [20, 20, 26, 160]}));
+    layers.push(new PolygonLayer({id: 'regions', data: regs, getPolygon: d => d.poly, filled: false, stroked: true, getLineColor: [168, 130, 230, 170], lineWidthMinPixels: 1}));
+    layers.push(new TextLayer({id: 'region-labels', data: regs, getPosition: d => [(d.bbox[0] + d.bbox[2]) / 2, d.bbox[3]], getText: d => d.name, getSize: 11, getColor: [168, 130, 230, 210], getTextAnchor: 'middle', getAlignmentBaseline: 'bottom', characterSet: 'auto', background: true, getBackgroundColor: [20, 20, 26, 160]}));
     if (this.opts.footprints && s.scenes.length) {
       const col = sc => sc.status === 'ready' ? [76, 175, 125, 230] : sc.status === 'loading' ? [224, 160, 48, 230] : [217, 83, 79, 230];
       const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
