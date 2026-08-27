@@ -6,11 +6,25 @@ Example (SW Greenland incl. Jakobshavn + K-transect):
         uv run python scripts/build_atl06_index.py -52 62 -44 70 5 8
 """
 import concurrent.futures as cf
+import functools
 import logging
 import sys
 import time
 
 from aicesat import auth, coverage, index_atl06
+
+
+def _index_one(granule, res):
+    """Top-level worker (picklable) — one granule per process, so the GIL-bound HDF5 b-tree walk truly parallelizes."""
+    try:
+        t = index_atl06.build_atl06_index(granule, res=res)
+        return (coverage.granule_name(granule), t.num_rows, None)
+    except Exception as e:
+        try:
+            name = coverage.granule_name(granule)
+        except Exception:
+            name = "?"
+        return (name, 0, f"{type(e).__name__}: {e}")
 
 
 def main():
@@ -35,16 +49,8 @@ def main():
         log.info("nothing to do — index complete"); return
 
     t0 = time.time(); ok = err = rows = 0
-
-    def do(g):
-        try:
-            t = index_atl06.build_atl06_index(g, res=res)
-            return (coverage.granule_name(g), t.num_rows, None)
-        except Exception as e:  # per-granule tolerance: log and keep going, resume picks it up next run
-            return (coverage.granule_name(g), 0, f"{type(e).__name__}: {e}")
-
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        for i, (name, nrows, e) in enumerate(ex.map(do, todo), 1):
+    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+        for i, (name, nrows, e) in enumerate(ex.map(functools.partial(_index_one, res=res), todo, chunksize=1), 1):
             if e:
                 err += 1; log.warning("FAIL %s: %s", name, e)
             else:
