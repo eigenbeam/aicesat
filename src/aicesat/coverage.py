@@ -14,6 +14,7 @@ ATL03_SHORT_NAME, ATL03_VERSION = "ATL03", "007"
 GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
 ATL06_SHORT_NAME, ATL06_VERSION = "ATL06", "007"
 ICESSN_SHORT_NAME, ICESSN_VERSION = "ILATM2", "2"
+GPSTRUTH_SHORT_NAME, GPSTRUTH_VERSION = "IS2TGPSSS", "1"
 
 
 def granule_name(g) -> str:
@@ -95,6 +96,9 @@ def collections() -> list[dict]:
          "product": "ILATM2", "version": ICESSN_VERSION, "epoch": "2009-2019", "window": list(regions.DEFAULT_ICESSN_WINDOW), "default": True},
         {"key": "ATL06", "mission": "ATL06", "flag": "with_atl06", "label": "ICESat-2 land ice", "short_name": ATL06_SHORT_NAME, "product": "ATL06",
          "version": ATL06_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL06_WINDOW), "default": True},
+        {"key": "GPSTRUTH", "mission": "GPSTRUTH", "flag": "with_gpstruth", "label": "Summit GPS traverse (ground truth)",
+         "short_name": GPSTRUTH_SHORT_NAME, "product": "IS2TGPSSS", "version": GPSTRUTH_VERSION, "epoch": "2006-2025",
+         "window": list(regions.DEFAULT_GPSTRUTH_WINDOW), "default": True},
         {"key": "ATL03", "mission": "ICESAT2", "flag": "with_atl03", "label": "ICESat-2 photons", "short_name": ATL03_SHORT_NAME, "product": "ATL03",
          "version": ATL03_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL03_WINDOW), "default": False},
     ]

@@ -117,11 +117,12 @@ def _chunked_bytes(raw: bytes, chunk: int, chunk_bytes: int, mime: str) -> dict:
 
 # ----------------------------------------------------------------------------- building scenes (jobs)
 def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, with_atl03=False, log_fn=lambda m: None,
-                scene_id: str | None = None) -> dict:
-    """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
-    plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
-    optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
+                with_atl06=False, with_icessn=False, with_atl03=False, with_gpstruth=False,
+                log_fn=lambda m: None, scene_id: str | None = None) -> dict:
+    """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons,
+    Summit GPS traverse), plus a DEM surface, imagery, and — when both ATL03 and GLAS are present —
+    co-registration. Every collection is optional and non-fatal: a miss over the area is logged and the scene
+    still builds from whatever is available.
     Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)"""
     bb, poly = geom.normalize_area(bbox, polygon)
     sid = scene_id or uuid.uuid4().hex[:10]
@@ -178,9 +179,19 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 _mat("ICESSN", i_arrays, i_meta)
                 log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
 
+            def _gpstruth():
+                from . import gpstruth
+                p_arrays, p_meta = gpstruth.extract(bb, regions.DEFAULT_GPSTRUTH_WINDOW, polygon=poly)
+                scene.add_series(doc, "GPSTRUTH", p_arrays, p_meta, p_meta["cache_key"])
+                _mat("GPSTRUTH", p_arrays, p_meta)
+                imputed = p_meta.get("n_surveys_track_depth_imputed", 0)
+                log_fn(f"GPS traverse: {p_meta['n']:,} epochs across {len(p_meta['years'])} years"
+                       + (f" ({imputed} surveys with imputed sled sinkage)" if imputed else ""))
+
             _add(with_glas, "GLAS", _glas)          # chronological, matching the collection list
             _add(with_icessn, "ICESSN", _icessn)
             _add(with_atl06, "ATL06", _atl06)
+            _add(with_gpstruth, "GPS traverse", _gpstruth)
             _add(with_atl03, "ATL03", _atl03)
             if not doc["series"]:
                 raise RuntimeError("no collection returned data over this area (check your selection and the token)")

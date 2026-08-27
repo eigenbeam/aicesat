@@ -22,8 +22,9 @@ const MISSIONS = {
   ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
   ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
   ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
+  GPSTRUTH:{name: 'Summit GPS traverse',       epoch: '2006–2025', gloss: 'Ground-truth kinematic GPS surface elevation at Summit (IS2TGPSSS)'},
 };
-const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
+const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06', 'GPSTRUTH'];   // chronological, ground truth last
 const visible = {};   // mission key -> shown; initialised per scene (all on)
 
 const deckgl = new Deck({

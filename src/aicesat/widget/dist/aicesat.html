@@ -9699,7 +9699,7 @@ AICESAT.LakeView = class {
       <div class="panel" id="lkLog" data-title="lake log"><div class="small" style="margin-bottom:4px">Live pipeline activity — CMR search, chunk fetch/decode, materialize, evict, query.</div><div id="lkLogBody" class="lakelog"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
-    this.missions = new Set(['GLAS', 'ICESSN', 'ATL06']);   // default shown (ATL03/ICESAT2 off); loadCollections() re-syncs from /api/collections
+    this.missions = new Set(['GLAS', 'ICESSN', 'ATL06', 'GPSTRUTH']);   // default shown (ATL03/ICESAT2 off); loadCollections() re-syncs from /api/collections
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: true});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
@@ -9804,8 +9804,9 @@ const MISSIONS = {
   ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
   ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
   ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
+  GPSTRUTH:{name: 'Summit GPS traverse',       epoch: '2006–2025', gloss: 'Ground-truth kinematic GPS surface elevation at Summit (IS2TGPSSS)'},
 };
-const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
+const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06', 'GPSTRUTH'];   // chronological, ground truth last
 const visible = {};   // mission key -> shown; initialised per scene (all on)
 
 const deckgl = new Deck({

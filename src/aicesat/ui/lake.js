@@ -23,7 +23,7 @@ AICESAT.LakeView = class {
       <div class="panel" id="lkLog" data-title="lake log"><div class="small" style="margin-bottom:4px">Live pipeline activity — CMR search, chunk fetch/decode, materialize, evict, query.</div><div id="lkLogBody" class="lakelog"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
-    this.missions = new Set(['GLAS', 'ICESSN', 'ATL06']);   // default shown (ATL03/ICESAT2 off); loadCollections() re-syncs from /api/collections
+    this.missions = new Set(['GLAS', 'ICESSN', 'ATL06', 'GPSTRUTH']);   // default shown (ATL03/ICESAT2 off); loadCollections() re-syncs from /api/collections
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: true});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();

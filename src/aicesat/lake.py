@@ -329,7 +329,8 @@ def query_photons(bbox, cells: list[int], min_conf: int, granules: list[str] | N
             "_granules": glist}
 
 
-PRODUCTS = {"ICESAT2": "ICESat-2 ATL03", "ATL06": "ICESat-2 ATL06", "GLAS": "ICESat/GLAS GLAH06", "ICESSN": "IceBridge ATM ICESSN"}
+PRODUCTS = {"ICESAT2": "ICESat-2 ATL03", "ATL06": "ICESat-2 ATL06", "GLAS": "ICESat/GLAS GLAH06", "ICESSN": "IceBridge ATM ICESSN",
+            "GPSTRUTH": "Summit GPS traverse (IS2TGPSSS)"}
 
 
 def missions() -> list[dict]:

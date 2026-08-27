@@ -300,11 +300,12 @@ def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | No
 @apps.tool(name="ui_extract", **_APP)
 def ui_extract(bbox: list[float] | None = None, polygon: list[list[float]] | None = None, question: str | None = None,
                max_granules: int = 8, with_glas: bool = True, with_coreg: bool = False,
-               with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False) -> dict:
+               with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False,
+               with_gpstruth: bool = False) -> dict:
     geom.normalize_area(bbox, polygon)
     j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question, "max_granules": max_granules,
                        "with_glas": with_glas, "with_coreg": with_coreg, "with_atl06": with_atl06,
-                       "with_icessn": with_icessn, "with_atl03": with_atl03})
+                       "with_icessn": with_icessn, "with_atl03": with_atl03, "with_gpstruth": with_gpstruth})
     return {"job_id": j["id"], "scene_id": j["scene_id"]}
 
 
