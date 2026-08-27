@@ -15,6 +15,16 @@ const adj = {plate_motion: true, gia: true};   // which corrections are applied 
 const $ = id => root.querySelector('#' + id);
 const PAIR_RING = [220, 200, 150, 180], CUE = [230, 230, 235, 200];
 let SHOW_PAIRS = true;
+// The three missions, as users know them (the legend doubles as show/hide controls). Keyed by the internal series
+// name; ICESat-2 appears as two products (ATL03 photons + ATL06 land ice).
+const MISSIONS = {
+  GLAS:    {name: 'ICESat-1 (GLAS)',          epoch: '2003–2009', gloss: 'ICESat / GLAS laser-altimeter surface heights'},
+  ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
+  ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
+  ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
+};
+const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
+const visible = {};   // mission key -> shown; initialised per scene (all on)
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -45,6 +55,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 function cloudLayers() {
   const out = [];
   for (const [m, s] of Object.entries(scene.series)) {
+    if (visible[m] === false) continue;   // per-mission show/hide (legend toggles)
     const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
     const paired = (coreg && coreg.pair_display_indices && coreg.pair_display_indices[m]) ? new Set(coreg.pair_display_indices[m]) : null;
     if (paired && SHOW_PAIRS) {  // co-located shots: a thin pale ring UNDER the point (subtle marker, not a blob)
@@ -248,12 +259,19 @@ function updateStats() {
 function updateLabels() {
   $('title').textContent = 'Cross-mission altimetry — ' + (Object.keys(scene.series).join(' + ') || 'empty scene');
   $('question').textContent = scene.question || '';
-  const items = Object.entries(scene.series).map(([m, s]) =>
-    `<span><span class="dot" style="background:rgb(${s.color.join(',')})"></span>${m} · ${s.n.toLocaleString()} pts · ${s.meta.product} · ${s.meta.native_frame}</span>`);
-  if (coreg && coreg.pair_display_indices) items.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>paired shots n = ${coreg.pair_display_indices.GLAS.length} (ring)</span>`);
-  if (scene.surface) items.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'DEM'}</span>`);
+  // Missions as show/hide rows: checkbox + colour swatch + friendly name + count · epoch. The legend IS the control.
+  const rows = MISSION_ORDER.filter(m => scene.series[m]).map(m => {
+    const s = scene.series[m], info = MISSIONS[m] || {name: m, epoch: '', gloss: ''}, on = visible[m] !== false;
+    return `<label class="misrow${on ? '' : ' off'}" title="${info.gloss}"><input type="checkbox" data-m="${m}" ${on ? 'checked' : ''}>` +
+      `<span class="dot" style="background:rgb(${s.color.join(',')})"></span><span class="misname">${info.name}</span>` +
+      `<span class="mismeta">${s.n.toLocaleString()} pts · ${info.epoch}</span></label>`;
+  }).join('');
+  const info = [];
+  if (coreg && coreg.pair_display_indices) info.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>co-located pairs: ${coreg.pair_display_indices.GLAS.length}</span>`);
+  if (scene.surface) info.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'DEM'}</span>`);
   if (scene.surface && scene.surface.attribution) $('attrib').dataset.dem = scene.surface.attribution;
-  $('legend').innerHTML = items.join('');
+  $('legend').innerHTML = `<div class="misrows">${rows}</div>` + (info.length ? `<div class="legend-info">${info.join('')}</div>` : '');
+  $('legend').querySelectorAll('input[data-m]').forEach(i => i.onchange = e => { visible[e.target.dataset.m] = e.target.checked; render(); updateLabels(); });
   const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
   $('framenote').innerHTML = `<details><summary>details</summary>` +
     (scene.surface ? `${scene.surface.note}<br>` : '') +
@@ -270,6 +288,7 @@ async function loadScene() {
   try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = `scene ${sceneId}: ${e.message}`; return; }
   scene = doc;
   coreg = scene.coreg;
+  Object.keys(scene.series).forEach(m => { visible[m] = true; });   // all missions on by default for a new scene
   $('adjPlate').checked = adj.plate_motion;
   $('adjGia').checked = adj.gia;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG;

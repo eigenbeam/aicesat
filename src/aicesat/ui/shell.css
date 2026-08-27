@@ -83,8 +83,17 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 /* ---- scene viewer panel typography (positioning is handled by the drawer) ---- */
 #hud h1 { font-size:13px; margin:0 0 4px; font-weight:600; }
 #hud .q { color:var(--muted); font-size:12px; margin-bottom:8px; }
-#hud .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
-#hud .legend span { display:inline; }
+#hud .legend { font-size:12px; color:var(--muted); }
+#hud .legend .misrows { display:flex; flex-direction:column; gap:1px; }
+#hud .legend .misrow { display:flex; align-items:center; gap:6px; padding:2px 2px; cursor:pointer; color:var(--ink); border-radius:5px; }
+#hud .legend .misrow:hover { background:#22222a; }
+#hud .legend .misrow.off { color:var(--muted); }
+#hud .legend .misrow.off .dot { opacity:.3; }
+#hud .legend .misrow input { margin:0 2px 0 0; }
+#hud .legend .misrow .misname { white-space:nowrap; }
+#hud .legend .misrow .mismeta { margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap; padding-left:8px; }
+#hud .legend .legend-info { margin-top:5px; padding-top:5px; border-top:1px solid var(--hair); }
+#hud .legend .legend-info span { display:block; font-size:11px; color:var(--muted); }
 #controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 #stats h2 { font-size:13px; margin:0 0 6px; font-weight:600; }
 #unresolved { font-size:12px; color:var(--muted); margin-top:6px; border-top:1px solid var(--hair); padding-top:6px; }
