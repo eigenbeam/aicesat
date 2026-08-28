@@ -61,6 +61,25 @@ def test_itrf2008_step_is_mm_level_and_inverted_correctly():
     assert x1[0] - x0[0] < -0.001 and y1[0] - y0[0] < -0.001 and z1[0] - z0[0] < -0.002
 
 
+def test_frame_pipeline_accepts_any_itrf_realization():
+    """ATM granules report ITRF05/08/14 depending on campaign, so the frame step must not be hardcoded to
+    ITRF2008. ITRF2014 is the target frame and needs no step."""
+    assert coreg._frame_pipeline("ITRF2014") is None
+    for f in ("ITRF2000", "ITRF2005", "ITRF2008"):
+        tr = coreg._frame_pipeline(f)
+        assert tr is not None
+        lon, lat, h, _ = tr.transform([-40.0], [70.0], [2600.0], [2010.0])
+        moved = coreg.horizontal_displacement_m([-40.0], [70.0], lon, lat)[0]
+        assert 0 < moved < 0.05, (f, moved)          # realizations differ at mm-cm, never metres
+
+
+def test_frame_pipeline_rejects_a_vague_frame_label():
+    """"ITRF (campaign-dependent)" must raise rather than silently transform with the wrong realization."""
+    for bad in ("ITRF (campaign-dependent)", "ITRF (mixed: ITRF2005, ITRF2008)", "", "WGS84", "ITRF08"):
+        with pytest.raises(ValueError):
+            coreg._frame_pipeline(bad)
+
+
 def test_slope_fit():
     rng = np.random.default_rng(0)
     x, y = rng.uniform(-1000, 1000, 500), rng.uniform(-1000, 1000, 500)

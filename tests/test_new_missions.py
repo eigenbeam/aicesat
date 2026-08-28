@@ -8,7 +8,59 @@ from aicesat import atl06, icessn
 def test_atl06_strong_beam_mapping():
     assert atl06._strong_beams([0]) == ["gt1l", "gt2l", "gt3l"]   # backward
     assert atl06._strong_beams([1]) == ["gt1r", "gt2r", "gt3r"]   # forward
-    assert atl06._strong_beams([2]) == []                          # yaw-flip transition -> skip
+    assert atl06._strong_beams([2]) == []                          # yaw-flip transition: side ambiguous
+    assert atl06._strong_side([0]) == "l" and atl06._strong_side([1]) == "r"
+    assert atl06._strong_side([2]) is None
+
+
+def _atl06_file(tmp_path, name, sc_orient, beams, n=2):
+    """Minimal ATL06 granule with `beams` populated, all rows good and inside the test bbox."""
+    p = tmp_path / name
+    with h5py.File(p, "w") as f:
+        f.create_dataset("orbit_info/sc_orient", data=[sc_orient])
+        for b in beams:
+            g = f.create_group(f"{b}/land_ice_segments")
+            g.create_dataset("latitude", data=np.full(n, 70.0))
+            g.create_dataset("longitude", data=np.full(n, -44.0))
+            g.create_dataset("h_li", data=np.full(n, 2500.0), dtype="f4")
+            g.create_dataset("delta_time", data=np.full(n, 4.0e7))
+            g.create_dataset("atl06_quality_summary", data=np.zeros(n), dtype="i1")
+            g.create_dataset("segment_id", data=np.arange(n), dtype="i4")
+            g.create_dataset("fit_statistics/dh_fit_dx", data=np.full(n, 0.002))
+            g.create_dataset("fit_statistics/dh_fit_dy", data=np.full(n, -0.003))
+            g.create_dataset("ground_track/seg_azimuth", data=np.full(n, -169.0))
+    return p
+
+
+def test_atl06_reads_all_six_beams_by_default(tmp_path):
+    p = _atl06_file(tmp_path, "ATL06_all.h5", 0, atl06.GT_BEAMS)
+    with h5py.File(p, "r") as f:
+        d = atl06._extract_granule(f, (-45, 69.5, -43, 70.5))
+    assert sorted(set(d["beam"].tolist())) == [0, 1, 2, 3, 4, 5]     # every beam, canonical GT_BEAMS order
+    # sc_orient == 0 -> the 'l' beams are strong; GT_BEAMS is [1l,1r,2l,2r,3l,3r] so even indices are strong
+    strong = {int(b) for b, s in zip(d["beam"], d["beam_strong"]) if s == 1}
+    assert strong == {0, 2, 4}
+    assert {int(b) for b, s in zip(d["beam"], d["beam_strong"]) if s == 0} == {1, 3, 5}
+
+
+def test_atl06_strong_only_halves_the_read(tmp_path):
+    p = _atl06_file(tmp_path, "ATL06_strong.h5", 1, atl06.GT_BEAMS)     # sc_orient 1 -> 'r' beams strong
+    with h5py.File(p, "r") as f:
+        d = atl06._extract_granule(f, (-45, 69.5, -43, 70.5), strong_only=True)
+    assert sorted(set(d["beam"].tolist())) == [1, 3, 5]                 # the 'r' beams
+    assert set(d["beam_strong"].tolist()) == {1}
+
+
+def test_atl06_yaw_flip_is_read_with_unknown_strength(tmp_path):
+    """sc_orient == 2 leaves the strong/weak label ambiguous, but the heights are still valid, so the granule is
+    read rather than skipped — the label is marked unknown instead of guessed."""
+    p = _atl06_file(tmp_path, "ATL06_yaw.h5", 2, atl06.GT_BEAMS)
+    with h5py.File(p, "r") as f:
+        d = atl06._extract_granule(f, (-45, 69.5, -43, 70.5))
+    assert d is not None and sorted(set(d["beam"].tolist())) == [0, 1, 2, 3, 4, 5]
+    assert set(d["beam_strong"].tolist()) == {atl06.STRONG_UNKNOWN}
+    with h5py.File(p, "r") as f:                                        # strong_only can't resolve it -> skip
+        assert atl06._extract_granule(f, (-45, 69.5, -43, 70.5), strong_only=True) is None
 
 
 def test_atl06_extract_granule_quality_and_fill(tmp_path):
@@ -30,7 +82,8 @@ def test_atl06_extract_granule_quality_and_fill(tmp_path):
     assert d is not None and d["h"].size == 2                     # rows 0 and 3 survive
     assert np.allclose(sorted(d["h"]), [2500.0, 2520.0])
     assert str(d["t"][0]).startswith("2019")                      # ATLAS epoch 2018 + 4e7 s ~ 2019
-    assert set(d["beam"].tolist()) == {0}
+    assert set(d["beam"].tolist()) == {0}                         # gt1l is GT_BEAMS[0]
+    assert set(d["beam_strong"].tolist()) == {1}                  # sc_orient 0 -> 'l' is strong
     # the natively measured slope rides along, aligned with the surviving rows
     assert d["dh_fit_dx"].size == d["dh_fit_dy"].size == d["seg_azimuth"].size == 2
     assert abs(d["dh_fit_dx"][0] - 0.002) < 1e-12
@@ -98,6 +151,41 @@ def test_icessn_slope_columns_are_not_confused_with_rms(tmp_path):
     assert abs(d["we_slope"][0] - 0.0066448) < 1e-12
     assert abs(d["rms_cm"][0] - 3.85) < 1e-12
     assert str(d["t"][0]).startswith("2015-04-01")                # date from the filename
+
+
+def test_icessn_itrf_parsed_from_header(tmp_path):
+    """The ITRF realization really does change mid-record (ITRF05 in 2011, ITRF08 2012-16, ITRF14 from 2017),
+    and the 2019 granules write it lowercase — so parsing is per granule and case-insensitive."""
+    rows = ("43200.0, 70.00, 315.0, 2500.0, 0.01, 0.01, 4.5, 500, 0, 0, 0\n"
+            "43200.5, 70.01, 315.0, 2501.0, 0.01, 0.01, 4.5, 500, 0, 0, 0\n")
+    for header, expect in (
+        ("# International Terrestrial Reference Frame: ITRF05\n", 2005),
+        ("# International Terrestrial Reference Frame: ITRF08\n", 2008),
+        ("# International Terrestrial Reference Frame: itrf14\n", 2014),   # 2019 granules are lowercase
+        ("# International Terrestrial Reference Frame: ITRF2008\n", 2008),  # four-digit form
+        ("# International Terrestrial Reference Frame: ITRF97\n", 1997),    # two-digit 1900s
+        ("# no frame line here\n", icessn.ITRF_UNKNOWN),
+    ):
+        p = tmp_path / f"ILATM2_20150401_1200{expect % 100:02d}_smooth_nadir3seg_50pt.csv"
+        p.write_text(header + rows)
+        assert icessn._itrf_year(str(p)) == expect, header
+        d = icessn._parse_file(str(p), (-46, 69.5, -44, 70.5))
+        assert set(d["itrf_year"].tolist()) == {expect}      # carried per row, not just in meta
+
+
+def test_icessn_itrf_only_read_from_the_header_block(tmp_path):
+    """A frame string appearing after the header must not be picked up."""
+    p = tmp_path / "ILATM2_20150401_121500_smooth_nadir3seg_50pt.csv"
+    p.write_text("# Filename: x\n"
+                 "43200.0, 70.00, 315.0, 2500.0, 0.01, 0.01, 4.5, 500, 0, 0, 0\n"
+                 "43200.5, 70.01, 315.0, 2501.0, 0.01, 0.01, 4.5, 500, 0, 0, 0\n"
+                 "# International Terrestrial Reference Frame: ITRF08\n")
+    assert icessn._itrf_year(str(p)) == icessn.ITRF_UNKNOWN
+
+
+def test_icessn_frame_name():
+    assert icessn._frame_name(2008) == "ITRF2008"
+    assert "unknown" in icessn._frame_name(icessn.ITRF_UNKNOWN)
 
 
 def test_icessn_asterisk_fill_becomes_nan(tmp_path):

@@ -27,6 +27,36 @@ log = logging.getLogger(__name__)
 
 MAX_RMS_CM = 50.0          # platelets whose plane-fit RMS exceeds 0.5 m are rough/unreliable -> drop
 _NAME_RE = re.compile(r"(?:ILATM2|BLATM2)_(\d{8})_(\d{6})")
+# "# International Terrestrial Reference Frame: ITRF05". Case varies across campaigns (2019 granules say
+# "itrf14"), and the year is written two-digit.
+_ITRF_RE = re.compile(r"International\s+Terrestrial\s+Reference\s+Frame\s*:\s*ITRF\s*(\d{2,4})", re.I)
+ITRF_UNKNOWN = 0           # itrf_year sentinel when the header carries no frame line
+
+
+def _itrf_year(path: str) -> int:
+    """The granule's ITRF realization year from its header, or ITRF_UNKNOWN.
+
+    The frame is campaign-dependent and really does change mid-record: over the EGIG box, ILATM2 reports ITRF05
+    for 2011, ITRF08 for 2012-2016 and ITRF14 from 2017 — so this must be read per granule, not assumed.
+    """
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break                                   # header is the leading '#' block only
+                m = _ITRF_RE.search(line)
+                if m:
+                    y = int(m.group(1))
+                    if y < 100:                             # two-digit: ITRF97 -> 1997, ITRF05 -> 2005
+                        y += 1900 if y >= 80 else 2000
+                    return y
+    except OSError as ex:
+        log.debug("%s: could not read header for ITRF: %s", path, ex)
+    return ITRF_UNKNOWN
+
+
+def _frame_name(year: int) -> str:
+    return f"ITRF{year}" if year else "ITRF (unknown; granule header carried no frame)"
 
 
 def _parse_file(path: str, bbox) -> dict[str, np.ndarray] | None:
@@ -51,7 +81,9 @@ def _parse_file(path: str, bbox) -> dict[str, np.ndarray] | None:
     t = t0 + (seconds[keep] * 1000).astype("timedelta64[ms]")
     return {"lon": lon[keep], "lat": lat[keep], "h": elev[keep], "t": t,
             "rms_cm": rms_cm[keep], "npt_used": a[:, 7][keep].astype("i4"),
-            "sn_slope": sn_slope[keep], "we_slope": we_slope[keep]}
+            "sn_slope": sn_slope[keep], "we_slope": we_slope[keep],
+            # Per-row, because a single extract spans campaigns in different ITRF realizations.
+            "itrf_year": np.full(int(keep.sum()), _itrf_year(path), dtype="i2")}
 
 
 def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
@@ -85,7 +117,8 @@ def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[st
             continue
         d["granule_idx"] = np.full(d["lon"].size, len(prov), dtype="i2")
         parts.append(d)
-        prov.append({"granule": name, "n": int(d["lon"].size), "seconds": round(time.time() - t0, 2)})
+        prov.append({"granule": name, "n": int(d["lon"].size), "seconds": round(time.time() - t0, 2),
+                     "native_frame": _frame_name(int(d["itrf_year"][0]))})
         log.info("%s: %d icessn nadir platelets in bbox", name, d["lon"].size)
     if not parts:
         raise RuntimeError("ILATM2 granules found but no usable nadir platelets in bbox")
@@ -97,8 +130,15 @@ def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[st
         if arrays["lon"].size == 0:
             raise RuntimeError("no ICESSN platelets inside the polygon")
     years = np.unique(arrays["t"].astype("datetime64[Y]")).astype(str).tolist()
+    # One extract can span several ITRF realizations; name the single one when it is single, and refuse to pick a
+    # winner when it is not (coreg.propagate needs an exact realization, so "mixed" must not look transformable).
+    itrf = sorted({int(v) for v in np.unique(arrays["itrf_year"])})
+    frame = (_frame_name(itrf[0]) if len(itrf) == 1
+             else "ITRF (mixed: " + ", ".join(_frame_name(y) for y in itrf) + "; see itrf_year per row)")
     meta = {"mission": "ICESSN", "product": f"ILATM2 v{coverage.ICESSN_VERSION}", "bbox": list(bbox),
-            "window": list(window), "native_frame": "ITRF (campaign-dependent)", "height_ref": "WGS84 ellipsoid",
+            "window": list(window), "native_frame": frame, "native_frame_years": itrf,
+            "native_frame_source": "granule header 'International Terrestrial Reference Frame'",
+            "height_ref": "WGS84 ellipsoid",
             "ellipsoid_correction": "none (icessn elevation native WGS84 ellipsoid)",
             "slope_source": "ILATM2 South-to-North_Slope + West-to-East_Slope (measured, per platelet plane fit)",
             "slope_deg_median": geom.slope_deg_median(arrays["sn_slope"], arrays["we_slope"]),
