@@ -43,7 +43,12 @@ def load_scene(scene_id: str) -> dict | None:
 
 
 def save_scene(scene_id: str, doc: dict) -> None:
-    scene_path(scene_id).write_text(json.dumps(doc, default=_json_default))
+    # Atomic write: a scene doc is now persisted repeatedly *during* a build while the UI polls it, so a reader must
+    # never observe a half-written file. Write a temp sibling then os.replace (atomic rename on POSIX/Windows).
+    p = scene_path(scene_id)
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(doc, default=_json_default))
+    os.replace(tmp, p)
 
 
 def _json_default(o):

@@ -82,7 +82,11 @@ AICESAT.ExploreView = class {
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
-      try { const d = await api.extract(body); this.jobs[d.job_id] = {plan: body, j: {status: 'running', log: []}}; this.pollJob(d.job_id, body); await this.refresh(); }
+      try {
+        const d = await api.extract(body);
+        this.jobs[d.job_id] = {plan: body, j: {status: 'running', log: []}}; this.pollJob(d.job_id, body); this.refresh();
+        if (d.scene_id) this.openScene(d.scene_id);   // jump straight into the scene view; it paints in as the build streams
+      }
       catch (e) { AICESAT.showError(e); $('exBuild').disabled = false; } };
 
     AICESAT.util.drawer(root, null);
