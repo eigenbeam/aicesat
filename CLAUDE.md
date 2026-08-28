@@ -48,8 +48,10 @@ index built in-region works unchanged on a laptop over HTTPS.
 ## The whole workflow
 
 ```bash
-# 1. On CryoCloud — clone, build, package (installs uv to ~/.local/bin; no sudo needed)
-git clone https://github.com/eigenbeam/aicesat ~/aicesat && cd ~/aicesat
+# 1. On CryoCloud — clone, build, package (installs uv to ~/.local/bin; no sudo needed).
+#    The repo is public, so the clone needs no credentials. -b is required until this branch
+#    merges: main does not have any of this workflow.
+git clone -b cryocloud-index-workflow https://github.com/eigenbeam/aicesat ~/aicesat && cd ~/aicesat
 bash scripts/cryocloud_build_index.sh                     # SW Greenland default: -52 62 -44 70
 bash scripts/cryocloud_build_index.sh -51 66.9 -29 76.2   # or any W S E N [res] [workers]
 
