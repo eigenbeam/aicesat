@@ -9912,10 +9912,8 @@ AICESAT.ExploreView = class {
   }
 
   // ---- coverage: auto-fetched when an area is defined, shown inline on each collection row
-  covCaveat(c) {
-    if (c.key === 'GLAS') return ' <span class="cov-caveat" title="ICESat-1/GLAS granules are matched to your area by orbit, not a true footprint, so this is an upper bound. The scene keeps only points that actually fall inside your area — expect fewer.">ⓘ</span>';
-    if (c.key === 'ICESSN') return ' <span class="cov-caveat" title="IceBridge ATM catalog footprints can over-claim area. The scene keeps only points inside your area.">ⓘ</span>';
-    return '';
+  covCaveat() {
+    return ' <span class="cov-caveat" title="From the sub-granule index: granules with points in your area\'s cells. The scene keeps only points inside the exact box, so this is a tight count, not a footprint upper bound.">ⓘ</span>';
   }
   setCovCells(html) { this.$('exColList').querySelectorAll('.col-cov').forEach(el => { el.innerHTML = html; }); }
   scheduleCoverage() {
@@ -9935,8 +9933,8 @@ AICESAT.ExploreView = class {
       this.$('exColList').querySelectorAll('.col-cov').forEach(el => {
         const c = byKey[el.dataset.key];
         if (!c) { el.innerHTML = ''; return; }
-        if (c.n_granules == null) { el.innerHTML = '<span class="no">n/a</span>'; return; }
-        el.innerHTML = c.n_granules ? `<b>${c.n_granules}</b> gran.${this.covCaveat(c)}` : '<span class="no">none</span>';
+        if (c.n_granules == null) { el.innerHTML = c.indexed === false ? '<span class="no" title="No sub-granule index built over this area yet — build the index to see coverage here.">not indexed</span>' : '<span class="no">n/a</span>'; return; }
+        el.innerHTML = c.n_granules ? `<b>${c.n_granules}</b> gran.${this.covCaveat()}` : '<span class="no">none</span>';
       });
       if (note) note.textContent = 'granule counts over your area — the scene keeps only points inside it';
     } catch (e) {

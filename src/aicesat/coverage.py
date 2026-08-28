@@ -1,8 +1,7 @@
-"""Granule-level coverage counts (CMR search only, no data fetch)."""
+"""Coverage from the sub-granule index (no CMR at query time). CMR search here is used only to ENUMERATE granules at index-build time; coverage counts come straight from the built index."""
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from datetime import datetime
 
 from . import auth, regions
@@ -51,14 +50,6 @@ def dedup_granules(granules: list) -> list:
         elif _has_cloud_link(g) and not _has_cloud_link(by_name[n]):
             by_name[n] = g   # replace a dead on-prem copy already seen with the cloud copy
     return [by_name[n] for n in order]
-
-
-def _granule_start(g) -> datetime | None:
-    try:
-        rng = g["umm"]["TemporalExtent"]["RangeDateTime"]
-        return datetime.fromisoformat(rng["BeginningDateTime"].replace("Z", "+00:00"))
-    except Exception:
-        return None
 
 
 CMR_CACHE_TTL_S = 24 * 3600  # granule lists for a (product, bbox, window) change only when NSIDC reprocesses
@@ -123,20 +114,65 @@ def collections() -> list[dict]:
     ]
 
 
+def _index_for(key: str):
+    """(index_dir, h3_res, SQL 'YYYY-MM' expr) for a collection's sub-granule index, or (None, None, None)."""
+    from . import index_atl06, index_glas, index_icessn
+    from . import index as atl03_index
+    gdate_ym = "substr(gdate,1,4) || '-' || substr(gdate,5,2)"        # GLAS/ICESSN store gdate=YYYYMMDD
+    name_ym = "substr(granule,7,4) || '-' || substr(granule,11,2)"    # ATL0x_YYYYMMDD... in the granule name
+    if key == "GLAS":
+        return index_glas._index_dir(index_glas.GLAS_RES), index_glas.GLAS_RES, gdate_ym
+    if key == "ICESSN":
+        return index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_RES, gdate_ym
+    if key == "ATL06":
+        return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES, name_ym
+    if key == "ATL03":
+        return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES, name_ym
+    return None, None, None
+
+
+def _index_covers_bbox(d, bbox) -> bool:
+    """True if the index's build manifest (_build.json) region contains this bbox."""
+    import json
+    mf = d / "_build.json"
+    if not mf.exists():
+        return False
+    try:
+        b = json.loads(mf.read_text()).get("bbox")
+        w, s, e, n = bbox
+        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
+    except Exception:
+        return False
+
+
 def check_coverage(bbox, **_ignored) -> dict:
-    """Granule counts per collection over a bbox (CMR only). Returns {bbox, collections:[{key,label,product,version,
-    epoch,window,n_granules,by_month|error}, ...]} — a clear, uniform list across all collections."""
+    """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
+    index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
+    fall in the box's cells (not CMR's footprint over-claim). A collection whose index does not cover this bbox is
+    reported as not-indexed (n_granules=None, indexed=False) — never fetched from CMR: we always build the index.
+    Returns {bbox, collections:[{key,label,product,version,epoch,window,n_granules,indexed,cells,by_month}, ...]}."""
+    import duckdb
+
+    from . import planner
     out = []
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
+        d, res, ym = _index_for(c["key"])
+        if d is None or not d.exists() or not any(d.glob("*.parquet")) or not _index_covers_bbox(d, bbox):
+            row.update(n_granules=None, indexed=False, cells=0, by_month={})
+            out.append(row)
+            continue
+        cells = planner.cells_for_bbox(bbox, res=res)
+        pred = f"h3_cell IN ({','.join(str(int(x)) for x in cells)})"
+        con = duckdb.connect()
         try:
-            g = search(c["short_name"], c["version"], bbox, tuple(c["window"]))
-            by = Counter()
-            for gr in g:
-                t = _granule_start(gr)
-                by[t.strftime("%Y-%m") if t else "?"] += 1
-            row.update(n_granules=len(g), by_month=dict(sorted(by.items())))
-        except Exception as e:
-            row.update(n_granules=None, error=str(e)[:140])
+            ng, ncells = con.execute(f"SELECT count(DISTINCT granule), count(DISTINCT h3_cell) "
+                                     f"FROM read_parquet('{d}/*.parquet') WHERE {pred}").fetchone()
+            by = con.execute(f"SELECT {ym} AS m, count(DISTINCT granule) FROM read_parquet('{d}/*.parquet') "
+                             f"WHERE {pred} GROUP BY m ORDER BY m").fetchall()
+        finally:
+            con.close()
+        row.update(n_granules=int(ng or 0), indexed=True, cells=int(ncells or 0),
+                   by_month={m: int(n) for m, n in by if m})
         out.append(row)
     return {"bbox": list(bbox), "collections": out}
