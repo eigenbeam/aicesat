@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import h3
@@ -184,7 +185,8 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
     import duckdb
 
     from . import planner
-    from .access import RangeReader, access_url, decode_chunk
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url,
+                         decode_chunk, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
@@ -215,13 +217,16 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
 
     reader = RangeReader()   # in-region: s3:// keys (S3-direct, no presign); else HTTPS presigned in one parallel pass
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
-    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
-    for url, rs in by_url.items():
+
+    def _fetch_granule(url) -> dict:
+        """Fetch + decode + height-reconstruct + filter one granule; sub-arrays in the original within-granule order."""
+        rs = by_url[url]
         ranges, keys = [], []
         for r in rs:
             for key in GLAS_KEYS:
                 ranges.append((r[f"{key}_offset"], r[f"{key}_size"])); keys.append((r["chunk_index"], key))
         raws = dict(zip(keys, reader.fetch(url, ranges)))
+        local = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
         for r in rs:
             seg_n = r["seg_end"] - r["seg_start"]
             dec = {}
@@ -237,7 +242,21 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
                  & (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e))
             if not m.any():
                 continue
-            out["lon"].append(lon[m].astype("f8")); out["lat"].append(lat[m].astype("f8")); out["h"].append(h[m].astype("f8"))
-            out["t"].append(J2000 + (dec["time"][m] * 1000).astype("timedelta64[ms]")); out["quality"].append(dec["elev_use"][m])
+            local["lon"].append(lon[m].astype("f8")); local["lat"].append(lat[m].astype("f8")); local["h"].append(h[m].astype("f8"))
+            local["t"].append(J2000 + (dec["time"][m] * 1000).astype("timedelta64[ms]")); local["quality"].append(dec["elev_use"][m])
+        return local
+
+    # Independent, I/O-bound per granule: fan across a small pool, reassemble in by_url order -> byte-identical arrays.
+    urls = list(by_url)
+    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+    if nw == 1:
+        parts = [_fetch_granule(u) for u in urls]
+    else:
+        with ThreadPoolExecutor(nw) as ex:
+            parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
+    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+    for loc in parts:
+        for k in out:
+            out[k].extend(loc[k])
     arrays = {k: (np.concatenate(v) if v else np.array([])) for k, v in out.items()}
     return arrays, reader.stats.as_dict()
