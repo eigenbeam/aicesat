@@ -96,17 +96,19 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 #hud h1 { font-size:13px; margin:0 0 4px; font-weight:600; }
 #hud .q { color:var(--muted); font-size:12px; margin-bottom:8px; }
 #hud .legend { font-size:12px; color:var(--muted); }
-#hud .legend .misrows { display:flex; flex-direction:column; gap:1px; }
-#hud .legend .misrow { display:flex; align-items:center; gap:6px; padding:2px 2px; cursor:pointer; color:var(--ink); border-radius:5px; }
-#hud .legend .misrow:hover { background:#22222a; }
-#hud .legend .misrow.off { color:var(--muted); }
-#hud .legend .misrow.off .dot { opacity:.3; }
-#hud .legend .misrow input { margin:0 2px 0 0; }
-#hud .legend .misrow .misname { white-space:nowrap; }
-#hud .legend .misrow .mismeta { margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap; padding-left:8px; }
-#hud .legend .legend-info { margin-top:5px; padding-top:5px; border-top:1px solid var(--hair); }
+/* mission show/hide rows — used inside the unified scene controls box (moved from the legend) */
+.misrows { display:flex; flex-direction:column; gap:1px; }
+.misrow { display:flex; align-items:center; gap:6px; padding:2px 2px; cursor:pointer; color:var(--ink); border-radius:5px; }
+.misrow:hover { background:#22222a; }
+.misrow.off { color:var(--muted); }
+.misrow .dot { width:9px; height:9px; border-radius:50%; display:inline-block; flex:0 0 auto; }
+.misrow.off .dot { opacity:.3; }
+.misrow input { margin:0 2px 0 0; flex:0 0 auto; }
+.misrow .misname { white-space:nowrap; }
+.misrow .mismeta { margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap; padding-left:8px; }
+#hud .legend .legend-info { margin-top:4px; }
 #hud .legend .legend-info span { display:block; font-size:11px; color:var(--muted); }
-/* scene controls: two groups (Corrections / View), consistent aligned rows + rhythm */
+/* scene controls: one unified box (Missions / View / Satellite imagery), consistent aligned rows + rhythm */
 #controls { display:flex; flex-direction:column; gap:14px; }
 .ctl-group { display:flex; flex-direction:column; gap:6px; }
 .ctl-head { font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); font-weight:600; }
@@ -115,10 +117,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .ctl-row input[type=checkbox] { margin:0; flex:0 0 auto; }
 .ctl-row .ctl-lbl { flex:0 0 84px; }
 .ctl-row .ctl-range { flex:1; min-width:0; }
-#coregOn { display:flex; flex-direction:column; gap:6px; }
-.ctl-state { font-size:12.5px; color:var(--green); font-weight:600; }
-.ctl-status { color:var(--muted); font-size:11.5px; }
-.ctl-status:empty { display:none; }
+.ctl-select { flex:1; min-width:0; background:#22222a; color:var(--ink); border:1px solid var(--hair); border-radius:6px; padding:4px; font-size:12px; }
+.ctl-info { font-size:11px; color:var(--muted); padding-left:1px; }
+.ctl-info:empty { display:none; }
 .hist-cap { font-size:10.5px; color:var(--muted); margin:3px 0 0; line-height:1.35; }
 #navhint { position:absolute; left:12px; bottom:10px; z-index:12; font-size:12px; color:var(--muted); background:rgba(20,20,26,.7); border:1px solid var(--hair); border-radius:7px; padding:5px 10px; pointer-events:none; transition:opacity .6s ease; backdrop-filter:blur(4px); }
 #navhint.hide { opacity:0; }
@@ -136,11 +137,14 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .step-n { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; background:var(--blue); color:#fff; font-size:11px; font-weight:600; flex:0 0 auto; }
 .step-hint { margin:4px 0; color:var(--muted); }
 #exTools .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
+/* mode picker + Clear on one row (Clear sits with the Navigate/Box/Polygon control) */
+.seg-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:4px 0 6px; }
+.seg-row .seg { margin:0; }
+.seg-row button { margin:0; }
 .seg { display:inline-flex; border:1px solid var(--hair); border-radius:8px; overflow:hidden; margin:2px 0; }
 .seg button { margin:0; border:none; border-radius:0; border-right:1px solid var(--hair); background:#1b1b22; color:var(--muted); padding:5px 12px; }
 .seg button:last-child { border-right:none; }
 .seg button.on { background:var(--blue); color:#fff; }
-.area-readout { margin:6px 0; color:var(--ink); }
 .bbox-entry { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin:6px 0; }
 .bbox-entry input { width:54px; }
 .covout { max-height:26vh; overflow:auto; margin-top:6px; }
@@ -184,10 +188,6 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .col-cov b { color:var(--ink); font-variant-numeric:tabular-nums; }
 .col-cov .no { color:var(--muted); opacity:.7; }
 .covnote { margin-top:5px; color:var(--muted); line-height:1.35; }
-/* granules toggle (all vs limit N) */
-.gran-row { display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:12.5px; margin:2px 0 8px; }
-.gran-row label { display:flex; align-items:center; gap:5px; cursor:pointer; }
-.gran-row input[type=number] { width:56px; }
 /* scene cards + inline build progress inside the Scenes list */
 .scene-card { border-bottom:1px solid var(--hair); padding:3px 0; }
 .scene-card:last-child { border-bottom:none; }
@@ -245,5 +245,3 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .idxbuild { color:var(--amber); margin-top:4px; line-height:1.35; }
 .tiptip { color:#9fe6da; }
 
-.img-row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:12px}
-.img-row select{margin-left:auto;font-size:12px}

@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Corrections <span class="ctl-note">change the numbers</span></div>\n    <button id="btnCoreg">Co-register missions</button>\n    <div id="coregOn" hidden>\n      <div class="ctl-state">Co-registered ✓</div>\n      <label id="lblPlate" class="ctl-row"><input id="adjPlate" type="checkbox" checked> plate motion</label>\n      <label id="lblGia" class="ctl-row"><input id="adjGia" type="checkbox" checked> GIA (bedrock rebound)</label>\n    </div>\n    <div id="status" class="ctl-status small"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View <span class="ctl-note">change the picture</span></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> satellite imagery</label>\n    <label class="ctl-row"><input id="pairs" type="checkbox" checked> co-location markers</label>\n    <button id="benchBtn" hidden>How the data got here</button>\n  </div>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="legend">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="legend" id="legend"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">View</div>\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <div id="demInfo" class="ctl-info"></div>\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n  </div>\n  <div class="ctl-group">\n    <div class="ctl-head">Satellite imagery</div>\n    <label class="ctl-row"><input id="imagery" type="checkbox"> Show imagery</label>\n    <label class="ctl-row"><span class="ctl-lbl">Source</span><select id="imagerySrc" class="ctl-select"><option value="s2">Sentinel-2 (in-region)</option><option value="eox">EOX cloudless</option></select></label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -9,6 +9,8 @@ const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, 
 let params = new URLSearchParams(); let sceneId = null;
 let Z_EXAG = 1;
 let SHOW_IMAGERY = false;
+let SHOW_SURFACE = true;   // DEM base surface on/off (scene controls)
+let IMG_VER = 0;           // bumps on an imagery re-fetch so the draped texture URL changes and reloads
 
 let scene = null, coreg = null, bounds = null, meshOk = true;
 const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
@@ -25,6 +27,10 @@ const MISSIONS = {
 };
 const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
 const visible = {};   // mission key -> shown; initialised per scene (all on)
+// Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the grey-blue DEM.
+// Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before this palette.
+const MISSION_COLORS = {GLAS: [230, 159, 0], ICESSN: [0, 158, 115], ATL06: [204, 121, 167], ICESAT2: [86, 180, 233]};
+const colorOf = m => MISSION_COLORS[m] || (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -68,7 +74,7 @@ function cloudLayers() {
     out.push(new PointCloudLayer({
       id: 'pc-' + m, data: indices(src.length / 3),
       getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-      getColor: s.color, pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
+      getColor: colorOf(m), pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
     }));
   }
   return out;
@@ -77,6 +83,8 @@ function cloudLayers() {
 // ---------------------------------------------------------------- surface (depth cue)
 function surfaceLayers() {
   const g = scene.surface; if (!g) return [];
+  const img = SHOW_IMAGERY && scene.imagery;
+  if (!SHOW_SURFACE && !img) return [];   // nothing to draw — imagery needs the mesh to drape on, so it keeps the mesh alive
   const {x0, y0, cell, nx, ny, z} = g;
   const P = (i, j) => [x0 + i * cell, y0 + j * cell, z[j * nx + i] * Z_EXAG];
   const layers = [];
@@ -99,7 +107,6 @@ function surfaceLayers() {
         for (const q of [a, b, c]) { normals[3*q] += n[0]; normals[3*q+1] += n[1]; normals[3*q+2] += n[2]; }
       }
       for (let q = 0; q < normals.length; q += 3) { const l = Math.hypot(normals[q], normals[q+1], normals[q+2]) || 1; normals[q] /= l; normals[q+1] /= l; normals[q+2] /= l; }
-      const img = SHOW_IMAGERY && scene.imagery;
       // texCoords must ALWAYS exist (SimpleMeshLayer reads the attribute even with no texture); map to the
       // imagery extent when draping, else to the surface extent (unused, but a valid attribute).
       const ex = img ? img : {x0, y0, x1: x0 + nx * cell, y1: y0 + ny * cell};
@@ -116,17 +123,19 @@ function surfaceLayers() {
         material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         updateTriggers: {getPosition: Z_EXAG},
       };
-      if (img) meshProps.texture = api.imageryUrl(sceneId);      // omit the key entirely when not draping
+      if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);   // omit the key entirely when not draping; IMG_VER busts the cache after a source change
       else meshProps.parameters = {depthWriteEnabled: false};    // translucent surface: don't occlude points behind it
       layers.push(new SimpleMeshLayer(meshProps));
     }
   }
-  // faint wireframe (rows + columns), always drawn; also the fallback if the mesh layer fails
-  const paths = [];
-  const run = (len, other, at) => { let cur = []; for (let k = 0; k < len; k++) { const [i, j] = at(k); if (z[j * nx + i] == null) { if (cur.length > 1) paths.push(cur); cur = []; } else cur.push(P(i, j)); } if (cur.length > 1) paths.push(cur); };
-  for (let j = 0; j < ny; j += 2) run(nx, j, i => [i, j]);
-  for (let i = 0; i < nx; i += 2) run(ny, i, j => [i, j]);
-  layers.push(new PathLayer({id: 'surface-wire', data: paths, getPath: d => d, getColor: [200, 205, 220, 35], getWidth: 1, widthUnits: 'pixels'}));
+  // faint wireframe (rows + columns) — part of the DEM base look and the fallback if the mesh fails; only with DEM on
+  if (SHOW_SURFACE) {
+    const paths = [];
+    const run = (len, other, at) => { let cur = []; for (let k = 0; k < len; k++) { const [i, j] = at(k); if (z[j * nx + i] == null) { if (cur.length > 1) paths.push(cur); cur = []; } else cur.push(P(i, j)); } if (cur.length > 1) paths.push(cur); };
+    for (let j = 0; j < ny; j += 2) run(nx, j, i => [i, j]);
+    for (let i = 0; i < nx; i += 2) run(ny, i, j => [i, j]);
+    layers.push(new PathLayer({id: 'surface-wire', data: paths, getPath: d => d, getColor: [200, 205, 220, 35], getWidth: 1, widthUnits: 'pixels'}));
+  }
   return layers;
 }
 
@@ -232,32 +241,29 @@ function updateStats() {
 function updateLabels() {
   $('title').textContent = 'Cross-mission altimetry — ' + (Object.keys(scene.series).join(' + ') || 'empty scene');
   $('question').textContent = scene.question || '';
-  // Missions as show/hide rows: checkbox + colour swatch + friendly name + count · epoch. The legend IS the control.
+  // Mission show/hide rows now live in the unified controls box: checkbox + colour swatch + friendly name + count · epoch.
   const rows = MISSION_ORDER.filter(m => scene.series[m]).map(m => {
-    const s = scene.series[m], info = MISSIONS[m] || {name: m, epoch: '', gloss: ''}, on = visible[m] !== false;
+    const s = scene.series[m], info = MISSIONS[m] || {name: m, epoch: '', gloss: ''}, on = visible[m] !== false, col = colorOf(m);
     return `<label class="misrow${on ? '' : ' off'}" title="${info.gloss}"><input type="checkbox" data-m="${m}" ${on ? 'checked' : ''}>` +
-      `<span class="dot" style="background:rgb(${s.color.join(',')})"></span><span class="misname">${info.name}</span>` +
+      `<span class="dot" style="background:rgb(${col.join(',')})"></span><span class="misname">${info.name}</span>` +
       `<span class="mismeta">${s.n.toLocaleString()} pts · ${info.epoch}</span></label>`;
   }).join('');
+  $('missionToggles').innerHTML = rows;
+  $('missionToggles').querySelectorAll('input[data-m]').forEach(i => i.onchange = e => { visible[e.target.dataset.m] = e.target.checked; render(); updateLabels(); });
+  // #hud legend keeps the non-mission colour key (surface + co-located pairs, when present)
   const info = [];
   if (coreg && coreg.pair_display_indices) info.push(`<span><span class="dot" style="background:rgb(220,200,150)"></span>co-located pairs: ${coreg.pair_display_indices.GLAS.length}</span>`);
   if (scene.surface) info.push(`<span><span class="dot" style="background:rgb(150,160,185)"></span>surface: ${scene.surface.source || 'DEM'}</span>`);
   if (scene.surface && scene.surface.attribution) $('attrib').dataset.dem = scene.surface.attribution;
-  $('legend').innerHTML = `<div class="misrows">${rows}</div>` + (info.length ? `<div class="legend-info">${info.join('')}</div>` : '');
-  $('legend').querySelectorAll('input[data-m]').forEach(i => i.onchange = e => { visible[e.target.dataset.m] = e.target.checked; render(); updateLabels(); });
+  $('legend').innerHTML = info.length ? `<div class="legend-info">${info.join('')}</div>` : '';
+  // DEM source shown as a small info affordance next to the DEM toggle (not an interactive control)
+  const demInfo = $('demInfo'); if (demInfo) demInfo.textContent = scene.surface ? ('Base: ' + (scene.surface.source || 'DEM')) : 'No DEM over this area';
   const acc = scene.series.ICESAT2 && scene.series.ICESAT2.meta.access;
   $('framenote').innerHTML = `<details><summary>details</summary>` +
     (scene.surface ? `${scene.surface.note}<br>` : '') +
     (acc ? `data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})<br>` : '') +
     `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0 != null ? scene.z0.toFixed(0) : '—'} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
-  const canCoreg = !!(scene.series.ICESAT2 && scene.series.GLAS);   // co-registration needs ICESat-2 (ATL03) + ICESat-1 (GLAS)
-  $('btnCoreg').hidden = !!coreg;
-  $('btnCoreg').disabled = !canCoreg;
-  $('btnCoreg').title = canCoreg ? 'Align ICESat-2 and ICESat-1 to a common reference frame and epoch, then compare heights'
-    : 'Needs both ICESat-2 (ATL03 photons) and ICESat-1 (GLAS) in this scene';
-  $('coregOn').hidden = !coreg;   // persistent "Co-registered ✓" + the correction toggles (no disappearing control)
-  $('lblGia').hidden = !(coreg && coreg.gia);
 }
 
 // ---- progressive load: open the shell instantly, then poll the growing scene doc and paint each new series /
@@ -270,12 +276,13 @@ function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null
 function applyDoc(doc) {
   if (!doc) return;
   scene = doc;
-  coreg = scene.coreg;
+  coreg = scene.coreg;   // still read from disk (Δh panel / pair markers) but no longer user-triggered
   const keys = Object.keys(scene.series);
   keys.forEach(m => { if (!(m in visible)) visible[m] = true; });   // each mission defaults on as it appears
-  $('adjPlate').checked = adj.plate_motion;
-  $('adjGia').checked = adj.gia;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG; syncExag();
+  $('demOn').checked = SHOW_SURFACE;
+  $('imagery').checked = SHOW_IMAGERY;
+  syncImagerySrc();
   const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
   if (!didFit && hasPositions) { fitView(); didFit = true; }   // frame the data once, on the first series to arrive
   render(); updateLabels(); updateStats();
@@ -300,35 +307,40 @@ async function pollUntilReady() {
   } else {
     sceneReady = true; stopPoll();
     if (ld) ld.hidden = true;
-    if (!doc) { $('status').textContent = 'could not load this scene'; AICESAT.showError(`scene ${myId}: not available`); return; }
+    if (!doc) { AICESAT.showError(`scene ${myId}: not available`); return; }
     finishLoad();
   }
 }
 
 function finishLoad() {
-  if (!schemaRefreshed && coreg && !('gia' in coreg)) {   // saved before the GIA correction existed -> recompute in the background, then refresh
-    schemaRefreshed = true;
-    $('status').textContent = 'updating co-registration…';
-    api.coregister(sceneId).then(c => { coreg = scene.coreg = c; $('status').textContent = ''; updateStats(); updateLabels(); })
-      .catch(e => { $('status').textContent = ''; console.warn('[aicesat] coreg refresh failed', e); });
-  }
+  // co-registration compute stays server-side; the Δh panel shows only if a scene already carries coreg on disk.
+  void schemaRefreshed;
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
 }
 
-async function ensureCoreg() {
-  if (coreg) return true;
-  $('status').textContent = 'co-registering \u2014 aligning the missions to a common reference frame and epoch\u2026'; $('btnCoreg').disabled = true;
-  try { coreg = await api.coregister(sceneId); } catch (e) { $('status').textContent = 'co-registration failed: ' + e.message; $('btnCoreg').disabled = false; return false; }
-  $('status').textContent = coreg.cached ? 'co-registration cached' : `co-registration computed in ${coreg.compute_seconds}s`;
-  updateLabels(); return true;
+// reflect the built-in imagery source in the selector when detectable (meta.source is a human description, not a token)
+function syncImagerySrc() {
+  const sel = $('imagerySrc'); if (!sel || !scene || !scene.imagery || !scene.imagery.source) return;
+  const d = String(scene.imagery.source);
+  const tok = /cloudless|eox/i.test(d) ? 'eox' : (/sentinel-2 l2a|in-region|\bs2\b/i.test(d) ? 's2' : null);
+  if (tok && sel.querySelector(`option[value="${tok}"]`)) sel.value = tok;
 }
-$('btnCoreg').onclick = async () => { if (await ensureCoreg()) updateStats(); };
-$('adjPlate').onchange = e => { adj.plate_motion = e.target.checked; updateStats(); };
-$('adjGia').onchange = e => { adj.gia = e.target.checked; updateStats(); };
 const syncExag = () => { const w = $('exagWarn'); if (w) { w.hidden = Z_EXAG <= 1; w.textContent = 'Heights exaggerated \u00d7' + Z_EXAG + ' \u2014 vertical only'; } };
 $('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; syncExag(); render(); updateLabels(); };
+$('demOn').onchange = e => { SHOW_SURFACE = e.target.checked; render(); };
 $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
-$('pairs').onchange = e => { SHOW_PAIRS = e.target.checked; render(); };
+$('imagerySrc').onchange = async e => {   // re-fetch imagery for this scene with the chosen source, then re-drape
+  const src = e.target.value, st = $('imageryStatus');
+  st.textContent = 'fetching imagery\u2026';
+  try {
+    const meta = await api.sceneImagery(sceneId, src);
+    scene.imagery = meta;                       // new extent + attribution
+    IMG_VER++;                                  // bust the draped-texture cache
+    if (!SHOW_IMAGERY) { SHOW_IMAGERY = true; $('imagery').checked = true; }   // reveal what was just fetched
+    st.textContent = '';
+    render(); updateLabels();
+  } catch (err) { st.textContent = 'imagery fetch failed'; AICESAT.showError(err); }
+};
 
 
 // ---------------------------------------------------------------- access-method scoreboard (measured; spec C.3)
@@ -353,12 +365,9 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 
 
 // ---------------------------------------------------------------- closeable panels (shell panel manager)
-// opt-in "?" help on the jargon-heaviest labels (Corrections group, Δh panel)
-{ const U = AICESAT.util, G = U.GLOSSARY, heads = root.querySelectorAll('#controls .ctl-head');
-  if (heads[0]) heads[0].appendChild(U.help(G.coreg));
-  const dhH = root.querySelector('#stats h2'); if (dhH) dhH.appendChild(U.help(G.dh));
-  const lp = $('lblPlate'); if (lp) lp.appendChild(U.help(G.plate));
-  const lg = $('lblGia'); if (lg) lg.appendChild(U.help(G.gia)); }
+// opt-in "?" help on the jargon-heaviest label (Δh panel)
+{ const U = AICESAT.util, G = U.GLOSSARY;
+  const dhH = root.querySelector('#stats h2'); if (dhH) dhH.appendChild(U.help(G.dh)); }
 AICESAT.util.drawer(root, null);
 $('stats').addEventListener('reopen', () => updateStats());
 // 3-D navigation hint over the canvas, auto-dismissed on first interaction (or after a few seconds)
@@ -366,7 +375,7 @@ $('stats').addEventListener('reopen', () => updateStats());
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1;
 const H3_EDGE_M = {7: 1220, 8: 461, 9: 174, 10: 66, 11: 25};
-const missionColor = m => (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
+const missionColor = colorOf;
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (H3_EDGE_M[r] || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {

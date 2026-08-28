@@ -490,6 +490,18 @@ def lake_load(cells: list, window=None, max_granules: int = 40) -> dict:
 
 
 # ----------------------------------------------------------------------------- misc
+def scene_add_imagery(scene_id: str, source: str = "s2") -> dict:
+    """Re-fetch the satellite-imagery base layer for an existing scene with a different source (see imagery.SOURCES:
+    "s2" = in-region Sentinel-2 L2A, "eox" = EOX cloudless), re-save the scene, and return the new imagery meta
+    (minus the on-disk path). Drives the scene page's imagery source selector."""
+    doc = cache.load_scene(scene_id)
+    if doc is None:
+        raise KeyError(scene_id)
+    scene.add_imagery(doc, source=source)
+    cache.save_scene(scene_id, doc)
+    return {k: v for k, v in doc["imagery"].items() if k != "path"}
+
+
 def list_regions() -> dict:
     return {k: {"bbox": list(v["bbox"]), "note": v["note"]} for k, v in regions.REGIONS.items()}
 
