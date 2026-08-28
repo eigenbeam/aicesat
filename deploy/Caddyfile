@@ -1,0 +1,8 @@
+# Caddy: terminate TLS (auto Let's Encrypt) and reverse-proxy to the local AIcesat web app.
+# Replace the hostname with your EC2's sslip.io name (e.g. 54-201-9-8.sslip.io) or a real domain pointed at it.
+# Needs inbound 80 (ACME challenge) + 443 open in the security group. Install: see deploy/README.md.
+
+REPLACE-ME.sslip.io {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8768
+}

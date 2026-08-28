@@ -1,0 +1,15 @@
+{
+  "_comment": "Owner's PRIVATE path: Claude Desktop -> MCP over SSH stdio into the box. Ungated (SSH key is the auth), separate from the public web app. Replace HOST with your EC2 hostname (sslip.io or IP). Merge into ~/Library/Application Support/Claude/claude_desktop_config.json (macOS). The remote AICESAT_PORT=8769 is deliberately distinct from the public app's 8768; -L forwards it so widget URLs (http://127.0.0.1:8769/...) open in your local browser. -T + LogLevel=ERROR keep stdout clean — SSH banners or chatty output corrupt the MCP stdio protocol.",
+  "mcpServers": {
+    "aicesat": {
+      "command": "ssh",
+      "args": [
+        "-T",
+        "-o", "LogLevel=ERROR",
+        "-L", "8769:127.0.0.1:8769",
+        "ubuntu@HOST",
+        "cd /opt/aicesat && AICESAT_PORT=8769 AICESAT_DATA_DIR=/opt/aicesat/data AICESAT_EDL_FILE=/opt/aicesat/.edl/token.prod AWS_REGION=us-west-2 exec /home/ubuntu/.local/bin/uv run aicesat-server"
+      ]
+    }
+  }
+}

@@ -1,0 +1,22 @@
+# Public, code-gated AIcesat web app (deck.gl widget + /api), reverse-proxied by Caddy on 443.
+# Install: sudo cp deploy/aicesat-web.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#          sudo systemctl enable --now aicesat-web
+# Logs:    journalctl -u aicesat-web -f
+[Unit]
+Description=AIcesat public beta web app (HTTP-only, gated)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/aicesat
+EnvironmentFile=/opt/aicesat/aicesat.env
+ExecStart=/home/ubuntu/.local/bin/uv run python scripts/serve.py
+Restart=on-failure
+RestartSec=3
+# Only Caddy should be public; the app itself binds 127.0.0.1 (AICESAT_PORT).
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
