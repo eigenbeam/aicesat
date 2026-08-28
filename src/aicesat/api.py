@@ -44,6 +44,25 @@ def registry_upsert(scene_id: str, **fields) -> dict:
     return rec
 
 
+def registry_delete(scene_id: str) -> bool:
+    """Forget a scene that never produced a file — an errored build, or a 'loading' entry orphaned when the
+    process that owned its job died. Returns False if it was already gone. Built scenes are refused: the file
+    on disk would just be re-registered by the backfill in scenes(). A live job is refused too, because
+    build_scene() upserts the entry again when it finishes."""
+    if cache.scene_path(scene_id).exists():
+        raise ValueError("scene is built — dismissing it would be undone by the backfill")
+    j = next((j for j in _jobs.values() if j.get("scene_id") == scene_id), None)
+    if j and j["status"] == "running":
+        raise ValueError("scene is still building — wait for the job to finish or fail")
+    reg = _registry()
+    if scene_id not in reg:
+        return False
+    del reg[scene_id]
+    REGISTRY.write_text(json.dumps(reg, indent=1, default=str))
+    log.info("dismissed scene %s", scene_id)
+    return True
+
+
 def scenes() -> list[dict]:
     """All scenes, newest first: registry entries plus any scene file not yet registered (backfill)."""
     reg = _registry()

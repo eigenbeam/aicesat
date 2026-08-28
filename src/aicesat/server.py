@@ -229,6 +229,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, api.lake_evict(self._body()["cells"]))
         except Exception as e:
             return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/scene/") and self.path.endswith("/dismiss"):
+            sid = self.path.split("/")[3]
+            try:
+                return self._json(200, {"dismissed": api.registry_delete(sid)})
+            except ValueError as e:
+                return self._json(409, {"error": str(e)})
         if self.path.startswith("/api/coregister/"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
@@ -410,6 +416,12 @@ def ui_jobs() -> dict:
 @apps.tool(name="ui_index_status", **_APP)
 def ui_index_status(collection: str = "ATL06") -> dict:
     return api.index_status(collection)
+
+
+@apps.tool(name="ui_dismiss_scene", **_APP)
+def ui_dismiss_scene(scene_id: str) -> dict:
+    """Forget a failed or orphaned scene card (never a built one)."""
+    return {"dismissed": api.registry_delete(scene_id)}
 
 
 @apps.tool(name="ui_coregister", **_APP)

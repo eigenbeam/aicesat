@@ -187,12 +187,21 @@ AICESAT.ExploreView = class {
     list.innerHTML = scenes.map(sc => {
       const meta = `${(sc.series || []).join(' + ') || '…'}${sc.coreg ? ' · coreg' : ''} · ${(sc.created || '').slice(0, 16).replace('T', ' ')}`;
       const head = `<div class="row"><span class="status ${sc.status}">${sc.status}</span><span class="grow" title="${sc.question || ''}">${sc.question || sc.scene_id}<br><span class="small">${meta}</span></span>` +
-        (sc.status === 'ready' ? `<button data-open="${sc.scene_id}">Open</button>` : '') + `</div>`;
+        (sc.status === 'ready' ? `<button data-open="${sc.scene_id}">Open</button>`
+         // dismissable = errored, or 'loading' with no live job behind it (orphaned when its process died).
+         // A card with a running job is left alone: the server refuses it, and build_scene() would re-add it anyway.
+         : (sc.status === 'error' || !sc.job_id) ? `<button class="dismiss" data-dismiss="${sc.scene_id}" title="forget this card">Dismiss</button>`
+         : '') + `</div>`;
       const entry = sc.job_id && this.jobs[sc.job_id];
       const prog = (sc.status === 'loading' && entry) ? `<div class="scene-prog">${this.progressHTML(entry.j, entry.plan)}</div>` : '';
       return `<div class="scene-card ${sc.status}">${head}${prog}</div>`;
     }).join('') || '<div class="small">no scenes yet — pick an area and build one</div>';
     list.querySelectorAll('button[data-open]').forEach(b => b.onclick = () => this.openScene(b.dataset.open));
+    list.querySelectorAll('button[data-dismiss]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.dismiss; b.disabled = true;
+      try { await this.api.dismissScene(id); await this.refresh(); }
+      catch (e) { b.disabled = false; AICESAT.showError(e); }
+    });
     // adopt a loading scene whose job we aren't polling yet (e.g. after a page reload)
     scenes.forEach(sc => { if (sc.status === 'loading' && sc.job_id && !this.jobs[sc.job_id]) { this.jobs[sc.job_id] = {plan: {}, j: {status: 'running', log: []}}; this.pollJob(sc.job_id, {}); } });
   }
