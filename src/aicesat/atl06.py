@@ -81,7 +81,7 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+def extract(bbox, window, max_granules: int = 20, polygon=None, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("atl06", coverage.ATL06_VERSION, bbox, window, max_granules, polygon)
     hit = cache.load(k)
     if hit:
@@ -96,8 +96,9 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     # All 6 beams (strong + weak). The index already stores every beam; weak beams add coverage/cross-mission
     # coincidence, and atl06_quality_summary==0 (quality_zero) still filters their higher-noise returns.
     # clip_cells: build from the H3 cells the selection actually touches (see glas._extract_via_index for the rationale).
+    # on_granule (opt-in): threaded through for per-granule progressive streaming on a cache-miss build.
     arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES, strong_only=False,
-                                     polygon=polygon, clip_cells=True)
+                                     polygon=polygon, clip_cells=True, on_granule=on_granule)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)

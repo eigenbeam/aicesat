@@ -397,3 +397,86 @@ def test_atl06_weak_beams_preserved_through_the_lake():
     strong, _ = index_atl06.fetch_bbox(bbox)      # strong_only=True default
     assert strong["h"].size == n and strong["h"].max() < 2600
     assert st["chunks_from_nasa"] >= 1
+
+
+# ------------------------------------------------ per-granule progressive streaming (on_granule) on a cache MISS only
+def _row_multiset(a):
+    """Multiset of (lon, lat, h, t) point rows — exact, since streamed and lake-read floats are bit-identical."""
+    from collections import Counter
+    return Counter(zip(np.asarray(a["lon"], "f8").tolist(), np.asarray(a["lat"], "f8").tolist(),
+                       np.asarray(a["h"], "f8").tolist(), np.asarray(a["t"]).astype("i8").tolist()))
+
+
+def _is_subset(sub, full):
+    cs, cf = _row_multiset(sub), _row_multiset(full)
+    return all(cf[k] >= v for k, v in cs.items())
+
+
+def test_atl06_on_granule_streams_subset_per_granule_and_is_silent_on_a_cache_hit():
+    """A cache-MISS fetch emits each pass's display points ONCE, as a strict subset of the authoritative arrays; a
+    later cache HIT (nothing to fetch) emits nothing and returns byte-identical arrays."""
+    lat = np.linspace(69.6, 71.4, 30); lon = np.full(30, -45.0); q = np.zeros(30, "i1")
+    _build_atl06(lat, lon, np.linspace(2500.0, 2530.0, 30).astype("f4"), q,
+                 granule="ATL06_20200115000000_11760601_007_01.h5", url="https://x/atl06A.h5")
+    _build_atl06(lat, lon, np.linspace(2700.0, 2730.0, 30).astype("f4"), q,     # a second pass over the same cells
+                 granule="ATL06_20200220000000_11760601_007_01.h5", url="https://x/atl06B.h5")
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+
+    fires = []
+    got, st = index_atl06.fetch_bbox(bbox, on_granule=fires.append)
+    assert st["chunks_from_nasa"] > 0                                    # cold lake -> a real fetch
+    assert len(fires) == 2                                               # ONE emission per granule (pass)
+    assert {f["granule"] for f in fires} == {"ATL06_20200115000000_11760601_007_01.h5",
+                                             "ATL06_20200220000000_11760601_007_01.h5"}
+    streamed = {k: np.concatenate([f[k] for f in fires]) for k in ("lon", "lat", "h", "t")}
+    assert _is_subset(streamed, got)                                    # never a superset -> the cloud won't shrink
+    assert streamed["lon"].size == got["lon"].size                      # a full cold build: preview == final set
+
+    fires2 = []
+    got2, st2 = index_atl06.fetch_bbox(bbox, on_granule=fires2.append)
+    assert st2["chunks_from_nasa"] == 0 and fires2 == []                 # pure cache hit: nothing streamed
+    _same(got, got2)                                                     # authoritative arrays unchanged
+
+
+def test_glas_on_granule_streams_subset_on_miss_and_silent_on_hit():
+    n = 24
+    _build_glas(np.linspace(69.6, 71.4, n), np.full(n, -45.0), np.linspace(2600.0, 2620.0, n))
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+    fires = []
+    got, st = index_glas.fetch_bbox(bbox, on_granule=fires.append)
+    assert st["chunks_from_nasa"] > 0 and len(fires) == 1
+    assert fires[0]["granule"] == "GLAH06_634_2103_001_0071_0_01_0001.h5"
+    streamed = {k: np.concatenate([f[k] for f in fires]) for k in ("lon", "lat", "h", "t")}
+    assert _is_subset(streamed, got) and streamed["lon"].size == got["lon"].size
+    fires2 = []
+    got2, st2 = index_glas.fetch_bbox(bbox, on_granule=fires2.append)
+    assert st2["chunks_from_nasa"] == 0 and fires2 == []
+    _same(got, got2)
+
+
+def test_icessn_on_granule_streams_subset_on_miss_and_silent_on_hit():
+    n = 20
+    lat = np.linspace(69.6, 71.4, n); lon = np.full(n, -45.0); elev = np.linspace(2400.0, 2420.0, n)
+    rms = np.full(n, 4.5); rms[7] = 80.0                    # one platelet fails the RMS cut (dropped both paths)
+    track = np.zeros(n); track[3] = 1                       # one off-nadir platelet (never indexed)
+    _build_icessn(lat, lon, elev, rms, track)
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+    fires = []
+    got, st = index_icessn.fetch_bbox(bbox, on_granule=fires.append)
+    assert st["chunks_from_nasa"] > 0 and len(fires) == 1
+    streamed = {k: np.concatenate([f[k] for f in fires]) for k in ("lon", "lat", "h", "t")}
+    assert _is_subset(streamed, got) and streamed["lon"].size == got["lon"].size
+    fires2 = []
+    got2, st2 = index_icessn.fetch_bbox(bbox, on_granule=fires2.append)
+    assert st2["chunks_from_nasa"] == 0 and fires2 == []
+    _same(got, got2)
+
+
+def test_on_granule_none_is_the_unchanged_default_path():
+    """Belt-and-braces: with on_granule=None the fetch is byte-identical to the direct golden (the benchmark and the
+    lake-cache goldens all ride on this)."""
+    _atl06_scene()
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+    golden, _ = index_atl06._fetch_direct(bbox)
+    got, _ = index_atl06.fetch_bbox(bbox, on_granule=None)
+    _same(golden, got)

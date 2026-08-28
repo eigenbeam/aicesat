@@ -66,10 +66,12 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
+def _extract_via_index(bbox, window, polygon, k, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_icessn
     # clip_cells: build from the H3 cells the selection actually touches (see glas._extract_via_index for the rationale).
-    arr, st = index_icessn.fetch_bbox(bbox, window=window, res=index_icessn.ICESSN_RES, polygon=polygon, clip_cells=True)
+    # on_granule (opt-in): threaded through for per-granule progressive streaming on a cache-miss build.
+    arr, st = index_icessn.fetch_bbox(bbox, window=window, res=index_icessn.ICESSN_RES, polygon=polygon, clip_cells=True,
+                                      on_granule=on_granule)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
@@ -89,7 +91,7 @@ def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray],
     return arrays, meta
 
 
-def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+def extract(bbox, window, max_granules: int = 12, polygon=None, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("icessn", coverage.ICESSN_VERSION, bbox, window, max_granules, MAX_RMS_CM, polygon)
     hit = cache.load(k)
     if hit:
@@ -97,7 +99,7 @@ def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[st
         hit[1]["cache_key"] = k
         return hit
     if _index_covers(bbox):   # discovery path: byte-range only the indexed line spans, no CMR + no whole-file download
-        return _extract_via_index(bbox, window, polygon, k)
+        return _extract_via_index(bbox, window, polygon, k, on_granule=on_granule)
     import earthaccess
 
     auth.login()

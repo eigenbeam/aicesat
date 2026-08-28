@@ -316,7 +316,7 @@ async function pollUntilReady() {
   const ld = $('sceneLoading');
   if (status === 'loading') {
     if (ld) { ld.hidden = false; const tn = ld.childNodes[ld.childNodes.length - 1]; if (tn && tn.nodeType === 3) tn.nodeValue = (doc && Object.keys(doc.series || {}).length) ? 'Streaming data…' : 'Loading scene…'; }
-    pollTimer = setTimeout(pollUntilReady, 1000);
+    pollTimer = setTimeout(pollUntilReady, 400);   // fast poll while loading so the per-granule stream reads as continuous
   } else {
     sceneReady = true; stopPoll();
     if (ld) ld.hidden = true;

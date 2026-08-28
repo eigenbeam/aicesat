@@ -149,3 +149,31 @@ def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str
         cache_key = cache_key + "-clean"
     doc["series"][mission] = series(doc["frame"], mission, arrays, meta, doc["z0"], cache_key)
     return doc
+
+
+def append_partial(doc: dict, mission: str, arrays: dict) -> dict:
+    """Progressive-build helper: bake ONE streamed granule's partial points into `mission`'s series and extend its
+    position buffer, so the widget's poll paints a growing cloud during a cache-miss build. Baking mirrors series()
+    exactly (to_local + h - z0, f4, round to mm, flat [x,y,z,...]) but with NO stride — the partial is a small,
+    disposable preview that the finalize (add_series over the authoritative query_points arrays) REPLACES with the
+    full, strided series. Requires doc['z0'] (baking is height-relative); the caller buffers partials until z0 is
+    known and never invents one here. If the mission's series does not exist yet, a minimal one is created with the
+    same shape add_series produces so the client renders it immediately."""
+    if doc.get("z0") is None:
+        return doc                                  # caller buffers until the DEM/first collection sets z0
+    lon = np.asarray(arrays["lon"], dtype="f8")
+    if lon.size == 0 and mission not in doc["series"]:
+        return doc                                  # nothing to paint yet -> don't materialise an empty series
+    s = doc["series"].get(mission)
+    if s is None:                                   # minimal series consistent with series() so the client can paint it
+        s = {"mission": mission, "color": COLORS[mission], "n": 0, "n_extracted": 0, "stride": 1,
+             "cache_key": None, "positions": [], "meta": {"partial": True}, "granules": []}
+        doc["series"][mission] = s
+    if lon.size:
+        x, y = to_local(doc["frame"], lon, np.asarray(arrays["lat"], dtype="f8"))
+        z = np.asarray(arrays["h"], dtype="f8") - doc["z0"]
+        pos = np.round(np.column_stack([x, y, z]).astype("f4"), 3).ravel().tolist()
+        s["positions"].extend(pos)
+        s["n"] = len(s["positions"]) // 3
+        s["n_extracted"] = s["n"]
+    return doc
