@@ -220,17 +220,21 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 img_fut = ex.submit(_prefetch_imagery) if with_imagery else None
                 dem_fut = ex.submit(_prefetch_dem)
 
-                # z0 from the DEM: terrain-centred, deterministic, and known INDEPENDENT of the collections — so every
-                # collection can then stream in as it arrives without waiting on a specific one (a slow GLAS no longer
-                # blocks the rest). Falls back to the first collection's median if no DEM covers the scene.
+                # z0 + DEM surface from the DEM, up front: terrain-centred z0 (deterministic, independent of the
+                # collections, so a slow GLAS no longer blocks the rest) AND paint the DEM mesh FIRST so the terrain
+                # shell shows immediately and the collections then rain in on top. Falls back to the first collection's
+                # median (and no surface) if no DEM covers the scene.
                 try:
                     dem_raw = dem_fut.result()
                     if dem_raw and dem_raw.get("z"):
                         zv = np.asarray(dem_raw["z"], dtype="f8"); zv = zv[np.isfinite(zv)]
                         if zv.size:
                             doc["z0"] = float(np.median(zv)); log_fn(f"z0 from DEM: {doc['z0']:.1f} m ellipsoidal")
+                            scene.set_surface(doc)                 # attach the DEM mesh NOW -> terrain paints first
+                            log_fn("surface: DEM base surface")
+                            cache.save_scene(sid, doc)
                 except Exception as e:
-                    log.info("DEM z0 unavailable; z0 will come from the first collection to arrive: %s", e)
+                    log.info("DEM z0/surface unavailable; z0 will come from the first collection to arrive: %s", e)
 
                 # Integrate each collection AS IT COMPLETES (not in priority order): the fastest paints first so the
                 # scene streams. z0 is already set from the DEM above, so add_series just uses it (no collection sets
@@ -252,15 +256,15 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
                 doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
 
-                # surface: needs z0 (now known). The grid was fetched concurrently, so set_surface() is a cache hit;
-                # set_surface() is the authoritative attempt (fetches inline if the prefetch failed) -> identical result.
-                try:
-                    dem_fut.result()
-                except Exception as e:
-                    log.info("DEM prefetch failed; set_surface will fetch inline: %s", e)
-                scene.set_surface(doc)               # DEM base surface, independent of which collections loaded
-                log_fn("surface: DEM base surface")
-                cache.save_scene(sid, doc)
+                # surface fallback: the DEM normally set z0+surface up front; only reach here if z0 came from a
+                # collection instead (DEM gave no z0). If no DEM covers the scene, set_surface attaches nothing.
+                if doc.get("surface") is None and doc.get("z0") is not None:
+                    try:
+                        scene.set_surface(doc)
+                        if doc.get("surface"):
+                            log_fn("surface: DEM base surface"); cache.save_scene(sid, doc)
+                    except Exception as e:
+                        log.info("surface unavailable: %s", e)
 
                 # imagery: independent of z0 and collections; fetched concurrently, finalised here. add_imagery() is
                 # the authoritative attempt (cache hit if the prefetch succeeded, inline fetch otherwise). Skipped
