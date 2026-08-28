@@ -10160,7 +10160,7 @@ AICESAT.LakeView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="scene">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <div id="demInfo" class="ctl-info"></div>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><span class="spinner"></span>Loading scene…</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="hud" class="panel" data-title="scene">\n  <h1 id="title">Cross-mission altimetry</h1>\n  <div class="q" id="question"></div>\n  <div class="small" id="framenote"></div>\n</div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <div id="demInfo" class="ctl-info"></div>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -10189,7 +10189,9 @@ const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
 const visible = {};   // mission key -> shown; initialised per scene (all on)
 // Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the grey-blue DEM.
 // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before this palette.
-const MISSION_COLORS = {GLAS: [255, 205, 50], ICESSN: [0, 190, 130], ATL06: [175, 110, 255], ICESAT2: [86, 180, 233]};
+// Okabe-Ito blue/yellow/green (colour-blind-safe by construction): the dense ATL06 becomes a receding blue base,
+// GLAS a bright yellow, IceBridge green; ATL03 (rarely shown) a distinct vermillion.
+const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [0, 158, 115], ATL06: [0, 114, 178], ICESAT2: [213, 94, 0]};
 const colorOf = m => MISSION_COLORS[m] || (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
 
 const deckgl = new Deck({
@@ -10218,6 +10220,12 @@ function cloudLayer(id, flat, color, size, opts = {}) {
   }, opts));
 }
 
+// Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
+// scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
+// cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
+let PT_SCALE = 1;   // user "Points ×" multiplier for tuning
+
 function cloudLayers() {
   const out = [];
   for (const [m, s] of Object.entries(scene.series)) {
@@ -10225,16 +10233,20 @@ function cloudLayers() {
     const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
     const paired = (coreg && coreg.pair_display_indices && coreg.pair_display_indices[m]) ? new Set(coreg.pair_display_indices[m]) : null;
     if (paired && SHOW_PAIRS) {  // co-located shots: a thin pale ring UNDER the point (subtle marker, not a blob)
-      out.push(new PointCloudLayer({
+      out.push(new deck.ScatterplotLayer({
         id: 'paired-' + m, data: [...paired],
         getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-        getColor: PAIR_RING, pointSize: 4.5, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
+        getRadius: (FOOTPRINT_M[m] || 12) * 1.7, radiusUnits: 'meters', radiusMinPixels: 3, radiusMaxPixels: 12,
+        stroked: true, filled: false, getLineColor: PAIR_RING, lineWidthUnits: 'pixels', getLineWidth: 1.2,
+        billboard: true, updateTriggers: {getPosition: Z_EXAG},
       }));
     }
-    out.push(new PointCloudLayer({
+    out.push(new deck.ScatterplotLayer({
       id: 'pc-' + m, data: indices(src.length / 3),
       getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
-      getColor: colorOf(m), pointSize: m === 'GLAS' ? 2.5 : 2, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG},
+      getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
+      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
+      updateTriggers: {getPosition: Z_EXAG, getRadius: PT_SCALE},
     }));
   }
   return out;
@@ -10481,6 +10493,7 @@ function finishLoad() {
 
 const syncExag = () => { const w = $('exagWarn'); if (w) { w.hidden = Z_EXAG <= 1; w.textContent = 'Heights exaggerated \u00d7' + Z_EXAG + ' \u2014 vertical only'; } };
 $('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; syncExag(); render(); updateLabels(); };
+$('ptSize').oninput = e => { PT_SCALE = parseFloat(e.target.value); $('ptSizeVal').textContent = PT_SCALE; render(); };
 $('demOn').onchange = e => { SHOW_SURFACE = e.target.checked; render(); };
 $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 
@@ -10599,8 +10612,9 @@ function candidateLayers() {
   // unmistakable in the 3-D scene.
   const c = candidates[candSel];
   if (c && bounds) {
-    const span = Math.max(bounds.maxx - bounds.minx, bounds.maxy - bounds.miny) || 1000;
-    const stickH = Math.max(span * 0.32, (bounds.maxz - bounds.minz) * Z_EXAG * 0.9);   // stays tall at any vertical exag
+    // Rise above the surface by ~the local vertical relief. (Using the HORIZONTAL span here shot the marker ~6 km
+    // into the sky — the x/y extent is kilometres while the relief is tens–hundreds of metres.)
+    const stickH = Math.max(bounds.maxz - bounds.minz, 40) * Z_EXAG * 0.9;
     const base = [c.center[0], c.center[1], c.center[2] * Z_EXAG];
     const top = [c.center[0], c.center[1], c.center[2] * Z_EXAG + stickH];
     const MARK = [150, 235, 255];
