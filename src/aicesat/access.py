@@ -176,7 +176,9 @@ class RangeReader:
         self._s3 = None                                  # lazily-built s3fs filesystem (in-region S3-direct)
         # Pluggable in-region S3 range-GET mechanism (see S3_FETCH_MECHANISMS). Default "s3fs" == the historical path;
         # unset env => unchanged behaviour. Flip the winner in one place: export AICESAT_S3_FETCH=<name>.
-        self.s3_fetch = os.environ.get("AICESAT_S3_FETCH", "s3fs")
+        # aiobotocore won the in-region benchmark on both shapes (~26% faster on many-small-GETs, tighter p95 than
+        # the s3fs cat_file thread pool), byte-identical. Override with AICESAT_S3_FETCH (s3fs|s3fs_ranges|boto3|crt).
+        self.s3_fetch = os.environ.get("AICESAT_S3_FETCH", "aiobotocore")
         self._aio = None                                 # lazily-built aiobotocore loop+client (mechanism "aiobotocore")
         self._boto3 = None                               # lazily-built boto3 client (mechanism "boto3")
         self._crt = None                                 # lazily-built awscrt S3 client (mechanism "crt")
