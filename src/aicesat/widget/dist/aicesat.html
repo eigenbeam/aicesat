@@ -9923,7 +9923,11 @@ AICESAT.ExploreView = class {
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
-      try { const d = await api.extract(body); this.jobs[d.job_id] = {plan: body, j: {status: 'running', log: []}}; this.pollJob(d.job_id, body); await this.refresh(); }
+      try {
+        const d = await api.extract(body);
+        this.jobs[d.job_id] = {plan: body, j: {status: 'running', log: []}}; this.pollJob(d.job_id, body); this.refresh();
+        if (d.scene_id) this.openScene(d.scene_id);   // jump straight into the scene view; it paints in as the build streams
+      }
       catch (e) { AICESAT.showError(e); $('exBuild').disabled = false; } };
 
     AICESAT.util.drawer(root, null);
@@ -10427,7 +10431,7 @@ function updateLabels() {
   $('framenote').innerHTML = `<details><summary>details</summary>` +
     (scene.surface ? `${scene.surface.note}<br>` : '') +
     (acc ? `data path: ${scene.series.ICESAT2.meta.access_path} — ${acc.chunks_fetched} photon chunks / ${acc.requests} range requests / ${(acc.bytes / 1e6).toFixed(0)} MB fetched, ${acc.chunks_skipped_already_materialized} chunks already in the lake, ${acc.hdf5_opens_at_query_time} HDF5 opens at query time; ${acc.cells} H3 cells (res ${acc.h3_res})<br>` : '') +
-    `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0.toFixed(0)} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
+    `local frame ${scene.frame.crs}, bbox ${scene.bbox.map(v => v.toFixed(2)).join(', ')}; z relative to ICESat-2 median (${scene.z0 != null ? scene.z0.toFixed(0) : '—'} m); vertical ×${Z_EXAG} (axes show true metres)</details>`;
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
   const canCoreg = !!(scene.series.ICESAT2 && scene.series.GLAS);   // co-registration needs ICESat-2 (ATL03) + ICESat-1 (GLAS)
   $('btnCoreg').hidden = !!coreg;
@@ -10438,17 +10442,54 @@ function updateLabels() {
   $('lblGia').hidden = !(coreg && coreg.gia);
 }
 
-async function loadScene() {
-  let doc;
-  try { doc = await api.sceneDoc(sceneId); } catch (e) { $('status').textContent = 'could not load this scene'; AICESAT.showError(`scene ${sceneId}: ${e.message}`); return; }
+// ---- progressive load: open the shell instantly, then poll the growing scene doc and paint each new series /
+// surface / imagery as it lands. The server persists the doc after every build leg (frame first, then per collection,
+// then surface, then imagery), so each poll returns a little more. Deck.gl diffs layers by id, so simply re-running
+// render() on each poll natively adds only the new layers — no bespoke diffing needed here.
+let pollTimer = null, sceneReady = false, didFit = false, lastSeriesSig = '', schemaRefreshed = false;
+function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
+
+function applyDoc(doc) {
+  if (!doc) return;
   scene = doc;
   coreg = scene.coreg;
-  Object.keys(scene.series).forEach(m => { visible[m] = true; });   // all missions on by default for a new scene
+  const keys = Object.keys(scene.series);
+  keys.forEach(m => { if (!(m in visible)) visible[m] = true; });   // each mission defaults on as it appears
   $('adjPlate').checked = adj.plate_motion;
   $('adjGia').checked = adj.gia;
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG; syncExag();
-  fitView(); render(); updateLabels(); updateStats(); initTimeSeries();
-  if (coreg && !('gia' in coreg)) {   // saved before the GIA correction existed -> recompute in the background, then refresh
+  const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
+  if (!didFit && hasPositions) { fitView(); didFit = true; }   // frame the data once, on the first series to arrive
+  render(); updateLabels(); updateStats();
+  const sig = keys.slice().sort().join(',');
+  if (sig !== lastSeriesSig) { lastSeriesSig = sig; if (keys.length) initTimeSeries(); }   // reset TS UI only when the mission set changes
+}
+
+async function pollUntilReady() {
+  const myId = sceneId;
+  let status = 'loading';
+  try { const list = await api.scenes(); const rec = (list || []).find(s => s.scene_id === myId); status = rec ? rec.status : 'loading'; }
+  catch (e) {}
+  if (sceneId !== myId) return;   // navigated to another scene while awaiting
+  let doc = null;
+  try { doc = await api.sceneDoc(myId); } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
+  if (sceneId !== myId) return;
+  if (doc) applyDoc(doc);
+  const ld = $('sceneLoading');
+  if (status === 'loading') {
+    if (ld) { ld.hidden = false; const tn = ld.childNodes[ld.childNodes.length - 1]; if (tn && tn.nodeType === 3) tn.nodeValue = (doc && Object.keys(doc.series || {}).length) ? 'Streaming data…' : 'Loading scene…'; }
+    pollTimer = setTimeout(pollUntilReady, 1000);
+  } else {
+    sceneReady = true; stopPoll();
+    if (ld) ld.hidden = true;
+    if (!doc) { $('status').textContent = 'could not load this scene'; AICESAT.showError(`scene ${myId}: not available`); return; }
+    finishLoad();
+  }
+}
+
+function finishLoad() {
+  if (!schemaRefreshed && coreg && !('gia' in coreg)) {   // saved before the GIA correction existed -> recompute in the background, then refresh
+    schemaRefreshed = true;
     $('status').textContent = 'updating co-registration…';
     api.coregister(sceneId).then(c => { coreg = scene.coreg = c; $('status').textContent = ''; updateStats(); updateLabels(); })
       .catch(e => { $('status').textContent = ''; console.warn('[aicesat] coreg refresh failed', e); });
@@ -10597,10 +10638,21 @@ this.open = async (id, query) => {
   root.classList.add('on');
   params = new URLSearchParams(query || '');
   if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
-  if (id !== sceneId) { sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []}); const _ld = $('sceneLoading'); if (_ld) _ld.hidden = false; try { await loadScene(); } finally { if (_ld) _ld.hidden = true; } loadBench(); }
-  else deckgl.redraw && deckgl.redraw(true);
+  if (id !== sceneId) {
+    stopPoll();
+    sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
+    sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false;
+    Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
+    const ld = $('sceneLoading'); if (ld) ld.hidden = false;
+    await pollUntilReady();   // paints the shell + whatever is ready now; keeps polling if the build is still running
+    loadBench();
+  } else if (!sceneReady && !pollTimer) {
+    await pollUntilReady();   // came back to a still-building scene -> resume progressive polling
+  } else {
+    deckgl.redraw && deckgl.redraw(true);
+  }
 };
-this.hide = () => root.classList.remove('on');
+this.hide = () => { root.classList.remove('on'); stopPoll(); };
 
   }
 };

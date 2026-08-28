@@ -8,10 +8,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import numpy as np
@@ -40,7 +42,9 @@ def registry_upsert(scene_id: str, **fields) -> dict:
     rec = reg.get(scene_id, {"scene_id": scene_id, "created": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     rec.update({k: v for k, v in fields.items() if v is not None})
     reg[scene_id] = rec
-    REGISTRY.write_text(json.dumps(reg, indent=1, default=str))
+    tmp = REGISTRY.with_suffix(f".{os.getpid()}.tmp")   # atomic: registry is now upserted per-leg during a build
+    tmp.write_text(json.dumps(reg, indent=1, default=str))
+    os.replace(tmp, REGISTRY)
     return rec
 
 
@@ -134,64 +138,126 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
         except Exception as e:
             log.warning("%s: lake materialization failed: %s", mission, e)
 
-    def _add(flag, name, fn):
-        if not flag:
-            return
-        try:
-            fn()
-        except Exception as e:
-            log.warning("%s unavailable: %s", name, e); log_fn(f"{name} unavailable: {e}")
+    # --- pure extract workers: run concurrently, touch no shared/doc state, return (arrays, meta, cache_key) --------
+    def _ex_glas():
+        from . import glas
+        a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
+        return a, m, m["cache_key"]
+
+    def _ex_icessn():
+        from . import icessn
+        a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
+        return a, m, m["cache_key"]
+
+    def _ex_atl06():
+        from . import atl06
+        a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
+        return a, m, m["cache_key"]
+
+    def _ex_atl03():
+        a, m = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
+        return a, m, m["cache_key"]
+
+    # --- integrators: mutate `doc`; ONLY ever called on the build thread, in priority order, so z0 and the
+    #     series-insertion order are byte-for-byte what the old serial loop produced. -------------------------------
+    def _int_glas(a, m, ck):
+        scene.add_series(doc, "GLAS", a, m, ck)
+        _mat("GLAS", a, m)
+        log_fn(f"GLAS: {m['n']:,} shots across {len(m['campaigns'])} campaigns")
+
+    def _int_icessn(a, m, ck):
+        scene.add_series(doc, "ICESSN", a, m, ck)
+        _mat("ICESSN", a, m)
+        log_fn(f"ICESSN: {m['n']:,} nadir platelets across {len(m['years'])} campaign years")
+
+    def _int_atl06(a, m, ck):
+        scene.add_series(doc, "ATL06", a, m, ck)
+        _mat("ATL06", a, m)
+        log_fn(f"ATL06: {m['n']:,} land-ice segments")
+
+    def _int_atl03(a, m, ck):
+        st = m.get("access", {})
+        log_fn(f"ATL03: {m['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched "
+               f"({st.get('bytes', 0) / 1e6:.0f} MB, {st.get('requests', 0)} requests), "
+               f"{st.get('chunks_skipped_already_materialized', 0)} already in the lake")
+        if st.get("evicted_for_limit"):
+            log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
+        scene.add_series(doc, "ICESAT2", a, m, ck)
+
+    # (mission_key, enabled, extract_worker, integrator, display_name); priority order == the old serial order, which
+    # is what decides the z0 anchor (first success sets doc["z0"]) and the series-dict key order.
+    LEGS = [
+        ("GLAS",    with_glas,   _ex_glas,   _int_glas,   "GLAS"),
+        ("ICESSN",  with_icessn, _ex_icessn, _int_icessn, "ICESSN"),
+        ("ATL06",   with_atl06,  _ex_atl06,  _int_atl06,  "ATL06"),
+        ("ICESAT2", with_atl03,  _ex_atl03,  _int_atl03,  "ATL03"),
+    ]
+    enabled = [leg for leg in LEGS if leg[1]]
 
     try:
         with _lock:
             doc = scene.new_scene(sid, bb, question, polygon=poly)
+            cache.save_scene(sid, doc)               # persist the shell (frame/bbox) immediately -> UI opens instantly
 
-            def _atl03():
-                log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
-                arrays, meta = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
-                st = meta.get("access", {})
-                log_fn(f"ATL03: {meta['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched "
-                       f"({st.get('bytes', 0) / 1e6:.0f} MB, {st.get('requests', 0)} requests), "
-                       f"{st.get('chunks_skipped_already_materialized', 0)} already in the lake")
-                if st.get("evicted_for_limit"):
-                    log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
-                scene.add_series(doc, "ICESAT2", arrays, meta, meta["cache_key"])
+            frame = doc["frame"]
+            extent = scene.bbox_extent(frame)        # computed once here (the shared _tr transformer is build-thread only)
 
-            def _glas():
-                from . import glas
-                g_arrays, g_meta = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
-                scene.add_series(doc, "GLAS", g_arrays, g_meta, g_meta["cache_key"])
-                _mat("GLAS", g_arrays, g_meta)
-                log_fn(f"GLAS: {g_meta['n']:,} shots across {len(g_meta['campaigns'])} campaigns")
+            def _prefetch_imagery():                 # warm the imagery JPEG cache; add_imagery() below then cache-hits
+                from . import imagery
+                imagery.build(frame, extent, 4096)   # width matches scene.add_imagery's default
 
-            def _atl06():
-                from . import atl06
-                a_arrays, a_meta = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
-                scene.add_series(doc, "ATL06", a_arrays, a_meta, a_meta["cache_key"])
-                _mat("ATL06", a_arrays, a_meta)
-                log_fn(f"ATL06: {a_meta['n']:,} land-ice segments")
+            def _prefetch_dem():                     # warm the DEM grid npz (keyed by extent, independent of z0)
+                from . import dem
+                dem.surface_for_frame(frame, extent, 0.0)   # real z0 is applied later, inside set_surface()
 
-            def _icessn():
-                from . import icessn
-                i_arrays, i_meta = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
-                scene.add_series(doc, "ICESSN", i_arrays, i_meta, i_meta["cache_key"])
-                _mat("ICESSN", i_arrays, i_meta)
-                log_fn(f"ICESSN: {i_meta['n']:,} nadir platelets across {len(i_meta['years'])} campaign years")
+            # t=0: every independent leg starts at once. Extracts are I/O-bound (requests/DuckDB/rasterio release the
+            # GIL; ATL03 spawns its own ProcessPoolExecutor internally, fine on a thread). Imagery & DEM depend only on
+            # frame+extent, so they run without waiting on the z0 barrier. All `doc` mutation stays on this thread.
+            with ThreadPoolExecutor(max_workers=min(8, len(enabled) + 2), thread_name_prefix=f"build-{sid}") as ex:
+                cfuts = {leg[0]: ex.submit(leg[2]) for leg in enabled}
+                if with_atl03:
+                    log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
+                img_fut = ex.submit(_prefetch_imagery)
+                dem_fut = ex.submit(_prefetch_dem)
 
-            _add(with_glas, "GLAS", _glas)          # chronological, matching the collection list
-            _add(with_icessn, "ICESSN", _icessn)
-            _add(with_atl06, "ATL06", _atl06)
-            _add(with_atl03, "ATL03", _atl03)
-            if not doc["series"]:
-                raise RuntimeError("no collection returned data over this area (check your selection and the token)")
-            scene.set_surface(doc)                   # DEM base surface, independent of which collections loaded
-            log_fn("surface: DEM base surface")
-            try:
-                scene.add_imagery(doc)
-                log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
-            except Exception as e:
-                log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
-            cache.save_scene(sid, doc)
+                # z0 barrier + series. Integrate in priority order: the first collection to succeed sets doc["z0"]
+                # (via add_series), exactly as the serial loop did; every series' z is then relative to that z0. Each
+                # integrated series is persisted so it becomes paintable mid-build.
+                for mkey, flag, extractor, integrator, disp in enabled:
+                    try:
+                        a, m, ck = cfuts[mkey].result()
+                        integrator(a, m, ck)
+                    except Exception as e:
+                        log.warning("%s unavailable: %s", disp, e); log_fn(f"{disp} unavailable: {e}")
+                        continue
+                    registry_upsert(sid, series=sorted(doc["series"]))
+                    cache.save_scene(sid, doc)       # progressive persistence: this series is now readable
+
+                if not doc["series"]:
+                    raise RuntimeError("no collection returned data over this area (check your selection and the token)")
+
+                # surface: needs z0 (now known). The grid was fetched concurrently, so set_surface() is a cache hit;
+                # set_surface() is the authoritative attempt (fetches inline if the prefetch failed) -> identical result.
+                try:
+                    dem_fut.result()
+                except Exception as e:
+                    log.info("DEM prefetch failed; set_surface will fetch inline: %s", e)
+                scene.set_surface(doc)               # DEM base surface, independent of which collections loaded
+                log_fn("surface: DEM base surface")
+                cache.save_scene(sid, doc)
+
+                # imagery: independent of z0 and collections; fetched concurrently, finalised here. add_imagery() is
+                # the authoritative attempt (cache hit if the prefetch succeeded, inline fetch otherwise).
+                try:
+                    try:
+                        img_fut.result()
+                    except Exception as e:
+                        log.info("imagery prefetch failed; add_imagery will fetch inline: %s", e)
+                    scene.add_imagery(doc)
+                    log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
+                except Exception as e:
+                    log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
+                cache.save_scene(sid, doc)
         can_coreg = "ICESAT2" in doc["series"] and "GLAS" in doc["series"]
         if with_coreg and can_coreg:
             coregister(sid)
