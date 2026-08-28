@@ -12,6 +12,7 @@ pass t and assert a nonzero displacement.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -51,20 +52,31 @@ def decimal_year(t: np.ndarray) -> np.ndarray:
     return years.astype(int) + 1970 + frac
 
 
+_ITRF_RE = re.compile(r"^ITRF(\d{4})$")
+
+
 def _frame_pipeline(from_frame: str) -> Transformer | None:
     """Native frame -> ITRF2014 (14-parameter Helmert, evaluated at the observation epoch). None if already ITRF2014.
-    PROJ's ITRF2014 init file gives ITRF2014 -> ITRFxx *forward*, so the step is inverted here."""
+    PROJ's ITRF2014 init file gives ITRF2014 -> ITRFxx *forward*, so the step is inverted here.
+
+    Any ITRFyyyy realization PROJ knows is accepted (ITRF2000/2005/2008 verified against PROJ 9.5). The frame name
+    must be an exact `ITRFyyyy`: a vague label like "ITRF (campaign-dependent)" raises rather than silently
+    transforming with the wrong realization.
+    """
     if from_frame == "ITRF2014":
         return None
-    if from_frame == "ITRF2008":
+    if not _ITRF_RE.match(from_frame or ""):
+        raise ValueError(f"unsupported native frame {from_frame!r}: need an exact ITRFyyyy realization")
+    try:
         return Transformer.from_pipeline(
             "+proj=pipeline +ellps=GRS80 "
             "+step +proj=unitconvert +xy_in=deg +xy_out=rad "
             "+step +proj=cart +ellps=GRS80 "
-            "+step +inv +init=ITRF2014:ITRF2008 "
+            f"+step +inv +init=ITRF2014:{from_frame} "
             "+step +inv +proj=cart +ellps=GRS80 "
             "+step +proj=unitconvert +xy_in=rad +xy_out=deg")
-    raise ValueError(f"unsupported native frame {from_frame}")
+    except Exception as ex:
+        raise ValueError(f"PROJ has no ITRF2014:{from_frame} transform: {ex}") from ex
 
 
 def _pmm_pipeline(src_epoch: float) -> Transformer:
