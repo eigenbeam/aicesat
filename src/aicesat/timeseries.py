@@ -10,12 +10,15 @@ Deliberately NOT applied (and surfaced to the user): inter-campaign / inter-sens
 GIA. The plane-fit is what keeps slope from masquerading as elevation change; a raw median-per-window
 would be dominated by which part of a sloped cell each epoch happened to sample."""
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import h3
 
 from . import coreg
 from . import scene as scene_mod
+from .access import pool_size
 
 log = logging.getLogger("aicesat.timeseries")
 
@@ -25,6 +28,10 @@ _MIN_BIN_PTS = 3                # a time window needs this many points in the ce
 _MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
 DEFAULT_REF_MISSION = "GLAS"  # earliest epoch + single sensor: an anchored zero, no inter-sensor bias in the plane's tilt
+# Parallelism for the per-cell reference-plane fit + robust stats (see candidates). Below this many cells the loop is
+# left serial; AICESAT_TS_WORKERS overrides the worker count.
+_CANDIDATE_MIN_CELLS = 64
+_CANDIDATE_WORKER_CAP = 8
 
 
 def _reference_set(ref_missions, present) -> set:
@@ -127,22 +134,28 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
     uniq, starts = np.unique(cs, return_index=True)
     ends = np.append(starts[1:], cs.size)
 
-    out = []
-    for u, a, b in zip(uniq, starts, ends):
+    # The cells are independent; each one is a reference-plane lstsq fit + robust MAD stats + confidence. pyproj's
+    # cached Transformer (via scene_mod.to_local) is NOT thread-safe, so its two tiny per-cell transforms are guarded
+    # by this lock — everything heavy (lstsq, the MAD medians, the h3 boundary) runs unlocked in parallel.
+    proj_lock = threading.Lock()
+
+    def _fit_cell(u, a, b):
+        """Compute one cell's candidate (or None to drop it). Byte-for-byte the serial body — only which worker runs
+        it changes. Reads shared arrays read-only; builds nothing shared except under proj_lock."""
         gi = order[a:b]                             # indices of points in this cell
         bins_here = tbin[gi]
         if np.unique(bins_here).size < min_bins:
-            continue
+            return None
         rmask = isref[gi]
         if int(rmask.sum()) < _MIN_REF_PTS:
-            continue
+            return None
         gx, gy, gh, mic = X[gi], Y[gi], H[gi], misi[gi]
         xc = float(gx[rmask].mean()); yc = float(gy[rmask].mean())
         A = np.column_stack([np.ones(int(rmask.sum())), gx[rmask] - xc, gy[rmask] - yc])
         try:
             coef, *_ = np.linalg.lstsq(A, gh[rmask], rcond=None)
         except Exception:
-            continue
+            return None
         resid = gh - (coef[0] + coef[1] * (gx - xc) + coef[2] * (gy - yc))
         # Blunder clip: distance from the point's OWN time window's median, scaled by the pooled within-window
         # scatter. Clipping about the cell-wide median would drop real change between windows (or a whole
@@ -168,25 +181,35 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
                            "mad_m": round(float(np.median(np.abs(r - rmed))), 3), "n": int(m.sum()),
                            "missions": sorted({recs[j]["mission"] for j in np.unique(mic[m])})})
         if len(series) < min_bins:
-            continue
+            return None
         series.sort(key=lambda d: d["year"])
 
         hexstr = h3.int_to_str(int(u))
         bnd = h3.cell_to_boundary(hexstr)
-        bx, by = scene_mod.to_local(doc["frame"], np.array([p[1] for p in bnd]), np.array([p[0] for p in bnd]))
         clat, clon = h3.cell_to_latlng(hexstr)
-        cx, cy = scene_mod.to_local(doc["frame"], np.array([clon]), np.array([clat]))
+        with proj_lock:                                      # pyproj Transformer is not thread-safe; transforms are tiny
+            bx, by = scene_mod.to_local(doc["frame"], np.array([p[1] for p in bnd]), np.array([p[0] for p in bnd]))
+            cx, cy = scene_mod.to_local(doc["frame"], np.array([clon]), np.array([clat]))
         span_years = round(series[-1]["year"] - series[0]["year"], 2)
         pooled = np.concatenate(rough_pool)                          # spatial scatter after removing slope + per-window signal
         roughness = float(1.4826 * np.median(np.abs(pooled - np.median(pooled))))
         conf, level, why, comps = _confidence(roughness, len(series), span_years, int(rmask.sum()))
-        out.append({"h3": hexstr, "lat": round(float(clat), 5), "lon": round(float(clon), 5),
-                    "center": [round(float(cx[0]), 2), round(float(cy[0]), 2), round(float(coef[0] - z0), 2)],
-                    "xy": [[round(float(px), 2), round(float(py), 2)] for px, py in zip(bx, by)],
-                    "n_bins": len(series), "span_years": span_years,
-                    "slope_deg": round(float(np.degrees(np.arctan(np.hypot(coef[1], coef[2])))), 3),
-                    "n_points": int(gi.size), "n_ref": int(rmask.sum()),
-                    "confidence": conf, "level": level, "why": why, "components": comps, "series": series})
+        return {"h3": hexstr, "lat": round(float(clat), 5), "lon": round(float(clon), 5),
+                "center": [round(float(cx[0]), 2), round(float(cy[0]), 2), round(float(coef[0] - z0), 2)],
+                "xy": [[round(float(px), 2), round(float(py), 2)] for px, py in zip(bx, by)],
+                "n_bins": len(series), "span_years": span_years,
+                "slope_deg": round(float(np.degrees(np.arctan(np.hypot(coef[1], coef[2])))), 3),
+                "n_points": int(gi.size), "n_ref": int(rmask.sum()),
+                "confidence": conf, "level": level, "why": why, "components": comps, "series": series}
+
+    triples = list(zip(uniq, starts, ends))
+    nw = pool_size(len(triples), cap=_CANDIDATE_WORKER_CAP, min_items=_CANDIDATE_MIN_CELLS, env="AICESAT_TS_WORKERS")
+    if nw == 1:
+        results = [_fit_cell(u, a, b) for u, a, b in triples]
+    else:                                                    # ex.map preserves input (uniq) order -> deterministic
+        with ThreadPoolExecutor(nw) as ex:
+            results = list(ex.map(lambda t: _fit_cell(*t), triples))
+    out = [c for c in results if c is not None]               # same cells, same order the serial loop appended them
 
     out.sort(key=lambda c: (c["confidence"], c["n_bins"], c["span_years"]), reverse=True)
     return {"params": params, "candidates": out[:max_candidates]}

@@ -12,6 +12,7 @@ pass t and assert a nonzero displacement.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -19,8 +20,14 @@ from pyproj import Transformer
 from scipy.spatial import cKDTree
 
 from . import scene as scene_mod
+from .access import chunk_bounds, pool_size
 
 log = logging.getLogger(__name__)
+
+# Parallelism for the per-colocation-cell plane fits (see colocate). Below this many GLAS shots the loop is
+# left serial (pool overhead would lose); AICESAT_COREG_WORKERS overrides the worker count.
+_COLOCATE_MIN_CELLS = 256
+_COLOCATE_WORKER_CAP = 8
 
 COMMON_FRAME = "ITRF2014"
 # ITRF2014-PMM, NOAM, rotation rates in arc-seconds / year (PROJ data/ITRF2014), position-vector convention.
@@ -184,31 +191,53 @@ def colocate(gx, gy, gh, px, py, ph, radius_m: float, min_photons: int = 12):
     """
     tree = cKDTree(np.column_stack([px, py]))
     idx_lists = tree.query_ball_point(np.column_stack([gx, gy]), r=radius_m)
+
+    def _fit_range(lo: int, hi: int):
+        """Fit every colocation cell in [lo, hi); returns (kept-in-order, gross_count) for this contiguous block.
+        Each cell is computed exactly as the serial loop did — only which cells a given worker handles changes."""
+        kept, gross = [], 0                              # kept: (i, dh, |slope|) in ascending i
+        for i in range(lo, hi):
+            lst = idx_lists[i]
+            if len(lst) < min_photons:
+                continue
+            lst = np.asarray(lst)
+            dx, dy, hh = px[lst] - gx[i], py[lst] - gy[i], ph[lst]
+            # principal (along-track) direction of the photon footprint
+            cov = np.cov(np.vstack([dx, dy]))
+            w, v = np.linalg.eigh(cov)
+            u = v[:, int(np.argmax(w))]
+            sdist = dx * u[0] + dy * u[1]
+            A = np.column_stack([sdist, np.ones_like(sdist)])
+            (a, c), *_ = np.linalg.lstsq(A, hh, rcond=None)
+            resid = hh - (a * sdist + c)
+            mad = np.median(np.abs(resid - np.median(resid))) or 1e-3
+            keep = np.abs(resid) < 4 * 1.4826 * mad
+            if keep.sum() >= min_photons:
+                (a, c), *_ = np.linalg.lstsq(A[keep], hh[keep], rcond=None)
+            d = c - gh[i]
+            if abs(d) > GROSS_PAIR_M:
+                gross += 1
+                continue
+            kept.append((i, d, abs(a)))  # the PCA axis sign is arbitrary, so only the slope magnitude is meaningful
+        return kept, gross
+
+    n = len(idx_lists)
+    # cKDTree colocation is done; the per-cell lstsq/eigh/cov fits are independent, so fan them across a thread pool.
+    # Threads (not processes): the heavy linear-algebra releases the GIL and the big photon arrays stay shared (no
+    # pickling). Contiguous chunks are reassembled in index order, so the output is bit-for-bit the serial result.
+    nw = pool_size(n, cap=_COLOCATE_WORKER_CAP, min_items=_COLOCATE_MIN_CELLS, env="AICESAT_COREG_WORKERS")
+    if nw == 1:
+        blocks = [_fit_range(0, n)]
+    else:
+        bounds = chunk_bounds(n, nw)
+        with ThreadPoolExecutor(len(bounds)) as ex:
+            blocks = list(ex.map(lambda b: _fit_range(*b), bounds))
+
     pairs, dh, slopes, gross = [], [], [], 0
-    for i, lst in enumerate(idx_lists):
-        if len(lst) < min_photons:
-            continue
-        lst = np.asarray(lst)
-        dx, dy, hh = px[lst] - gx[i], py[lst] - gy[i], ph[lst]
-        # principal (along-track) direction of the photon footprint
-        cov = np.cov(np.vstack([dx, dy]))
-        w, v = np.linalg.eigh(cov)
-        u = v[:, int(np.argmax(w))]
-        sdist = dx * u[0] + dy * u[1]
-        A = np.column_stack([sdist, np.ones_like(sdist)])
-        (a, c), *_ = np.linalg.lstsq(A, hh, rcond=None)
-        resid = hh - (a * sdist + c)
-        mad = np.median(np.abs(resid - np.median(resid))) or 1e-3
-        keep = np.abs(resid) < 4 * 1.4826 * mad
-        if keep.sum() >= min_photons:
-            (a, c), *_ = np.linalg.lstsq(A[keep], hh[keep], rcond=None)
-        d = c - gh[i]
-        if abs(d) > GROSS_PAIR_M:
-            gross += 1
-            continue
-        pairs.append(i)
-        dh.append(d)
-        slopes.append(abs(a))  # the PCA axis sign is arbitrary, so only the slope magnitude is meaningful
+    for kept, g in blocks:                               # blocks are in ascending-index order -> serial output order
+        gross += g
+        for i, d, s in kept:
+            pairs.append(i); dh.append(d); slopes.append(s)
     return np.asarray(pairs, dtype="i8"), np.asarray(dh, dtype="f8"), gross, np.asarray(slopes, dtype="f8")
 
 

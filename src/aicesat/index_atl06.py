@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import h3
@@ -167,7 +168,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     import duckdb
 
     from . import planner
-    from .access import RangeReader, access_url, decode_chunk
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url,
+                         decode_chunk, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
@@ -203,13 +205,17 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     # granules up front in parallel (avoids the serial ~1.7 s x N), then fetch per-granule with a warm presign.
     reader = RangeReader()
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
-    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
-    for url, rs in by_url.items():
+
+    def _fetch_granule(url) -> dict:
+        """Fetch + decode + filter one granule's chunks; returns its sub-arrays in the original within-granule order.
+        Independent per granule — the shared reader is concurrency-safe (locked stats, per-URL presign locks)."""
+        rs = by_url[url]
         ranges, keys = [], []
         for r in rs:
             for ds in ATL06_DATASETS:
                 ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
         raws = dict(zip(keys, reader.fetch(url, ranges)))   # warm presign -> just byte-range GETs
+        local = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
         for r in rs:
             seg_n = r["seg_end"] - r["seg_start"]; sdp = r["sdp_epoch"]
             dec = {ds: decode_chunk(raws[(r["beam"], r["chunk_index"], ds)], r[f"{ds}_dtype"], r[f"{ds}_filters"], 1, r[f"{ds}_mask"])[:seg_n] for ds in ATL06_DATASETS}
@@ -219,7 +225,23 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 m &= (q == 0)
             if not m.any():
                 continue
-            out["lon"].append(lon[m].astype("f8")); out["lat"].append(lat[m].astype("f8")); out["h"].append(h[m].astype("f8"))
-            out["t"].append(_atlas_epoch_years(dt[m], sdp)); out["quality"].append(q[m])
+            local["lon"].append(lon[m].astype("f8")); local["lat"].append(lat[m].astype("f8")); local["h"].append(h[m].astype("f8"))
+            local["t"].append(_atlas_epoch_years(dt[m], sdp)); local["quality"].append(q[m])
+        return local
+
+    # Each granule's fetch+decode is independent and network-I/O-bound, so run several granules concurrently (each
+    # still fetches its own ranges concurrently inside reader.fetch). Results are reassembled in the original
+    # by_url order below, so the concatenated arrays are byte-identical to the serial version.
+    urls = list(by_url)
+    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+    if nw == 1:
+        parts = [_fetch_granule(u) for u in urls]
+    else:
+        with ThreadPoolExecutor(nw) as ex:
+            parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
+    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+    for loc in parts:
+        for k in out:
+            out[k].extend(loc[k])
     arrays = {k: (np.concatenate(v) if v else np.array([])) for k, v in out.items()}
     return arrays, reader.stats.as_dict()

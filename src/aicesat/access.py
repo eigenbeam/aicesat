@@ -69,6 +69,50 @@ def coalesce(ranges: list[tuple[int, int]], max_gap: int = MAX_GAP_BYTES, max_sp
     return out
 
 
+def _env_int(name: str) -> int | None:
+    v = os.environ.get(name)
+    if not v:
+        return None
+    try:
+        return max(1, int(v))
+    except ValueError:
+        return None
+
+
+def pool_size(n_items: int, *, cap: int, min_items: int, env: str) -> int:
+    """Number of workers for an embarrassingly-parallel loop over `n_items` independent units.
+
+    Falls back to serial (returns 1) below `min_items` so a tiny box never pays pool overhead. Otherwise
+    min(cap, cpu_count, n_items); `env` (an int) overrides the default worker count (set it to 1 to force serial)."""
+    if n_items < max(2, min_items):
+        return 1
+    override = _env_int(env)
+    base = override if override is not None else min(cap, os.cpu_count() or 1)
+    return max(1, min(base, n_items))
+
+
+def chunk_bounds(n: int, k: int) -> list[tuple[int, int]]:
+    """Split range(n) into at most `k` contiguous [start, end) slices, as even as possible (order preserved).
+    Used to batch many tiny independent units into a few worker-sized jobs so per-task dispatch cost stays small."""
+    k = max(1, min(k, n))
+    base, extra = divmod(n, k)
+    out, s = [], 0
+    for i in range(k):
+        e = s + base + (1 if i < extra else 0)
+        if e > s:
+            out.append((s, e))
+        s = e
+    return out
+
+
+# Per-granule fetch fan-out (fetch_bbox across granules, in index_{atl06,glas,icessn}). Each granule's own fetch
+# already uses RangeReader's internal thread pool, so the OUTER pool is kept small: outer x inner concurrency then
+# stays within the HTTPS connection pool (pool_maxsize=32). Env AICESAT_FETCH_WORKERS overrides the outer width.
+FETCH_WORKER_CAP = 4
+FETCH_MIN_GRANULES = 3          # 1-2 granules: fetch serially (a pool would only add overhead)
+FETCH_WORKER_ENV = "AICESAT_FETCH_WORKERS"
+
+
 def in_region() -> bool:
     """True where NSIDC S3 direct access works (us-west-2): reads go straight to S3 with STS creds — no presign, no
     CloudFront hop, no egress charge. AICESAT_S3_DIRECT=1/0 forces it on/off (tests, or a non-standard region var)."""
@@ -131,9 +175,13 @@ class RangeReader:
 
     def _s3fs(self):
         if self._s3 is None:
-            import s3fs
-            c = s3_credentials()
-            self._s3 = s3fs.S3FileSystem(key=c["accessKeyId"], secret=c["secretAccessKey"], token=c["sessionToken"])
+            # Double-checked lock: under concurrent per-granule fetches the lazy build must happen once (and one
+            # thread must not observe a half-built client). Reuses self._lock; the built client is thread-safe to share.
+            with self._lock:
+                if self._s3 is None:
+                    import s3fs
+                    c = s3_credentials()
+                    self._s3 = s3fs.S3FileSystem(key=c["accessKeyId"], secret=c["secretAccessKey"], token=c["sessionToken"])
         return self._s3
 
     def _get_s3(self, s3url: str, offset: int, size: int) -> bytes:

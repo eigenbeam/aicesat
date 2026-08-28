@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import numpy as np
@@ -151,7 +152,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
     import duckdb
 
     from . import planner
-    from .access import RangeReader, access_url
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
@@ -179,11 +180,14 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
 
     reader = RangeReader()   # in-region: s3:// keys (S3-direct); else HTTPS presigned up front
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
-    out = {k: [] for k in ("lon", "lat", "h", "t")}
-    for url, u in by_url.items():
+
+    def _fetch_granule(url) -> dict:
+        """Fetch the line spans, re-split into whole lines, re-parse/filter; sub-lists in the original line order."""
+        u = by_url[url]
         merged = _merge(u["spans"])                       # disjoint, line-aligned -> every line parsed once
         blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
         t0 = np.datetime64(datetime.strptime(u["gdate"], "%Y%m%d").isoformat(), "ms")
+        local = {k: [] for k in ("lon", "lat", "h", "t")}
         for blob in blobs:
             for ln in blob.split(b"\n"):
                 p = _parse_fields(ln)
@@ -195,8 +199,22 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
                 if not (s <= lat <= n and w <= lon <= e):
                     continue
                 sec = float(ln.split(b",")[0])
-                out["lon"].append(lon); out["lat"].append(lat); out["h"].append(elev)
-                out["t"].append(t0 + np.timedelta64(int(sec * 1000), "ms"))
+                local["lon"].append(lon); local["lat"].append(lat); local["h"].append(elev)
+                local["t"].append(t0 + np.timedelta64(int(sec * 1000), "ms"))
+        return local
+
+    # Independent, I/O-bound per granule; reassemble in by_url order so the concatenated points are byte-identical.
+    urls = list(by_url)
+    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+    if nw == 1:
+        parts = [_fetch_granule(u) for u in urls]
+    else:
+        with ThreadPoolExecutor(nw) as ex:
+            parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
+    out = {k: [] for k in ("lon", "lat", "h", "t")}
+    for loc in parts:
+        for k in out:
+            out[k].extend(loc[k])
     arrays = {"lon": np.asarray(out["lon"], "f8"), "lat": np.asarray(out["lat"], "f8"),
               "h": np.asarray(out["h"], "f8"), "t": np.asarray(out["t"], "datetime64[ms]") if out["t"] else np.array([])}
     return arrays, reader.stats.as_dict()
