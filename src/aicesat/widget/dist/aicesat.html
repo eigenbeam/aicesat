@@ -10262,7 +10262,9 @@ const visible = {};   // mission key -> shown; initialised per scene (all on)
 // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before this palette.
 // Okabe-Ito blue/yellow/green (colour-blind-safe by construction): the dense ATL06 becomes a receding blue base,
 // GLAS a bright yellow, IceBridge green; ATL03 (rarely shown) a distinct vermillion.
-const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [40, 200, 120], ATL06: [40, 140, 225], ICESAT2: [213, 94, 0]};
+// Punchy trio on the (now charcoal) DEM: GLAS yellow, IceBridge vermillion, ATL06 blue — high contrast + colour-blind
+// distinct (yellow/blue is the safe axis; vermillion is Okabe-Ito's CVD-safe red). ATL03 (rare) takes green.
+const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120]};
 const colorOf = m => MISSION_COLORS[m] || (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
 
 const deckgl = new Deck({
@@ -10362,7 +10364,7 @@ function surfaceLayers() {
       const meshProps = {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
-        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [150, 162, 188, 190],
+        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [76, 84, 100, 205],   // charcoal hillshade so the mission colours pop (was light blue-grey)
         material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         updateTriggers: {getPosition: Z_EXAG},
       };

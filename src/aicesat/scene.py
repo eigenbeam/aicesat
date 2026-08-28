@@ -31,7 +31,7 @@ def _tr(crs: str) -> Transformer:
 # Per-mission point-cloud palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the
 # grey-blue DEM base surface. The scene widget mirrors these (scene.js MISSION_COLORS) so it can also recolour scenes
 # built before this palette existed.
-COLORS = {"ICESAT2": [213, 94, 0], "GLAS": [240, 228, 66], "ATL06": [40, 140, 225], "ICESSN": [40, 200, 120]}
+COLORS = {"ICESAT2": [40, 200, 120], "GLAS": [240, 228, 66], "ATL06": [40, 140, 225], "ICESSN": [230, 75, 60]}
 
 
 def local_frame(bbox) -> dict:
