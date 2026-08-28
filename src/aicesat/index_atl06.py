@@ -207,7 +207,7 @@ def _decode_chunk(raws: dict, r: dict) -> dict:
 
 
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
-               force: bool = False, clip_cells: bool = False, polygon=None) -> tuple[dict, dict]:
+               force: bool = False, clip_cells: bool = False, polygon=None, on_granule=None) -> tuple[dict, dict]:
     """Lake-first index-driven ATL06 fetch (mirrors the ATL03 planner). Only the chunks whose wanted cells are NOT yet
     materialized are byte-range fetched from NASA — the missing granules fetched concurrently (integration's per-granule
     pool + in-region S3-direct / presigned CloudFront via access_url). Each fetched chunk's FULL pre-mask points are
@@ -219,8 +219,16 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     `clip_cells` (opt-in) + `polygon`: address (and read back) by the H3 cells the selection actually touches instead of
     the rectangular bounding bbox. When True the read keeps points by cell-membership at res `res` (query_points drops
     the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
-    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour."""
-    from . import lake
+    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour.
+
+    `on_granule` (opt-in): a callback for per-granule progressive streaming on a cache MISS. As each fetched granule's
+    chunks are decoded, its DISPLAY points — the exact `query_points` predicate applied to that granule's freshly
+    decoded points (h3_cell in the wanted cells; + the rectangular bbox unless `clip_cells`; + quality==0 when
+    `quality_zero`) — are emitted ONCE as {'lon','lat','h','t','granule'}. The predicate match makes each emission a
+    strict SUBSET of the final authoritative read, never a superset, so the streamed preview never shrinks at finalize.
+    Fires only for `todo` (cache-miss) granules. When None (the default) NOTHING extra is computed and the path is
+    byte-for-byte the pre-existing behaviour."""
+    from . import lake, planner
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
@@ -228,6 +236,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
+    want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8") if on_granule is not None else None
     have = set() if force else lake.ingested_chunk_cells(MISSION, names)
     chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
     for r in rows:
@@ -245,6 +254,21 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
+        def _display(mats: dict) -> dict:
+            """The query_points-predicate SUBSET of one chunk's valid points, for on_granule streaming: cell-membership
+            in the wanted set (query_points always applies it), + the rectangular bbox unless clip_cells, + quality==0
+            when quality_zero — so the emitted preview is never a superset of the final authoritative read."""
+            lon, lat = mats["lon"], mats["lat"]
+            if lon.size == 0:
+                return {"lon": lon, "lat": lat, "h": mats["h"], "t": mats["t"]}
+            keep = np.isin(planner._cells_vectorized(lat, lon, res), want_arr)
+            if not clip_cells:
+                w, s, e, n = bbox
+                keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
+            if quality_zero:
+                keep &= (mats["quality"] == 0)
+            return {"lon": lon[keep], "lat": lat[keep], "h": mats["h"][keep], "t": mats["t"][keep]}
+
         def _ingest_granule(url) -> dict:
             """Fetch + decode + materialise one granule's missing chunks to the lake; return its (granule,beam)->{chunk:
             cells} map. Independent per granule; Parquet writes go to distinct files, so the pool is write-safe. The
@@ -256,6 +280,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                     ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
             raws = dict(zip(keys, reader.fetch(url, ranges)))
             local: dict[tuple[str, str], dict] = {}
+            stream: dict[str, dict] = {}                  # granule -> accumulated display points (streaming only)
             for r in rs:
                 dec = _decode_chunk(raws, r)
                 lat, lon, h, dt, q = dec["latitude"], dec["longitude"], dec["h_li"], dec["delta_time"], dec["atl06_quality_summary"]
@@ -267,6 +292,13 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 # re-fetched forever; plus any extra cell the chunk's valid points materialised (overlap benefit).
                 k = (r["granule"], r["beam"], r["chunk_index"])
                 local.setdefault((r["granule"], r["beam"]), {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])
+                if on_granule is not None:
+                    d = _display(mats)
+                    g = stream.setdefault(r["granule"], {"lon": [], "lat": [], "h": [], "t": []})
+                    for kk in g:
+                        g[kk].append(d[kk])
+            for g, dd in stream.items():                  # emit each granule's accumulated display points ONCE
+                on_granule({"granule": g, **{kk: np.concatenate(v) for kk, v in dd.items()}})
             return local
 
         urls = list(by_url)

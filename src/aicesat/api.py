@@ -202,20 +202,22 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
         if st.get("evicted_for_limit"):
             log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
 
-    # --- pure extract workers: run concurrently, touch no shared/doc state, return (arrays, meta, cache_key) --------
+    # --- pure extract workers: run concurrently, touch no shared/doc state, return (arrays, meta, cache_key). The
+    #     index missions thread an on_granule callback (defined below, once `doc`/frame exist) so a cache-MISS build
+    #     streams each satellite pass as it lands; ATL03 has no per-granule stream. --------------------------------
     def _ex_glas():
         from . import glas
-        a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly)
+        a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly, on_granule=_on_granule("GLAS"))
         return a, m, m["cache_key"]
 
     def _ex_icessn():
         from . import icessn
-        a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly)
+        a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly, on_granule=_on_granule("ICESSN"))
         return a, m, m["cache_key"]
 
     def _ex_atl06():
         from . import atl06
-        a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly)
+        a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly, on_granule=_on_granule("ATL06"))
         return a, m, m["cache_key"]
 
     def _ex_atl03():
@@ -268,6 +270,41 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
             frame = doc["frame"]
             extent = scene.bbox_extent(frame)        # computed once here (the shared _tr transformer is build-thread only)
 
+            # --- per-granule progressive streaming (cache-miss builds only) -------------------------------------------
+            # An index mission's fetch_bbox calls on_granule ONCE per satellite pass as its chunks land, from the
+            # concurrent granule pool (a NON-build thread). We bake those partials into the doc so the widget's poll
+            # paints a growing cloud. Every doc mutation + save that can now race — these callbacks, the DEM z0/surface
+            # block, and each integrator (add_series) — is serialised by `stream_lock`, because cache.save_scene writes
+            # a single per-PID temp file and json.dumps(doc) must never see the doc mutate mid-serialisation.
+            stream_lock = threading.Lock()
+            stream_pending: dict[str, list] = {}     # mission -> partials buffered before z0 is known (baking needs z0)
+            finalized: set[str] = set()              # missions whose authoritative add_series has replaced the preview
+
+            def _flush_pending_locked():
+                """Append every buffered partial now that z0 is known. Caller holds stream_lock; does not save."""
+                for mission, batches in stream_pending.items():
+                    if mission in finalized:
+                        batches.clear(); continue
+                    for pts in batches:
+                        scene.append_partial(doc, mission, pts)
+                    batches.clear()
+
+            def _on_granule(mission):
+                def cb(pts):
+                    if poly is not None and pts["lon"].size:   # trim to the exact drawn shape, like the final read does
+                        keep = geom.points_in_polygon(pts["lon"], pts["lat"], poly)
+                        pts = {**pts, "lon": pts["lon"][keep], "lat": pts["lat"][keep],
+                               "h": pts["h"][keep], "t": pts["t"][keep]}
+                    with stream_lock:
+                        if mission in finalized:               # authoritative series already in place: drop the preview
+                            return
+                        if doc.get("z0") is None:              # no z0 yet: buffer; the DEM/first collection flushes it
+                            stream_pending.setdefault(mission, []).append(pts); return
+                        _flush_pending_locked()                # drain anything buffered before z0, then this granule
+                        scene.append_partial(doc, mission, pts)
+                        cache.save_scene(sid, doc)
+                return cb
+
             def _prefetch_imagery():                 # warm the imagery JPEG cache; add_imagery() below then cache-hits
                 from . import imagery
                 imagery.build(frame, extent, 4096, source=imagery_source)   # width matches scene.add_imagery's default
@@ -295,27 +332,34 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                     if dem_raw and dem_raw.get("z"):
                         zv = np.asarray(dem_raw["z"], dtype="f8"); zv = zv[np.isfinite(zv)]
                         if zv.size:
-                            doc["z0"] = float(np.median(zv)); log_fn(f"z0 from DEM: {doc['z0']:.1f} m ellipsoidal")
-                            scene.set_surface(doc)                 # attach the DEM mesh NOW -> terrain paints first
+                            with stream_lock:                      # z0 gates baking; set it, paint terrain, then drain
+                                doc["z0"] = float(np.median(zv))    # any partials that streamed before the DEM resolved
+                                scene.set_surface(doc)              # attach the DEM mesh NOW -> terrain paints first
+                                _flush_pending_locked()
+                                cache.save_scene(sid, doc)
+                            log_fn(f"z0 from DEM: {doc['z0']:.1f} m ellipsoidal")
                             log_fn("surface: DEM base surface")
-                            cache.save_scene(sid, doc)
                 except Exception as e:
                     log.info("DEM z0/surface unavailable; z0 will come from the first collection to arrive: %s", e)
 
                 # Integrate each collection AS IT COMPLETES (not in priority order): the fastest paints first so the
                 # scene streams. z0 is already set from the DEM above, so add_series just uses it (no collection sets
                 # it unless the DEM was absent). Each integrated series is persisted immediately -> paintable mid-build.
-                leg_by_fut = {cfuts[leg[0]]: (leg[4], leg[3]) for leg in enabled}   # future -> (display, integrator)
+                leg_by_fut = {cfuts[leg[0]]: (leg[0], leg[4], leg[3]) for leg in enabled}   # future -> (mission, display, integrator)
                 for fut in as_completed(leg_by_fut):
-                    disp, integrator = leg_by_fut[fut]
+                    mkey, disp, integrator = leg_by_fut[fut]
                     try:
                         a, m, ck = fut.result()
-                        integrator(a, m, ck)
+                        with stream_lock:            # serialise vs still-streaming granules of the OTHER missions
+                            integrator(a, m, ck)     # add_series over the authoritative arrays REPLACES the preview
+                            finalized.add(mkey); stream_pending.pop(mkey, None)
+                            if doc.get("z0") is not None:
+                                _flush_pending_locked()   # z0 may have just been set here (no-DEM case): drain buffers
+                            registry_upsert(sid, series=sorted(doc["series"]))
+                            cache.save_scene(sid, doc)    # progressive persistence: this series is now paintable
                     except Exception as e:
                         log.warning("%s unavailable: %s", disp, e); log_fn(f"{disp} unavailable: {e}")
                         continue
-                    registry_upsert(sid, series=sorted(doc["series"]))
-                    cache.save_scene(sid, doc)       # progressive persistence: this series is now paintable
 
                 if not doc["series"]:
                     raise RuntimeError("no collection returned data over this area (check your selection and the token)")

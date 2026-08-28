@@ -247,3 +247,37 @@ def test_legs_overlap_in_time(monkeypatch, tmp_path):
     # 6 independent legs (4 collections + DEM + imagery) each sleep `delay`. Serial would be >= 6*delay = 1.5 s;
     # concurrent should finish in a small multiple of a single delay. Generous bound proves overlap without flakiness.
     assert elapsed < 3 * delay, f"legs did not overlap: {elapsed:.2f}s for 6x{delay}s legs"
+
+
+def test_per_granule_stream_buffers_before_z0_then_finalize_reconciles(monkeypatch, tmp_path):
+    """The end-to-end streaming path: an index mission emits a per-granule PREVIEW via on_granule while the DEM (which
+    owns z0) is still resolving. The preview must be BUFFERED (baking is z0-relative) and flushed once z0 lands, then
+    the authoritative add_series must REPLACE it. A slow DEM makes the pre-z0 buffer path deterministic."""
+    _install(monkeypatch, tmp_path, delay=0.05)          # DEM sleeps -> z0 is not set when ATL06 streams
+    from aicesat import atl06, scene
+
+    preview = {k: v[:10] for k, v in ATL06_A.items()}    # a 10-point subset stands in for the first pass's display pts
+
+    def _atl06_stream(*a, **k):                          # streams a partial, THEN returns the full authoritative arrays
+        cb = k.get("on_granule")
+        if cb:
+            cb({"granule": "ATL06_pass.h5", "lon": preview["lon"], "lat": preview["lat"], "h": preview["h"],
+                "t": np.zeros(preview["lon"].size, "datetime64[ms]")})
+        return dict(ATL06_A), {"cache_key": "ATL06-key", "n": int(ATL06_A["h"].size)}
+    monkeypatch.setattr(atl06, "extract", _atl06_stream)
+
+    calls, z0_at_call = [], []
+    orig = scene.append_partial
+    def _spy(doc, mission, pts):
+        calls.append((mission, np.asarray(pts["lon"]).size)); z0_at_call.append(doc.get("z0"))
+        return orig(doc, mission, pts)
+    monkeypatch.setattr(scene, "append_partial", _spy)
+
+    doc = api.build_scene(bbox=BBOX, with_glas=False, with_icessn=False, with_atl06=True, with_atl03=False)
+
+    assert ("ATL06", 10) in calls                        # the preview was baked into the doc (buffered then flushed)
+    assert all(z is not None for z in z0_at_call)        # never baked before z0 was known (no invented z0)
+    # finalize reconciled: the FINAL series is the authoritative 20-point set, not the 10-point preview
+    assert doc["series"]["ATL06"]["n"] == ATL06_A["h"].size
+    assert doc["series"]["ATL06"]["meta"].get("partial") is not True
+    assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))   # z0 from the DEM, as always

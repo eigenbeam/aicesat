@@ -88,12 +88,14 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
+def _extract_via_index(bbox, window, polygon, k, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_glas
     # clip_cells: build from the H3 cells the selection actually touches (a box gains a hex-aligned fringe; a polygon no
     # longer expands to its bounding rectangle). The precise points_in_polygon below still trims a polygon to its exact
     # shape; the win is that only the touched hexes are addressed/materialized, not the whole bbox rectangle.
-    arr, st = index_glas.fetch_bbox(bbox, window=window, res=index_glas.GLAS_RES, polygon=polygon, clip_cells=True)
+    # on_granule (opt-in): threaded through for per-granule progressive streaming on a cache-miss build.
+    arr, st = index_glas.fetch_bbox(bbox, window=window, res=index_glas.GLAS_RES, polygon=polygon, clip_cells=True,
+                                    on_granule=on_granule)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
@@ -116,7 +118,7 @@ def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray],
     return arrays, meta
 
 
-def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+def extract(bbox, window, max_granules: int = 400, polygon=None, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("glas", coverage.GLAS_VERSION, bbox, window, max_granules, MAX_SAT_FLAG, polygon)
     hit = cache.load(k)
     if hit:
@@ -124,7 +126,7 @@ def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[s
         hit[1]["cache_key"] = k
         return hit
     if _index_covers(bbox):   # discovery path: byte-range the indexed chunks, no CMR + no whole-granule download
-        return _extract_via_index(bbox, window, polygon, k)
+        return _extract_via_index(bbox, window, polygon, k, on_granule=on_granule)
     import earthaccess
 
     auth.login()

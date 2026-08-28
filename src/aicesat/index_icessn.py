@@ -201,7 +201,7 @@ def _parse_span_points(blobs, gdate: str, res: int) -> dict:
 
 
 def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, clip_cells: bool = False,
-               polygon=None) -> tuple[dict, dict]:
+               polygon=None, on_granule=None) -> tuple[dict, dict]:
     """Lake-first index-driven ILATM2 fetch. The cache unit is the (granule, cell) line span; only the spans for cells
     not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
     S3-direct / presigned via access_url). Each fetched granule's spans are parsed to their FULL usable platelets (every
@@ -212,7 +212,14 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
     `clip_cells` (opt-in) + `polygon`: address (and read back) by the H3 cells the selection actually touches instead of
     the rectangular bounding bbox. When True the read keeps points by cell-membership at res `res` (query_points drops
     the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
-    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour."""
+    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour.
+
+    `on_granule` (opt-in): a callback for per-granule progressive streaming on a cache MISS. As each fetched granule's
+    spans are parsed, its DISPLAY points — the parsed platelets restricted to the cells actually FETCHED for this
+    granule (mirroring write_point_chunk's only_cells, so a span's overlap into a neighbour cell is not previewed), +
+    the rectangular bbox unless `clip_cells` — are emitted ONCE as {'lon','lat','h','t','granule'}, a strict SUBSET of
+    the final authoritative read (never a superset). Fires only for `todo` (cache-miss) granules. When None (the
+    default) the path is byte-for-byte the pre-existing behaviour."""
     from . import lake
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
@@ -246,6 +253,17 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
             blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
             pts = _parse_span_points(blobs, u["gdate"], res)
             lake.write_point_chunk(MISSION, u["granule"], BEAM, CHUNK, pts, res, only_cells=u["cells"])
+            if on_granule is not None:                     # display SUBSET: exactly the platelets written to the lake
+                lon, lat = pts["lon"], pts["lat"]          # (cells fetched for this granule) that query_points returns
+                if lon.size:
+                    keep = np.isin(pts["cell"], np.asarray(sorted(u["cells"]), dtype="u8"))
+                    if not clip_cells:
+                        w, s, e, n = bbox
+                        keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
+                else:
+                    keep = np.array([], bool)
+                on_granule({"granule": u["granule"], "lon": lon[keep], "lat": lat[keep],
+                            "h": pts["h"][keep], "t": pts["t"][keep]})
             # mark every fetched cell (even one whose platelets all fail RMS -> no file) so it is never re-fetched
             return {"granule": u["granule"], "cells": sorted(u["cells"])}
 
