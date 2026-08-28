@@ -8,7 +8,7 @@ AICESAT.MapView = class {
     const Globe = GlobeView || _GlobeView;
     this.opts = Object.assign({grid: false, gridStats: true, selectCells: false, draw: true, footprints: true}, opts);
     this.container = container;
-    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, regions: {}, cells: null, indexCells: null, cellStats: {},
+    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, cells: null, indexCells: null, cellStats: {},
                   scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
@@ -204,9 +204,6 @@ AICESAT.MapView = class {
     // (sub-granule index coverage is drawn by colouring the grid itself in gridLayers — no separate layer)
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
-    const regs = Object.entries(s.regions).map(([k, v]) => ({name: k, poly: U.areaRing({bbox: v.bbox}), bbox: v.bbox}));
-    layers.push(new PolygonLayer({id: 'regions', data: regs, getPolygon: d => d.poly, filled: false, stroked: true, getLineColor: [168, 130, 230, 170], lineWidthMinPixels: 1}));
-    layers.push(new TextLayer({id: 'region-labels', data: regs, getPosition: d => [(d.bbox[0] + d.bbox[2]) / 2, d.bbox[3]], getText: d => d.name, getSize: 11, getColor: [168, 130, 230, 210], getTextAnchor: 'middle', getAlignmentBaseline: 'bottom', characterSet: 'auto', background: true, getBackgroundColor: [20, 20, 26, 160]}));
     if (this.opts.footprints && s.scenes.length) {
       const col = sc => sc.status === 'ready' ? [76, 175, 125, 230] : sc.status === 'loading' ? [224, 160, 48, 230] : [217, 83, 79, 230];
       const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
@@ -228,7 +225,7 @@ AICESAT.MapView = class {
     this.deck.setProps({layers});
   }
   async refreshData(api, mission = 'ICESAT2') {
-    const [regions, cells, scenes] = await Promise.all([api.regions().catch(() => ({})), api.lakeCells(this.opts.gridStats, mission).catch(() => null), api.scenes().catch(() => [])]);
-    Object.assign(this.state, {regions, cells, scenes}); this.render();
+    const [cells, scenes] = await Promise.all([api.lakeCells(this.opts.gridStats, mission).catch(() => null), api.scenes().catch(() => [])]);
+    Object.assign(this.state, {cells, scenes}); this.render();
   }
 };

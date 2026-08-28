@@ -229,6 +229,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, api.lake_evict(self._body()["cells"]))
         except Exception as e:
             return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/scene/") and self.path.split("?")[0].endswith("/imagery"):
+            sid = self.path.split("/")[3].split("?")[0]
+            try:
+                return self._json(200, api.scene_add_imagery(sid, self._body().get("source", "s2")))
+            except KeyError:
+                return self._json(404, {"error": "no such scene"})
+            except Exception as e:  # surfaced to the widget imagery status line
+                log.exception("imagery re-fetch failed")
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if self.path.startswith("/api/coregister/"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
@@ -415,6 +424,11 @@ def ui_index_status(collection: str = "ATL06") -> dict:
 @apps.tool(name="ui_coregister", **_APP)
 def ui_coregister(scene_id: str) -> dict:
     return api.coregister(scene_id)
+
+
+@apps.tool(name="ui_scene_imagery", **_APP)
+def ui_scene_imagery(scene_id: str, source: str = "s2") -> dict:
+    return api.scene_add_imagery(scene_id, source)
 
 
 @apps.tool(name="ui_candidates", **_APP)

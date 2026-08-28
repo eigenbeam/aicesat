@@ -14,7 +14,8 @@ window.AICESAT = window.AICESAT || {};
     indexStatus: collection => j('/api/index_status?collection=' + (collection || 'ATL06')),
     sceneDoc: id => j(`/api/scene/${id}`),
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
-    imageryUrl: id => `/api/scene/${id}/imagery.jpg`,
+    imageryUrl: (id, v) => `/api/scene/${id}/imagery.jpg` + (v ? `?v=${v}` : ''),   // v busts the texture cache after a re-fetch
+    sceneImagery: (id, source) => post(`/api/scene/${id}/imagery`, {source}),       // re-fetch imagery with a new source
     coverage: a => j('/api/coverage?' + (a.bbox ? `bbox=${encodeURIComponent(JSON.stringify(a.bbox))}` : `polygon=${encodeURIComponent(JSON.stringify(a.polygon))}`)),
     extract: body => post('/api/extract', body),
     job: id => j(`/api/job/${id}`),
@@ -77,7 +78,13 @@ window.AICESAT = window.AICESAT || {};
         return doc;
       },
       scenePart: (id, part, chunk = 0) => call('ui_scene_part', {scene_id: id, part, chunk}),
-      imageryUrl: id => imagery.get(id) || null,
+      imageryUrl: id => imagery.get(id) || null,   // returns the (re-fetched) data URL; the string changes when bytes change
+      sceneImagery: async (id, source) => {        // re-fetch imagery server-side, then refresh the cached data URL
+        const meta = await call('ui_scene_imagery', {scene_id: id, source});
+        const b64 = await chunkedBytes(id, 'imagery');
+        if (b64) imagery.set(id, 'data:image/jpeg;base64,' + b64);
+        return meta;
+      },
       coverage: a => call('ui_coverage', a),
       extract: body => call('ui_extract', body),
       job: id => call('ui_job', {job_id: id}),

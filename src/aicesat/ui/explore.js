@@ -8,15 +8,12 @@ AICESAT.ExploreView = class {
     this._covSeq = 0;        // guards against a stale coverage response overwriting a newer one
     root.innerHTML = `
       <div class="map" id="exMap"></div>
-      <div id="mapLegend" class="map-legend"><b>Map key</b><span><i class="swf" style="--c:#378ADD"></i>data &amp; selection</span><span><i class="swo" style="--c:#4caf7d"></i>scene ready</span><span><i class="swo" style="--c:#E0A030"></i>building</span><span><i class="swo" style="--c:#d9534f"></i>error</span><span><i class="swo" style="--c:#a882e6"></i>suggested region</span></div>
+      <div id="mapLegend" class="map-legend"><b>Map key</b><span><i class="swf" style="--c:#378ADD"></i>data &amp; selection</span><span><i class="swo" style="--c:#4caf7d"></i>scene ready</span><span><i class="swo" style="--c:#E0A030"></i>building</span><span><i class="swo" style="--c:#d9534f"></i>error</span></div>
       <div class="panel" id="exTools" data-title="build a scene" style="top:12px;left:12px;width:344px">
         <div class="step">
           <div class="step-head"><span class="step-n">1</span> Pick an area</div>
-          <div class="seg" id="exMode"><button data-mode="pan" class="on">Navigate</button><button data-mode="box">Box</button><button data-mode="poly">Polygon</button></div>
+          <div class="seg-row"><div class="seg" id="exMode"><button data-mode="pan" class="on">Navigate</button><button data-mode="box">Box</button><button data-mode="poly">Polygon</button></div><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button></div>
           <div class="small step-hint">Navigate = drag to spin, scroll to zoom. Box = drag a rectangle. Polygon = click points, then Close.</div>
-          <div class="row"><button id="exClose" hidden>Close polygon</button><button id="exClear">Clear</button>
-            <select id="exRegion"><option value="">jump to region…</option></select></div>
-          <div id="exCoords" class="area-readout small">no area selected</div>
           <details class="small"><summary>enter exact coordinates</summary>
             <div class="bbox-entry">W<input id="bbW" type="number" step="0.5"> S<input id="bbS" type="number" step="0.5"> E<input id="bbE" type="number" step="0.5"> N<input id="bbN" type="number" step="0.5"><button id="bbSet">Set</button></div>
             <div class="small step-hint">Also works for polar caps (set N or S near ±90).</div></details>
@@ -28,30 +25,17 @@ AICESAT.ExploreView = class {
         </div>
         <div class="step">
           <div class="step-head"><span class="step-n">3</span> Build the scene</div>
-          <div class="gran-row">
-            <label><input type="radio" name="gran" value="all" checked> all granules</label>
-            <label><input type="radio" name="gran" value="limit"> limit <input id="exMaxG" type="number" value="12" min="1" max="500" disabled></label>
-          </div>
-          <div class="img-row"><label><input type="checkbox" id="exImg" checked> Satellite imagery</label>
-            <select id="exImgSrc" title="Imagery source"><option value="s2">Sentinel-2 (in-region)</option><option value="eox">EOX cloudless</option></select></div>
+          <div class="small step-hint">Uses all granules over your area. Satellite imagery is built in — toggle it and choose the source in the scene view.</div>
           <div class="row"><button id="exBuild" disabled>Build scene</button></div>
         </div>
       </div>
       <div class="panel" id="exScenes" data-title="scenes" style="top:12px;right:12px;width:308px"><h2>Scenes</h2><div class="list" id="exSceneList"></div></div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
-    const fmtArea = a => {
-      if (a && a.bbox) { const [w, s, e, n] = a.bbox;
-        const la = v => `${Math.abs(v).toFixed(2)}°${v >= 0 ? 'N' : 'S'}`, lo = v => `${Math.abs(v).toFixed(2)}°${v >= 0 ? 'E' : 'W'}`;
-        const hkm = (n - s) * 111, wkm = (e - w) * 111 * Math.cos((s + n) / 2 * Math.PI / 180);
-        return `${la(s)}–${la(n)}, ${lo(w)}–${lo(e)}  ·  ~${Math.abs(wkm).toFixed(0)}×${Math.abs(hkm).toFixed(0)} km`; }
-      return a && a.polygon ? `polygon · ${a.polygon.length} vertices` : '';
-    };
     const syncBboxFields = a => { if (a && a.bbox) { const [w, s, e, n] = a.bbox; $('bbW').value = w; $('bbS').value = s; $('bbE').value = e; $('bbN').value = n; } };
 
     this.map = new AICESAT.MapView($('exMap'), {grid: true, selectCells: false, draw: true, footprints: true});
     this.map.onSelect = a => {
-      $('exCoords').textContent = a ? fmtArea(a) : (this.map.state.poly.length ? `polygon: ${this.map.state.poly.length} vertices (need 3, then Close)` : 'no area selected');
       syncBboxFields(a);
       $('exBuild').disabled = !a;
       $('exClose').hidden = !(this.map.state.mode === 'poly' && !this.map.state.polyClosed && this.map.state.poly.length >= 3);
@@ -66,24 +50,17 @@ AICESAT.ExploreView = class {
     $('exClose').onclick = () => this.map.closePolygon();
     root.addEventListener('keydown', e => { if (e.key === 'Enter' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName || '')) this.map.closePolygon(); });
     $('exClear').onclick = () => { this.map.clear(); this.scheduleCoverage(); };
-    $('exRegion').onchange = e => { const r = this.map.state.regions[e.target.value]; if (!r) return; this.map.setArea({bbox: r.bbox}); this.map.flyTo(r.bbox); };
     // numeric bbox entry (precise; also handles polar caps)
     $('bbSet').onclick = () => {
       const w = +$('bbW').value, s = +$('bbS').value, e = +$('bbE').value, n = +$('bbN').value;
-      if ([w, s, e, n].some(v => Number.isNaN(v))) { $('exCoords').textContent = 'enter all four: W, S, E, N'; return; }
+      if ([w, s, e, n].some(v => Number.isNaN(v))) { AICESAT.showError('enter all four coordinates: W, S, E, N'); return; }
       const bbox = [Math.min(w, e), Math.min(s, n), Math.max(w, e), Math.max(s, n)];
       this.map.setArea({bbox}); this.map.flyTo(bbox);
     };
-    // granules: all (unlimited) vs limit N
-    root.querySelectorAll('input[name="gran"]').forEach(r => r.onchange = () => { $('exMaxG').disabled = root.querySelector('input[name="gran"]:checked').value !== 'limit'; });
-    $('exImg').onchange = () => { $('exImgSrc').disabled = !$('exImg').checked; };   // imagery off -> disable source picker
 
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColList').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
-      const limited = root.querySelector('input[name="gran"]:checked').value === 'limit';
-      const body = {...a, max_granules: limited ? +$('exMaxG').value : 100000, ...flags,
-        with_coreg: !!(flags.with_atl03 && flags.with_glas),
-        with_imagery: $('exImg').checked, imagery_source: $('exImgSrc').value,
+      const body = {...a, max_granules: 100000, ...flags,
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
       try {
@@ -95,8 +72,7 @@ AICESAT.ExploreView = class {
 
     AICESAT.util.drawer(root, null);
     { const G = U.GLOSSARY;   // opt-in "?" help on the jargon
-      const ch = $('exCovHint'); if (ch) ch.appendChild(U.help(G.coverage));
-      const mg = $('exMaxG') && $('exMaxG').closest('label'); if (mg) mg.appendChild(U.help(G.granules)); }
+      const ch = $('exCovHint'); if (ch) ch.appendChild(U.help(G.coverage)); }
     this.loadCollections();
     this.refresh(); this.timer = setInterval(() => this.refresh(true), 5000);
   }
@@ -137,7 +113,7 @@ AICESAT.ExploreView = class {
   async loadCollections() {
     try {
       const cols = await this.api.collections();
-      this.$('exColList').innerHTML = cols.map(c =>
+      this.$('exColList').innerHTML = cols.filter(c => c.flag !== 'with_atl03').map(c =>   // ATL03 photons: server-side only, not UI-selectable
         `<label class="col-row" title="${c.product} v${c.version} · ${c.epoch}"><input type="checkbox" data-flag="${c.flag}" ${c.default ? 'checked' : ''}><span class="col-name">${c.label}</span><span class="col-cov" data-key="${c.key}"></span></label>`).join('');
       this.scheduleCoverage();   // fill counts if an area is already set
     } catch (e) { this.$('exColList').textContent = 'collections unavailable'; }
@@ -207,13 +183,6 @@ AICESAT.ExploreView = class {
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;
     await this.map.refreshData(this.api);
-    // populate "jump to region…" once regions have loaded (humanize the snake_case keys; note -> tooltip)
-    const rsel = this.$('exRegion');
-    if (rsel && rsel.options.length <= 1) {
-      const regs = this.map.state.regions || {};
-      const human = k => k.replace(/_/g, ' ').replace(/\b(egig|negis|ne|nw|se|sw|k)\b/gi, m => m.toUpperCase()).replace(/\b\w/g, c => c.toUpperCase());
-      Object.entries(regs).forEach(([k, v]) => { const o = document.createElement('option'); o.value = k; o.textContent = human(k); if (v && v.note) o.title = v.note; rsel.appendChild(o); });
-    }
     this.renderScenes();
   }
   show() { this.root.classList.add('on'); this.refresh(); }

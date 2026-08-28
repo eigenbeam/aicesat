@@ -28,7 +28,10 @@ def frame_crs(lat: float, lon: float) -> str:
 def _tr(crs: str) -> Transformer:
     return Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 
-COLORS = {"ICESAT2": [55, 138, 221], "GLAS": [216, 90, 48], "ATL06": [80, 200, 160], "ICESSN": [190, 120, 210]}
+# Per-mission point-cloud palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the
+# grey-blue DEM base surface. The scene widget mirrors these (scene.js MISSION_COLORS) so it can also recolour scenes
+# built before this palette existed.
+COLORS = {"ICESAT2": [86, 180, 233], "GLAS": [230, 159, 0], "ATL06": [204, 121, 167], "ICESSN": [0, 158, 115]}
 
 
 def local_frame(bbox) -> dict:
