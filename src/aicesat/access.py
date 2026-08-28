@@ -78,6 +78,7 @@ def in_region() -> bool:
     return "us-west-2" in os.environ.get("AWS_REGION", "") or "us-west-2" in os.environ.get("AWS_DEFAULT_REGION", "")
 
 
+S3_REGION = "us-west-2"          # NSIDC Cumulus S3 + the STS creds are us-west-2 only (in-region == this region)
 _S3_CREDS: dict = {"v": None, "exp": 0.0}
 _S3_CRED_LOCK = threading.Lock()
 
@@ -103,8 +104,9 @@ def access_url(https_url: str, s3_url: str | None) -> str:
 
 class RangeReader:
     """Concurrent byte-range reader over Earthdata Cloud granules. Out-of-region: bearer -> 303 -> presigned CloudFront
-    HTTPS GETs. In-region (s3:// URLs): boto3 range GETs against nsidc-cumulus S3 with STS creds — no presign, no
-    egress. Wanted ranges are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
+    HTTPS GETs. In-region (s3:// URLs): direct range GETs against nsidc-cumulus S3 with STS creds — no presign, no
+    egress — via a selectable mechanism (env AICESAT_S3_FETCH; default "s3fs", see S3_FETCH_MECHANISMS). Wanted ranges
+    are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
 
     def __init__(self, threads: int | None = None, max_gap: int | None = None):
         reg = in_region()
@@ -127,7 +129,13 @@ class RangeReader:
         self._presigned: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
         self._url_locks: dict[str, threading.Lock] = {}  # one lock per granule URL: presigns for different granules overlap
-        self._s3 = None                                  # lazily-built boto3 client (in-region S3-direct)
+        self._s3 = None                                  # lazily-built s3fs filesystem (in-region S3-direct)
+        # Pluggable in-region S3 range-GET mechanism (see S3_FETCH_MECHANISMS). Default "s3fs" == the historical path;
+        # unset env => unchanged behaviour. Flip the winner in one place: export AICESAT_S3_FETCH=<name>.
+        self.s3_fetch = os.environ.get("AICESAT_S3_FETCH", "s3fs")
+        self._aio = None                                 # lazily-built aiobotocore loop+client (mechanism "aiobotocore")
+        self._boto3 = None                               # lazily-built boto3 client (mechanism "boto3")
+        self._crt = None                                 # lazily-built awscrt S3 client (mechanism "crt")
 
     def _s3fs(self):
         if self._s3 is None:
@@ -149,6 +157,74 @@ class RangeReader:
         if len(b) != size:
             raise IOError(f"s3 range GET short: got {len(b)} of {size} bytes")
         return b
+
+    # ---- pluggable in-region S3 range-GET dispatch ------------------------------------------------------------------
+    def _s3_fetch_spans(self, url: str, spans: list[tuple[int, int]], timings: list | None = None) -> list[bytes]:
+        """Fetch already-coalesced (offset, size) spans from one s3:// object via the selected mechanism.
+        Returns bytes in span order, identical across mechanisms. `timings` (if a list) collects per-GET seconds
+        where the mechanism can measure them (thread-pool ones can; the batched cat_ranges cannot)."""
+        name = getattr(self, "s3_fetch", "s3fs")
+        mech = S3_FETCH_MECHANISMS.get(name)
+        if mech is None:
+            raise ValueError(f"unknown AICESAT_S3_FETCH={name!r}; choose from {sorted(S3_FETCH_MECHANISMS)}")
+        return mech(self, url, spans, timings)
+
+    def _s3_reset(self):
+        """Drop every cached S3 client so the next call rebuilds with fresh STS creds."""
+        self._s3 = None
+        for attr in ("_aio", "_boto3", "_crt"):
+            obj = getattr(self, attr, None)
+            if obj is not None and hasattr(obj, "close"):
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+
+    def _s3_with_refresh(self, fn):
+        """Run fn(); on an expired-STS error, reset clients + refresh creds and retry once. Used by the non-baseline
+        mechanisms (the baseline's _get_s3 already self-heals per GET, so its default path is left untouched)."""
+        try:
+            return fn()
+        except Exception as e:
+            if "ExpiredToken" in str(e) or "InvalidAccessKeyId" in str(e):
+                self._s3_reset()
+                s3_credentials(refresh=True)
+                return fn()
+            raise
+
+    def _aio_client(self):
+        if self._aio is None:
+            self._aio = _AioS3(s3_credentials(), max_pool=max(self.threads, 32))
+        return self._aio
+
+    def _boto3_client(self):
+        if self._boto3 is None:
+            import boto3
+            from botocore.config import Config
+            c = s3_credentials()
+            self._boto3 = boto3.client("s3", region_name=S3_REGION,
+                                       aws_access_key_id=c["accessKeyId"], aws_secret_access_key=c["secretAccessKey"],
+                                       aws_session_token=c["sessionToken"],
+                                       config=Config(max_pool_connections=max(self.threads, 32), retries={"max_attempts": 3}))
+        return self._boto3
+
+    def _crt_client(self):
+        if self._crt is None:
+            self._crt = _CrtS3(s3_credentials())
+        return self._crt
+
+    def close(self):
+        """Release async/CRT resources (background event loop, CRT client). Safe to call more than once. The HTTPS
+        session and s3fs filesystem are GC'd normally; this only matters for mechanisms that spin their own loop."""
+        for attr in ("_aio", "_crt"):
+            obj = getattr(self, attr, None)
+            if obj is not None and hasattr(obj, "close"):
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
 
     def _getter(self, url: str, refresh: bool = False):
         """A callable (offset, size) -> bytes for one granule: S3-direct for s3:// URLs, presigned HTTPS otherwise."""
@@ -194,14 +270,22 @@ class RangeReader:
         Adjacent/near ranges are fetched as one span and sliced apart."""
         t0 = time.time()
         spans = coalesce(ranges, self.max_gap)
-        get = self._getter(url)
-        try:
-            with ThreadPoolExecutor(self.threads) as ex:
-                blobs = list(ex.map(lambda r: get(*r), spans))
-        except IOError:
-            get = self._getter(url, refresh=True)  # HTTPS presigned URL may have expired: refresh + retry (S3 self-heals in _get_s3)
-            with ThreadPoolExecutor(self.threads) as ex:
-                blobs = list(ex.map(lambda r: get(*r), spans))
+        if url.startswith("s3://"):
+            # In-region S3-direct: the mechanism (AICESAT_S3_FETCH) owns its own concurrency and cred self-heal.
+            # Default "s3fs" reproduces the historical path (cat_file per span in a thread pool) byte-for-byte.
+            try:
+                blobs = self._s3_fetch_spans(url, spans)
+            except IOError:
+                blobs = self._s3_fetch_spans(url, spans)   # mirror the single retry the HTTPS path does (rare short read)
+        else:
+            get = self._getter(url)
+            try:
+                with ThreadPoolExecutor(self.threads) as ex:
+                    blobs = list(ex.map(lambda r: get(*r), spans))
+            except IOError:
+                get = self._getter(url, refresh=True)  # HTTPS presigned URL may have expired: refresh + retry
+                with ThreadPoolExecutor(self.threads) as ex:
+                    blobs = list(ex.map(lambda r: get(*r), spans))
         out = []
         for off, size in ranges:
             for (so, ss), blob in zip(spans, blobs):
@@ -246,6 +330,255 @@ class RangeReader:
             self.stats.requests += 1
             self.stats.bytes += len(data)
         return data
+
+
+# =====================================================================================================================
+# Pluggable in-region S3 range-GET mechanisms.
+#
+# Each is an interchangeable way to fetch a set of already-coalesced (offset, size) spans from ONE s3:// object and
+# return their bytes in order, byte-identical to every other mechanism. The reader selects one by name via the env var
+# AICESAT_S3_FETCH (default "s3fs" == the historical path, so unset changes nothing). Adding/removing a mechanism is a
+# one-line edit of S3_FETCH_MECHANISMS below; flipping the production default is one env var (or one line in __init__).
+#
+#   name          concurrency model                              deps (beyond the always-present s3fs)
+#   ------------  ---------------------------------------------  -------------------------------------
+#   s3fs          cat_file per span in a ThreadPoolExecutor       (baseline; the current behaviour)
+#   s3fs_ranges   fsspec cat_ranges (batched, async internally)   —
+#   aiobotocore   async get_object gathered on one event loop     aiobotocore + botocore (installed)
+#   boto3         sync get_object in a ThreadPoolExecutor          boto3 (optional; may be absent)
+#   crt           awscrt S3 client, one ranged GET per span        awscrt (optional; EXPERIMENTAL, untested here)
+#
+# A mechanism signature is mech(reader, s3url, spans, timings) -> list[bytes]. `timings`, if a list, collects per-GET
+# seconds where the mechanism can measure them (the thread-pool and async-gather ones can; the single batched
+# cat_ranges call cannot and leaves it empty). Size mismatches raise IOError so a short/garbage read never passes.
+
+
+def _split_s3(url: str) -> tuple[str, str]:
+    p = url[5:] if url.startswith("s3://") else url
+    bucket, _, key = p.partition("/")
+    return bucket, key
+
+
+def _check_span_sizes(blobs, spans) -> list[bytes]:
+    out = list(blobs)
+    if len(out) != len(spans):
+        raise IOError(f"s3 range fetch returned {len(out)} blobs for {len(spans)} spans")
+    for b, (off, size) in zip(out, spans):
+        if isinstance(b, BaseException):
+            raise IOError(f"s3 range GET failed at offset {off}: {b!r}")
+        if len(b) != size:
+            raise IOError(f"s3 range GET short: got {len(b)} of {size} bytes at offset {off}")
+    return out
+
+
+def _mech_s3fs(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
+    """Baseline: one cat_file per span in a thread pool (byte-for-byte the historical in-region path)."""
+    if not spans:
+        return []
+
+    def one(s):
+        off, size = s
+        if timings is None:
+            return reader._get_s3(url, off, size)
+        t = time.perf_counter()
+        b = reader._get_s3(url, off, size)
+        timings.append(time.perf_counter() - t)
+        return b
+
+    with ThreadPoolExecutor(reader.threads) as ex:
+        return list(ex.map(one, spans))
+
+
+def _mech_s3fs_ranges(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
+    """fsspec/s3fs cat_ranges: hand the whole span list to one batched, internally-async call. max_gap=None so it
+    fetches exactly the spans we pass (we already coalesced). Per-GET latency is not observable (one batched call)."""
+    if not spans:
+        return []
+    fs = reader._s3fs()
+    paths = [url] * len(spans)
+    starts = [off for off, _ in spans]
+    ends = [off + size for off, size in spans]
+    out = reader._s3_with_refresh(lambda: fs.cat_ranges(paths, starts, ends, max_gap=None, on_error="raise"))
+    return _check_span_sizes(out, spans)
+
+
+def _mech_aiobotocore(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
+    """Async get_object coroutines gathered on one persistent event loop — no thread pool, pure async concurrency,
+    bounded to reader.threads for an apples-to-apples comparison with the thread-pool mechanisms."""
+    if not spans:
+        return []
+    bucket, key = _split_s3(url)
+    out = reader._s3_with_refresh(
+        lambda: reader._aio_client().get_ranges(bucket, key, spans, reader.threads, timings))
+    return _check_span_sizes(out, spans)
+
+
+def _mech_boto3(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
+    """Sync boto3 get_object per span in a thread pool. Only importable if boto3 is installed (it may not be)."""
+    if not spans:
+        return []
+    bucket, key = _split_s3(url)
+
+    def one(s):
+        off, size = s
+        t = time.perf_counter()
+        resp = reader._boto3_client().get_object(Bucket=bucket, Key=key, Range=f"bytes={off}-{off + size - 1}")
+        data = resp["Body"].read()
+        if timings is not None:
+            timings.append(time.perf_counter() - t)
+        return data
+
+    def run():
+        with ThreadPoolExecutor(reader.threads) as ex:
+            return list(ex.map(one, spans))
+
+    return _check_span_sizes(reader._s3_with_refresh(run), spans)
+
+
+def _mech_crt(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
+    """awscrt S3 client, one signed ranged GET per span. EXPERIMENTAL: awscrt is not installed in this environment,
+    so this path is untested — the benchmark isolates any failure and reports it rather than trusting its timings."""
+    if not spans:
+        return []
+    bucket, key = _split_s3(url)
+
+    def one(s):
+        off, size = s
+        t = time.perf_counter()
+        data = reader._crt_client().get_range(bucket, key, off, size)
+        if timings is not None:
+            timings.append(time.perf_counter() - t)
+        return data
+
+    def run():
+        with ThreadPoolExecutor(reader.threads) as ex:
+            return list(ex.map(one, spans))
+
+    return _check_span_sizes(reader._s3_with_refresh(run), spans)
+
+
+class _AioS3:
+    """A cached aiobotocore S3 client living on a dedicated background event loop. One per RangeReader: the client is
+    entered once and reused across every granule/rep, so the async path is not re-charged client setup on each fetch."""
+
+    def __init__(self, creds: dict, region: str = S3_REGION, max_pool: int = 32):
+        import asyncio
+        self._creds = creds
+        self.region = region
+        self.max_pool = max_pool
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, name="aicesat-aio", daemon=True)
+        self._thread.start()
+        self._client = None
+        self._client_cm = None
+
+    def _run(self):
+        import asyncio
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def _submit(self, coro):
+        import asyncio
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    async def _ensure_client(self):
+        if self._client is None:
+            import aiobotocore.session
+            from botocore.config import Config
+            sess = aiobotocore.session.AioSession()
+            self._client_cm = sess.create_client(
+                "s3", region_name=self.region,
+                aws_access_key_id=self._creds["accessKeyId"],
+                aws_secret_access_key=self._creds["secretAccessKey"],
+                aws_session_token=self._creds["sessionToken"],
+                config=Config(max_pool_connections=self.max_pool, retries={"max_attempts": 3}))
+            self._client = await self._client_cm.__aenter__()
+        return self._client
+
+    async def _get_ranges(self, bucket, key, spans, concurrency, timings):
+        import asyncio
+        client = await self._ensure_client()
+        sem = asyncio.Semaphore(concurrency)
+
+        async def one(off, size):
+            async with sem:
+                t = time.perf_counter()
+                resp = await client.get_object(Bucket=bucket, Key=key, Range=f"bytes={off}-{off + size - 1}")
+                async with resp["Body"] as body:
+                    data = await body.read()
+                if timings is not None:
+                    timings.append(time.perf_counter() - t)
+                return data
+
+        return await asyncio.gather(*(one(off, size) for off, size in spans))
+
+    def get_ranges(self, bucket, key, spans, concurrency, timings=None) -> list[bytes]:
+        return self._submit(self._get_ranges(bucket, key, spans, concurrency, timings))
+
+    def close(self):
+        if self._client_cm is not None:
+            try:
+                self._submit(self._client_cm.__aexit__(None, None, None))
+            except Exception:
+                pass
+            self._client_cm = self._client = None
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except Exception:
+            pass
+
+
+class _CrtS3:
+    """awscrt S3 client wrapper (EXPERIMENTAL, untested). S3RequestType.DEFAULT passes each request through the CRT
+    signer as a single ranged GET (no CRT-managed multipart), which is what a small-range workload wants."""
+
+    def __init__(self, creds: dict, region: str = S3_REGION):
+        from awscrt import auth, io, s3
+        self.region = region
+        self._elg = io.EventLoopGroup(1)
+        resolver = io.DefaultHostResolver(self._elg)
+        bootstrap = io.ClientBootstrap(self._elg, resolver)
+        provider = auth.AwsCredentialsProvider.new_static(
+            access_key_id=creds["accessKeyId"], secret_access_key=creds["secretAccessKey"],
+            session_token=creds["sessionToken"])
+        self._client = s3.S3Client(bootstrap=bootstrap, region=region, credential_provider=provider,
+                                   throughput_target_gbps=10.0)
+
+    def get_range(self, bucket: str, key: str, off: int, size: int) -> bytes:
+        from awscrt import http, s3
+        chunks: list[bytes] = []
+        headers = http.HttpHeaders([("Host", f"{bucket}.s3.{self.region}.amazonaws.com"),
+                                    ("Range", f"bytes={off}-{off + size - 1}")])
+        request = http.HttpRequest("GET", f"/{key}", headers)
+        req = self._client.make_request(type=s3.S3RequestType.DEFAULT, request=request,
+                                        on_body=lambda chunk, **kw: chunks.append(bytes(chunk)))
+        req.finished_future.result()   # raises on non-2xx / transport error
+        return b"".join(chunks)
+
+    def close(self):
+        self._client = None
+
+
+S3_FETCH_MECHANISMS = {
+    "s3fs": _mech_s3fs,               # default == historical path; keep FIRST so it is the obvious baseline
+    "s3fs_ranges": _mech_s3fs_ranges,
+    "aiobotocore": _mech_aiobotocore,
+    "boto3": _mech_boto3,
+    "crt": _mech_crt,
+}
+
+
+def s3_mechanism_available(name: str) -> tuple[bool, str]:
+    """(importable?, reason-if-not) for a mechanism, so the benchmark runs whatever subset the box has installed.
+    Uses find_spec (no heavy import just to probe)."""
+    import importlib.util
+    reqs = {"s3fs": ["s3fs"], "s3fs_ranges": ["s3fs"], "aiobotocore": ["aiobotocore", "botocore"],
+            "boto3": ["boto3"], "crt": ["awscrt"]}
+    mods = reqs.get(name)
+    if mods is None:
+        return False, f"unknown mechanism {name!r}"
+    missing = [m for m in mods if importlib.util.find_spec(m) is None]
+    return (False, "missing " + ", ".join(missing)) if missing else (True, "")
 
 
 def cloud_hdf5_file(url: str, s3url: str | None = None, block_size: int = 1 << 20, reader: "RangeReader | None" = None):
