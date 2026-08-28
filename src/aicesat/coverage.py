@@ -22,22 +22,35 @@ def granule_name(g) -> str:
     try:
         links = g.data_links()
         if links:
-            base = links[0].rsplit("/", 1)[-1]
-            if base.endswith(".h5") or base.endswith(".H5"):
+            base = links[0].rsplit("/", 1)[-1].split("?")[0]
+            if base.endswith((".h5", ".H5", ".csv")):
                 return base
     except Exception:
         pass
     return g["meta"]["native-id"]
 
 
+def _has_cloud_link(g) -> bool:
+    try:
+        return any("earthdatacloud" in u or "cumulus" in u for u in (g.data_links() or []))
+    except Exception:
+        return False
+
+
 def dedup_granules(granules: list) -> list:
-    """Keep one entry per .h5 file (drops CMR revision duplicates), preserving order."""
-    seen, out = set(), []
+    """Keep one entry per data file, PREFERRING the Earthdata Cloud copy. CMR lists many granules twice — a cloud
+    entry and an on-prem (n5eil01u, now retired) entry with the same filename but a different native-id — besides the
+    usual revision duplicates. Both would otherwise be built, and the on-prem copy is unreadable (connection refused)."""
+    by_name: dict[str, object] = {}
+    order: list[str] = []
     for g in granules:
         n = granule_name(g)
-        if n not in seen:
-            seen.add(n); out.append(g)
-    return out
+        if n not in by_name:
+            by_name[n] = g
+            order.append(n)
+        elif _has_cloud_link(g) and not _has_cloud_link(by_name[n]):
+            by_name[n] = g   # replace a dead on-prem copy already seen with the cloud copy
+    return [by_name[n] for n in order]
 
 
 def _granule_start(g) -> datetime | None:
