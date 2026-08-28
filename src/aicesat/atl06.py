@@ -65,6 +65,22 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
     return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
 
 
+def _index_covers(bbox) -> bool:
+    """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
+    import json
+
+    from . import index_atl06
+    mf = index_atl06._index_dir(index_atl06.ATL06_RES) / "_build.json"
+    if not mf.exists():
+        return False
+    try:
+        b = json.loads(mf.read_text()).get("bbox")
+        w, s, e, n = bbox
+        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
+    except Exception:
+        return False
+
+
 def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("atl06", coverage.ATL06_VERSION, bbox, window, max_granules, polygon)
     hit = cache.load(k)
@@ -72,46 +88,24 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
         log.info("atl06 cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
-    import earthaccess
-
-    auth.login()
-    granules = coverage.search(coverage.ATL06_SHORT_NAME, coverage.ATL06_VERSION, bbox, window)
-    if not granules:
-        raise RuntimeError(f"no ATL06 granules over {bbox} in {window}")
-    n_found = len(granules)
-    granules = coverage.sample_evenly(granules, max_granules)
-    files = earthaccess.open(granules)   # fsspec file objects; h5py reads only the chunks a small bbox touches
-    parts, prov = [], []
-    for gr, fh in zip(granules, files):
-        name = coverage.granule_name(gr)
-        t0 = time.time()
-        try:
-            with h5py.File(fh, "r") as f:
-                d = _extract_granule(f, bbox)
-        except Exception as ex:
-            log.warning("%s: ATL06 read failed: %s", name, ex)
-            continue
-        if d is None:
-            log.info("%s: no good ATL06 segments in bbox", name)
-            continue
-        d["granule_idx"] = np.full(d["lon"].size, len(prov), dtype="i2")
-        parts.append(d)
-        prov.append({"granule": name, "n": int(d["lon"].size), "seconds": round(time.time() - t0, 1)})
-        log.info("%s: %d ATL06 segments in bbox (%.1fs)", name, d["lon"].size, time.time() - t0)
-    if not parts:
-        raise RuntimeError("ATL06 granules found but no good segments in bbox")
-    arrays = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
+    # Index-only: byte-range fetch just the chunks whose H3 cell touches the bbox. The sub-granule index is
+    # always built for the area of interest first, so there is no whole-granule fallback.
+    if not _index_covers(bbox):
+        raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first (scripts/build_atl06_index.py)")
+    from . import index_atl06
+    arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES)
     if polygon is not None:
         from .geom import points_in_polygon
-        keep = points_in_polygon(arrays["lon"], arrays["lat"], polygon)
-        arrays = {key: v[keep] for key, v in arrays.items()}
-        if arrays["lon"].size == 0:
-            raise RuntimeError("no ATL06 segments inside the polygon")
+        keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
+        arr = {kk: v[keep] for kk, v in arr.items()}
+    if not arr["h"].size:
+        raise RuntimeError(f"no ATL06 segments over {bbox} in {window}")
+    arrays = {"lon": arr["lon"], "lat": arr["lat"], "h": arr["h"], "t": arr["t"]}
     meta = {"mission": "ATL06", "product": f"ATL06 v{coverage.ATL06_VERSION}", "bbox": list(bbox),
             "window": list(window), "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid",
-            "ellipsoid_correction": "none (h_li native WGS84 ellipsoid, ITRF2014; same applied corrections as ATL03)",
+            "ellipsoid_correction": "none (h_li native WGS84 ellipsoid, ITRF2014)",
             "quality_filter": "atl06_quality_summary == 0", "n": int(arrays["lon"].size),
-            "n_granules_found": n_found, "n_granules_read": len(granules), "granules": prov, "polygon": polygon}
-    meta["cache_key"] = k
+            "source": "sub-granule H3 index (byte-range)", "access": st, "polygon": polygon, "cache_key": k}
     cache.save(k, arrays, meta)
+    log.info("atl06 via index: %d segments, %d GETs, %.1f MB", arrays["lon"].size, st.get("requests", 0), st.get("bytes", 0) / 1e6)
     return arrays, meta

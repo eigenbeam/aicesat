@@ -166,40 +166,52 @@ def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.nda
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True) -> tuple[dict, dict]:
     """Index-driven ATL06 fetch: only the chunks whose cells touch the bbox are byte-range fetched and decoded —
     no whole-granule downloads. Returns (arrays, stats). `window` filters granules by their start time (YYYY-MM-DD)."""
+    import duckdb
+
     from . import planner
     from .access import RangeReader, decode_chunk
 
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no ATL06 index built at res {res} yet")
-    want_cells = set(planner.cells_for_bbox(bbox, res=res))
+    want_cells = planner.cells_for_bbox(bbox, res=res)
     w, s, e, n = bbox
-    files = sorted(d.glob("*.parquet"))
+
+    # DuckDB pushes the cell predicate into the Parquet scan, so only the (granule, beam, chunk) refs whose
+    # cell touches the bbox come back — one row per chunk, never a full read of every index file.
+    dscols = ", ".join(f"{ds}_offset, {ds}_size, {ds}_dtype, {ds}_filters, {ds}_mask" for ds in ATL06_DATASETS)
+    where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
+    if strong_only:
+        where += " AND strong"
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
-        files = [p for p in files if lo <= p.stem.split("_")[1][:8] <= hi]
+        where += f" AND substr(granule, 7, 8) BETWEEN '{lo}' AND '{hi}'"
+    con = duckdb.connect()
+    try:
+        rows = con.execute(f"SELECT DISTINCT url, sdp_epoch, beam, chunk_index, seg_start, seg_end, {dscols} "
+                           f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return {k: np.array([]) for k in ("lon", "lat", "h", "t", "quality")}, {}
+    cols = ["url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end"]
+    for ds in ATL06_DATASETS:
+        cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
+    by_url: dict[str, list] = {}
+    for r in rows:
+        rec = dict(zip(cols, r)); by_url.setdefault(rec["url"], []).append(rec)
 
     reader = RangeReader(threads=8)
     out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
-    for p in files:
-        t = pq.read_table(p)
-        d = t.to_pydict()
-        # rows (chunks) whose cell is wanted; group unique chunks per beam
-        keep_idx = [i for i, c in enumerate(d["h3_cell"]) if c in want_cells and (not strong_only or d["strong"][i])]
-        if not keep_idx:
-            continue
-        url = d["url"][0]; sdp = d["sdp_epoch"][0]
-        by_chunk: dict[tuple, int] = {}
-        for i in keep_idx:
-            by_chunk[(d["beam"][i], d["chunk_index"][i])] = i   # one representative row per (beam, chunk)
+    for url, rs in by_url.items():
         ranges, keys = [], []
-        for (beam, k), i in by_chunk.items():
+        for r in rs:
             for ds in ATL06_DATASETS:
-                ranges.append((d[f"{ds}_offset"][i], d[f"{ds}_size"][i])); keys.append((beam, k, ds))
+                ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
         raws = dict(zip(keys, reader.fetch(url, ranges)))
-        for (beam, k), i in by_chunk.items():
-            seg_n = d["seg_end"][i] - d["seg_start"][i]
-            dec = {ds: decode_chunk(raws[(beam, k, ds)], d[f"{ds}_dtype"][i], d[f"{ds}_filters"][i], 1, d[f"{ds}_mask"][i])[:seg_n] for ds in ATL06_DATASETS}
+        for r in rs:
+            seg_n = r["seg_end"] - r["seg_start"]; sdp = r["sdp_epoch"]
+            dec = {ds: decode_chunk(raws[(r["beam"], r["chunk_index"], ds)], r[f"{ds}_dtype"], r[f"{ds}_filters"], 1, r[f"{ds}_mask"])[:seg_n] for ds in ATL06_DATASETS}
             lat, lon, h, dt, q = dec["latitude"], dec["longitude"], dec["h_li"], dec["delta_time"], dec["atl06_quality_summary"]
             m = np.isfinite(h) & (h < 3.0e38) & (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
             if quality_zero:
