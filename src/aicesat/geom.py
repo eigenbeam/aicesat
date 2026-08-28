@@ -1,9 +1,22 @@
-"""Small geometry helpers: polygon bbox and vectorised point-in-polygon (ray casting), no extra dependency."""
+"""Small geometry helpers: polygon bbox, vectorised point-in-polygon (ray casting), and surface slope from a
+natively measured gradient. No extra dependency."""
 from __future__ import annotations
 
 import numpy as np
 
 Polygon = list[tuple[float, float]]  # [(lon, lat), ...], not necessarily closed
+
+
+def slope_deg_median(dzdx, dzdy) -> float | None:
+    """Median surface slope (degrees) from a two-component gradient (rise/run, i.e. tan of the slope angle).
+
+    Both products that measure slope natively deliver it this way and in these units — ATL06
+    `fit_statistics/dh_fit_dx` + `dh_fit_dy`, ILATM2 `South-to-North_Slope` + `West-to-East_Slope` — so the two
+    are directly comparable. NaNs (fill) are ignored; None when nothing is finite.
+    """
+    m = np.hypot(np.asarray(dzdx, dtype="f8"), np.asarray(dzdy, dtype="f8"))
+    m = m[np.isfinite(m)]
+    return float(np.degrees(np.arctan(np.median(m)))) if m.size else None
 
 
 def polygon_bbox(poly: Polygon) -> tuple[float, float, float, float]:

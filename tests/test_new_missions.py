@@ -22,12 +22,48 @@ def test_atl06_extract_granule_quality_and_fill(tmp_path):
         g.create_dataset("delta_time", data=[4.0e7, 4.0e7, 4.0e7, 4.0e7])
         g.create_dataset("atl06_quality_summary", data=[0, 0, 1, 0], dtype="i1")       # row2 = bad quality
         g.create_dataset("segment_id", data=[1, 2, 3, 4], dtype="i4")
+        g.create_dataset("fit_statistics/dh_fit_dx", data=[0.002, 0.0, 0.0, 3.5e38])   # row3 = fill
+        g.create_dataset("fit_statistics/dh_fit_dy", data=[-0.003, 0.0, 0.0, 0.004])
+        g.create_dataset("ground_track/seg_azimuth", data=[-169.0, 0.0, 0.0, -169.2])
     with h5py.File(p, "r") as f:
         d = atl06._extract_granule(f, (-45, 69.5, -43, 70.5))
     assert d is not None and d["h"].size == 2                     # rows 0 and 3 survive
     assert np.allclose(sorted(d["h"]), [2500.0, 2520.0])
     assert str(d["t"][0]).startswith("2019")                      # ATLAS epoch 2018 + 4e7 s ~ 2019
     assert set(d["beam"].tolist()) == {0}
+    # the natively measured slope rides along, aligned with the surviving rows
+    assert d["dh_fit_dx"].size == d["dh_fit_dy"].size == d["seg_azimuth"].size == 2
+    assert abs(d["dh_fit_dx"][0] - 0.002) < 1e-12
+    assert abs(d["dh_fit_dy"][0] - (-0.003)) < 1e-12
+    assert np.isnan(d["dh_fit_dx"][1])                            # FILL -> NaN, row still kept
+    assert abs(d["seg_azimuth"][0] - (-169.0)) < 1e-9
+
+
+def test_atl06_slope_absent_degrades_to_nan(tmp_path):
+    """A granule without the fit_statistics group must still read: no slope, not a failed extraction."""
+    p = tmp_path / "ATL06_noslope.h5"
+    with h5py.File(p, "w") as f:
+        f.create_dataset("orbit_info/sc_orient", data=[0])
+        g = f.create_group("gt1l/land_ice_segments")
+        g.create_dataset("latitude", data=[70.0, 70.1])
+        g.create_dataset("longitude", data=[-44.0, -44.0])
+        g.create_dataset("h_li", data=[2500.0, 2510.0], dtype="f4")
+        g.create_dataset("delta_time", data=[4.0e7, 4.0e7])
+        g.create_dataset("atl06_quality_summary", data=[0, 0], dtype="i1")
+        g.create_dataset("segment_id", data=[1, 2], dtype="i4")
+    with h5py.File(p, "r") as f:
+        d = atl06._extract_granule(f, (-45, 69.5, -43, 70.5))
+    assert d is not None and d["h"].size == 2
+    assert np.isnan(d["dh_fit_dx"]).all() and np.isnan(d["dh_fit_dy"]).all()
+
+
+def test_slope_deg_median_from_gradient():
+    """Both products deliver slope as a rise/run gradient, so the same reduction serves both."""
+    from aicesat import geom
+    assert geom.slope_deg_median([0.0], [0.0]) == 0.0
+    assert abs(geom.slope_deg_median([1.0], [0.0]) - 45.0) < 1e-9      # 100% grade = 45 deg
+    assert abs(geom.slope_deg_median([0.003, 0.005], [0.004, 0.0]) - np.degrees(np.arctan(0.005))) < 1e-9
+    assert geom.slope_deg_median([np.nan], [np.nan]) is None           # all fill -> no answer, not 0.0
 
 
 def test_icessn_parse_nadir_lon_and_rms(tmp_path):
@@ -43,6 +79,24 @@ def test_icessn_parse_nadir_lon_and_rms(tmp_path):
     assert d is not None and d["h"].size == 1
     assert abs(d["lon"][0] - (-45.0)) < 1e-6                       # 0..360 E normalized
     assert abs(d["h"][0] - 2500.0) < 1e-6
+    # cols 4/5 are ATM's measured SN/WE slope components, kept rather than parsed past
+    assert abs(d["sn_slope"][0] - 0.01) < 1e-12
+    assert abs(d["we_slope"][0] - 0.01) < 1e-12
+
+
+def test_icessn_slope_columns_are_not_confused_with_rms(tmp_path):
+    """Guard the column indices: SN=4, WE=5, RMS=6. Distinct values so a shifted index fails loudly."""
+    p = tmp_path / "ILATM2_20150401_140000_smooth_nadir3seg_50pt.csv"
+    p.write_text(
+        "# header\n"
+        "43200.0, 70.00, 315.0, 2500.0, -0.0026165, 0.0066448, 3.85, 558, 5, 0, 0\n"
+        "43200.5, 70.01, 315.0, 2501.0, -0.0030000, 0.0070000, 4.10, 560, 4, 0, 0\n"
+    )
+    d = icessn._parse_file(str(p), (-46, 69.5, -44, 70.5))
+    assert d is not None and d["h"].size == 2
+    assert abs(d["sn_slope"][0] - (-0.0026165)) < 1e-12
+    assert abs(d["we_slope"][0] - 0.0066448) < 1e-12
+    assert abs(d["rms_cm"][0] - 3.85) < 1e-12
     assert str(d["t"][0]).startswith("2015-04-01")                # date from the filename
 
 

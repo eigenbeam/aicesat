@@ -6,6 +6,10 @@ delay applied; ocean tide + DAC NOT applied), so the ITRF2014 plate-motion co-re
 no ellipsoid conversion is needed. Strong beams are chosen from `/orbit_info/sc_orient`. Row identity:
 (granule, beam, segment_id).
 
+Surface slope comes from the product rather than being re-derived: `fit_statistics/dh_fit_dx` (along-track) and
+`dh_fit_dy` (across-track, derived from the strong/weak beam pair, so the strong beam alone carries it), both in
+rise/run. `ground_track/seg_azimuth` gives the track heading.
+
 Granules are ~100 MB (full RGT), so we read them remotely with earthaccess.open (fsspec chunk cache) and slice the
 `land_ice_segments` of the strong beams — far cheaper than downloading whole files.
 """
@@ -17,7 +21,7 @@ import time
 import h5py
 import numpy as np
 
-from . import auth, cache, coverage
+from . import auth, cache, coverage, geom
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +37,21 @@ def _strong_beams(sc_orient) -> list[str]:
     if v == 1:
         return ["gt1r", "gt2r", "gt3r"]     # forward orientation
     return []                               # sc_orient == 2: yaw-flip transition -> skip
+
+
+def _optional(g, path: str, keep: np.ndarray) -> np.ndarray:
+    """A `land_ice_segments` sub-group variable (fit_statistics/…, ground_track/…) as f8, FILL -> NaN.
+
+    Returns all-NaN if the product layout lacks it, so an unexpected granule degrades to "no slope" rather
+    than failing the whole read — matching how `_extract_granule` already tolerates a missing beam group.
+    """
+    n = int(keep.sum())
+    try:
+        v = g[path][:][keep].astype("f8")
+    except (KeyError, TypeError, ValueError):
+        log.debug("ATL06: %s unavailable", path)
+        return np.full(n, np.nan)
+    return np.where(np.abs(v) >= FILL, np.nan, v)
 
 
 def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
@@ -59,7 +78,13 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
         parts.append({"lon": lon[keep], "lat": lat[keep], "h": h[keep].astype("f8"),
                       "t": ATLAS_EPOCH + (dt * 1000).astype("timedelta64[ms]"),
                       "segment_id": g["segment_id"][:][keep].astype("i8"),
-                      "beam": np.full(int(keep.sum()), bi, dtype="i1")})
+                      "beam": np.full(int(keep.sum()), bi, dtype="i1"),
+                      # Surface slope as the product measures it. dh_fit_dy is the across-track component,
+                      # derived from the beam pair — so it is available on the strong beam alone and needs no
+                      # re-ingest of the weak beam. seg_azimuth carries the track heading (degrees).
+                      "dh_fit_dx": _optional(g, "fit_statistics/dh_fit_dx", keep),
+                      "dh_fit_dy": _optional(g, "fit_statistics/dh_fit_dy", keep),
+                      "seg_azimuth": _optional(g, "ground_track/seg_azimuth", keep)})
     if not parts:
         return None
     return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
@@ -110,6 +135,8 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     meta = {"mission": "ATL06", "product": f"ATL06 v{coverage.ATL06_VERSION}", "bbox": list(bbox),
             "window": list(window), "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid",
             "ellipsoid_correction": "none (h_li native WGS84 ellipsoid, ITRF2014; same applied corrections as ATL03)",
+            "slope_source": "ATL06 fit_statistics/dh_fit_dx + dh_fit_dy (across-track component is beam-pair derived)",
+            "slope_deg_median": geom.slope_deg_median(arrays["dh_fit_dx"], arrays["dh_fit_dy"]),
             "quality_filter": "atl06_quality_summary == 0", "n": int(arrays["lon"].size),
             "n_granules_found": n_found, "n_granules_read": len(granules), "granules": prov, "polygon": polygon}
     meta["cache_key"] = k
