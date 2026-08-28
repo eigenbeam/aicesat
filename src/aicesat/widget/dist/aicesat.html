@@ -10676,7 +10676,7 @@ function candidateLayers() {
   if (!candidates.length) return [];
   const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], c.center[2] * Z_EXAG]), sel: i === candSel}));
   const layers = [new deck.PolygonLayer({id: 'cands', data: rings, getPolygon: d => d.poly, filled: true, stroked: true, pickable: true,
-    getFillColor: d => d.sel ? [120, 225, 255, 60] : [200, 214, 245, 32],   // brighter than before so unselected cells read clearly
+    getFillColor: d => d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24],   // faint fills only — no cyan blob on the selected hex; emphasis is the outline + leader marker
     getLineColor: d => d.sel ? [150, 235, 255, 255] : [200, 214, 245, 180],
     lineWidthUnits: 'pixels', getLineWidth: d => d.sel ? 3 : 1.8, lineWidthMinPixels: 1.5,
     onClick: info => { if (info && info.index != null && info.index >= 0) selectCand(info.index); },
@@ -10687,25 +10687,29 @@ function candidateLayers() {
   if (c && bounds) {
     // Rise above the surface by ~the local vertical relief. (Using the HORIZONTAL span here shot the marker ~6 km
     // into the sky — the x/y extent is kilometres while the relief is tens–hundreds of metres.)
-    const stickH = Math.max(bounds.maxz - bounds.minz, 40) * Z_EXAG * 0.9;
+    const span = Math.max(bounds.maxx - bounds.minx, bounds.maxy - bounds.miny) || 1000;
+    // Tall enough that the tether reads as a clear leader line: the vertical relief alone is tiny vs the km-wide scene,
+    // so scale with the horizontal span — but well short of the ~6 km "orbit" that 0.32*span produced.
+    const stickH = Math.max(span * 0.06, (bounds.maxz - bounds.minz) * Z_EXAG * 1.3);
     const base = [c.center[0], c.center[1], c.center[2] * Z_EXAG];
     const top = [c.center[0], c.center[1], c.center[2] * Z_EXAG + stickH];
     const MARK = [150, 235, 255];
-    // Leader line from the hex up to the floating label. depthTest off so the tether is ALWAYS visible (never buried
-    // in the dense point cloud); a dark halo behind it keeps it legible over any colour, and an anchor dot sits right
-    // on the hex centre so the connection reads unambiguously.
-    const stickPath = [[base, top]];
-    layers.push(new PathLayer({id: 'cand-stick-halo', data: stickPath, getPath: d => d, getColor: [8, 14, 22, 190],
-      getWidth: 6, widthUnits: 'pixels', parameters: {depthTest: false}, updateTriggers: {getPath: Z_EXAG}}));
-    layers.push(new PathLayer({id: 'cand-stick', data: stickPath, getPath: d => d, getColor: MARK, getWidth: 2.5,
-      widthUnits: 'pixels', parameters: {depthTest: false}, updateTriggers: {getPath: Z_EXAG}}));
-    layers.push(new PointCloudLayer({id: 'cand-stick-base', data: [0], getPosition: () => base, getColor: MARK,
-      pointSize: 5, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG}}));
-    layers.push(new PointCloudLayer({id: 'cand-stick-top', data: [0], getPosition: () => top, getColor: MARK,
-      pointSize: 7, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG}}));
+    // Tether hex -> label as LineLayer segments (bright core over a dark halo) — LineLayer draws a single segment
+    // reliably where a 2-point PathLayer did not. depthTest off so it's ALWAYS visible over the dense points and the
+    // terrain. A small anchor dot marks the hex; the label caps the top. No fat top dot / no filled hex (those blobbed).
+    const seg = [{s: base, t: top}];
+    layers.push(new deck.LineLayer({id: 'cand-stick-halo', data: seg, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: [8, 14, 22, 205], getWidth: 7, widthUnits: 'pixels', parameters: {depthTest: false},
+      updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}));
+    layers.push(new deck.LineLayer({id: 'cand-stick', data: seg, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: MARK, getWidth: 3, widthUnits: 'pixels', parameters: {depthTest: false},
+      updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}));
+    layers.push(new deck.ScatterplotLayer({id: 'cand-stick-anchor', data: [base], getPosition: d => d, getFillColor: MARK,
+      getRadius: 4, radiusUnits: 'pixels', radiusMinPixels: 3, radiusMaxPixels: 5, billboard: true,
+      parameters: {depthTest: false}, updateTriggers: {getPosition: Z_EXAG}}));
     layers.push(new TextLayer({id: 'cand-stick-label', data: [{position: top}], getPosition: d => d.position,
       getText: () => 'current time series', getColor: [10, 15, 24], getSize: 12, sizeUnits: 'pixels',
-      getPixelOffset: [0, -10], billboard: true, fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
+      getPixelOffset: [0, -8], billboard: true, fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
       background: true, getBackgroundColor: MARK.concat(255), backgroundPadding: [5, 3],
       getTextAnchor: 'middle', getAlignmentBaseline: 'bottom', updateTriggers: {getPosition: Z_EXAG}}));
   }
