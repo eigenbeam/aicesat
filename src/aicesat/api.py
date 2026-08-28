@@ -120,6 +120,24 @@ def _chunked_bytes(raw: bytes, chunk: int, chunk_bytes: int, mime: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- building scenes (jobs)
+def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
+    """After a build, evict LRU cells across ALL missions until the lake is under the Lake UI disk budget, protecting
+    this scene's cells. The scene touches each mission at its own H3 resolution, so the protect set is the union of the
+    area's cells at every resolution in play (res 6 for ATL03, res 5 for the index missions)."""
+    from . import index, index_atl06, index_glas, index_icessn, lake, planner
+    try:
+        protect = set()
+        for res in {index.H3_RES, index_atl06.ATL06_RES, index_glas.GLAS_RES, index_icessn.ICESSN_RES}:
+            protect |= set(planner.cells_for_bbox(bb, res=res, polygon=poly))
+        evicted = lake.enforce_global_limit(protect=protect, reason="limit (scene build)")
+        if evicted:
+            log_fn(f"storage limit: evicted {len(evicted)} cells to stay under the lake budget")
+        return evicted
+    except Exception as e:
+        log.warning("lake limit enforcement failed: %s", e)
+        return []
+
+
 def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
                 with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
                 log_fn=lambda m: None, scene_id: str | None = None) -> dict:
@@ -131,12 +149,14 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
 
-    def _mat(mission, arrays, meta):
-        try:
-            from . import lake
-            lake.write_points(mission, arrays, meta)
-        except Exception as e:
-            log.warning("%s: lake materialization failed: %s", mission, e)
+    def _log_cache(mission, meta):
+        """Surface the lake-cache effect for an index mission (fetch_bbox threads it through meta['access'])."""
+        st = meta.get("access", {}) or {}
+        if "chunks_from_nasa" in st:
+            log_fn(f"{mission}: {st['chunks_from_nasa']} chunks from NASA ({st.get('bytes', 0) / 1e6:.1f} MB, "
+                   f"{st.get('requests', 0)} GETs), {st.get('chunks_from_lake', 0)} served from the lake")
+        if st.get("evicted_for_limit"):
+            log_fn(f"storage limit: evicted {len(st['evicted_for_limit'])} cells")
 
     # --- pure extract workers: run concurrently, touch no shared/doc state, return (arrays, meta, cache_key) --------
     def _ex_glas():
@@ -162,18 +182,18 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     #     series-insertion order are byte-for-byte what the old serial loop produced. -------------------------------
     def _int_glas(a, m, ck):
         scene.add_series(doc, "GLAS", a, m, ck)
-        _mat("GLAS", a, m)
         log_fn(f"GLAS: {m['n']:,} shots across {len(m['campaigns'])} campaigns")
+        _log_cache("GLAS", m)
 
     def _int_icessn(a, m, ck):
         scene.add_series(doc, "ICESSN", a, m, ck)
-        _mat("ICESSN", a, m)
         log_fn(f"ICESSN: {m['n']:,} nadir platelets across {len(m['years'])} campaign years")
+        _log_cache("ICESSN", m)
 
     def _int_atl06(a, m, ck):
         scene.add_series(doc, "ATL06", a, m, ck)
-        _mat("ATL06", a, m)
         log_fn(f"ATL06: {m['n']:,} land-ice segments")
+        _log_cache("ATL06", m)
 
     def _int_atl03(a, m, ck):
         st = m.get("access", {})
@@ -255,6 +275,7 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                     raise RuntimeError("no collection returned data over this area (check your selection and the token)")
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
                 doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
+                _enforce_lake_limit(bb, poly, log_fn)     # once, after all legs: the one disk budget spans every mission
 
                 # surface fallback: the DEM normally set z0+surface up front; only reach here if z0 came from a
                 # collection instead (DEM gave no z0). If no DEM covers the scene, set_surface attaches nothing.
@@ -475,7 +496,7 @@ def lake_settings(max_bytes: int | None = None) -> dict:
     from . import lake
     if max_bytes is not None:
         lake.set_settings(max_bytes=int(max_bytes))
-        evicted = lake.enforce_limit()
+        evicted = lake.enforce_global_limit()   # the one budget governs every collection together
         return {**lake.get_settings(), "evicted": evicted}
     return lake.get_settings()
 
