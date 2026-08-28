@@ -162,24 +162,26 @@ def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.nda
     return base + (delta_time * 1000.0).astype("timedelta64[ms]")
 
 
-def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True) -> tuple[dict, dict]:
-    """Index-driven ATL06 fetch: only the chunks whose cells touch the bbox are byte-range fetched and decoded —
-    no whole-granule downloads. Returns (arrays, stats). `window` filters granules by their start time (YYYY-MM-DD)."""
+MISSION = "ATL06"
+_EMPTY = ("lon", "lat", "h", "t", "quality")
+
+
+def _index_rows(bbox, window, res: int, strong_only: bool) -> tuple[list[int], list[dict]]:
+    """Query the ATL06 index for the (granule, beam, chunk, cell) refs whose cell touches the bbox (+window). DuckDB
+    pushes the cell predicate into the Parquet scan. `strong_only` keeps integration's weak-beam support: False fetches
+    all six beams (the index carries a `strong` flag). Returns (want_cells, rows) — one row per (granule,beam,chunk,cell)
+    carrying that chunk's byte refs (identical across the chunk's cells)."""
     import duckdb
 
     from . import planner
-    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url,
-                         decode_chunk, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no ATL06 index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res)
-    w, s, e, n = bbox
-
-    # DuckDB pushes the cell predicate into the Parquet scan, so only the (granule, beam, chunk) refs whose
-    # cell touches the bbox come back — one row per chunk, never a full read of every index file.
-    dscols = ", ".join(f"{ds}_offset, {ds}_size, {ds}_dtype, {ds}_filters, {ds}_mask" for ds in ATL06_DATASETS)
+    cols = ["granule", "url", "s3url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end", "h3_cell"]
+    for ds in ATL06_DATASETS:
+        cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
     if strong_only:
         where += " AND strong"
@@ -188,37 +190,131 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         where += f" AND substr(granule, 7, 8) BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, s3url, sdp_epoch, beam, chunk_index, seg_start, seg_end, {dscols} "
-                           f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
-    if not rows:
-        return {k: np.array([]) for k in ("lon", "lat", "h", "t", "quality")}, {}
-    cols = ["url", "s3url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end"]
-    for ds in ATL06_DATASETS:
-        cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
-    by_url: dict[str, list] = {}
-    for r in rows:
-        rec = dict(zip(cols, r)); by_url.setdefault(access_url(rec["url"], rec["s3url"]), []).append(rec)
+    return want_cells, [dict(zip(cols, r)) for r in rows]
 
-    # In-region the by_url keys are s3:// (S3-direct, no presign); out-of-region they are HTTPS and we presign all
-    # granules up front in parallel (avoids the serial ~1.7 s x N), then fetch per-granule with a warm presign.
+
+def _decode_chunk(raws: dict, r: dict) -> dict:
+    """Decode one chunk's FULL seg_start:seg_end arrays for every dataset (pre-mask)."""
+    from .access import decode_chunk
+
+    seg_n = r["seg_end"] - r["seg_start"]
+    return {ds: decode_chunk(raws[(r["beam"], r["chunk_index"], ds)], r[f"{ds}_dtype"], r[f"{ds}_filters"], 1, r[f"{ds}_mask"])[:seg_n]
+            for ds in ATL06_DATASETS}
+
+
+def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
+               force: bool = False) -> tuple[dict, dict]:
+    """Lake-first index-driven ATL06 fetch (mirrors the ATL03 planner). Only the chunks whose wanted cells are NOT yet
+    materialized are byte-range fetched from NASA — the missing granules fetched concurrently (integration's per-granule
+    pool + in-region S3-direct / presigned CloudFront via access_url). Each fetched chunk's FULL pre-mask points are
+    written to the lake partitioned by each point's own res-`res` cell, then read back filtered to bbox (+window via
+    granule selection, +quality). A repeat query over the same/overlapping area issues zero NASA GETs. `force`
+    re-fetches. Weak beams are preserved via `strong_only`. Returns (arrays, stats) with chunks_from_lake /
+    chunks_from_nasa alongside the byte-range access counters."""
+    from . import lake
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
+                         pool_size)
+
+    want_cells, rows = _index_rows(bbox, window, res, strong_only)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
+    names = sorted({r["granule"] for r in rows})
+    have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+    chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
+    for r in rows:
+        k = (r["granule"], r["beam"], r["chunk_index"])
+        chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+    # cell-aware skip (like ATL03): fetch a chunk if ANY of its wanted cells is not yet materialized
+    todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
+    n_lake = len(chunk_cells) - len(todo)
+
+    reader = None
+    if todo:
+        reader = RangeReader()
+        by_url: dict[str, list] = {}
+        for k in todo:
+            r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
+        reader.presign_all([u for u in by_url if not u.startswith("s3://")])
+
+        def _ingest_granule(url) -> dict:
+            """Fetch + decode + materialise one granule's missing chunks to the lake; return its (granule,beam)->{chunk:
+            cells} map. Independent per granule; Parquet writes go to distinct files, so the pool is write-safe. The
+            DuckDB coverage mark is done once, serially, on the calling thread after the pool drains."""
+            rs = by_url[url]
+            ranges, keys = [], []
+            for r in rs:
+                for ds in ATL06_DATASETS:
+                    ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
+            raws = dict(zip(keys, reader.fetch(url, ranges)))
+            local: dict[tuple[str, str], dict] = {}
+            for r in rs:
+                dec = _decode_chunk(raws, r)
+                lat, lon, h, dt, q = dec["latitude"], dec["longitude"], dec["h_li"], dec["delta_time"], dec["atl06_quality_summary"]
+                valid = np.isfinite(h) & (h < 3.0e38) & np.isfinite(lat) & np.isfinite(lon)   # data-validity (bbox-independent)
+                mats = {"lon": lon[valid].astype("f8"), "lat": lat[valid].astype("f8"), "h": h[valid].astype("f8"),
+                        "t": _atlas_epoch_years(dt[valid], r["sdp_epoch"]), "quality": q[valid]}
+                cc = lake.write_point_chunk(MISSION, r["granule"], r["beam"], r["chunk_index"], mats, res, extras=("quality",))
+                # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is not
+                # re-fetched forever; plus any extra cell the chunk's valid points materialised (overlap benefit).
+                k = (r["granule"], r["beam"], r["chunk_index"])
+                local.setdefault((r["granule"], r["beam"]), {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])
+            return local
+
+        urls = list(by_url)
+        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+        if nw == 1:
+            parts = [_ingest_granule(u) for u in urls]
+        else:
+            with ThreadPoolExecutor(nw) as ex:
+                parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
+        ingest: dict[tuple[str, str], dict] = {}
+        for loc in parts:
+            for gb, cm in loc.items():
+                ingest.setdefault(gb, {}).update(cm)
+        for (g, b), cm in ingest.items():
+            lake.mark_ingested(MISSION, g, b, cm)
+
+    beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero)
+    evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ATL06 fetch)") if reader else []  # only when the lake grew
+    st = reader.stats.as_dict() if reader else AccessStats().as_dict()
+    st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
+               "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
+    return arrays, st
+
+
+def _fetch_direct(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True) -> tuple[dict, dict]:
+    """Reference (pre-lake) path == integration's fetch_bbox: byte-range fetch EVERY matching chunk (all beams when
+    strong_only is False), decode, apply the bbox+quality mask, concat — concurrently per granule, no lake. Kept as the
+    golden the lake-first path is validated against and for in-region byte-identity checks."""
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url, pool_size)
+
+    w, s, e, n = bbox
+    _want, rows = _index_rows(bbox, window, res, strong_only)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {}
+    chunk_row = {}
+    for r in rows:
+        chunk_row.setdefault((r["granule"], r["beam"], r["chunk_index"]), r)
+    by_url: dict[str, list] = {}
+    for r in chunk_row.values():
+        by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
     reader = RangeReader()
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
     def _fetch_granule(url) -> dict:
-        """Fetch + decode + filter one granule's chunks; returns its sub-arrays in the original within-granule order.
-        Independent per granule — the shared reader is concurrency-safe (locked stats, per-URL presign locks)."""
         rs = by_url[url]
         ranges, keys = [], []
         for r in rs:
             for ds in ATL06_DATASETS:
                 ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
-        raws = dict(zip(keys, reader.fetch(url, ranges)))   # warm presign -> just byte-range GETs
-        local = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+        raws = dict(zip(keys, reader.fetch(url, ranges)))
+        local = {k: [] for k in _EMPTY}
         for r in rs:
-            seg_n = r["seg_end"] - r["seg_start"]; sdp = r["sdp_epoch"]
-            dec = {ds: decode_chunk(raws[(r["beam"], r["chunk_index"], ds)], r[f"{ds}_dtype"], r[f"{ds}_filters"], 1, r[f"{ds}_mask"])[:seg_n] for ds in ATL06_DATASETS}
+            dec = _decode_chunk(raws, r)
             lat, lon, h, dt, q = dec["latitude"], dec["longitude"], dec["h_li"], dec["delta_time"], dec["atl06_quality_summary"]
             m = np.isfinite(h) & (h < 3.0e38) & (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
             if quality_zero:
@@ -226,12 +322,9 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             if not m.any():
                 continue
             local["lon"].append(lon[m].astype("f8")); local["lat"].append(lat[m].astype("f8")); local["h"].append(h[m].astype("f8"))
-            local["t"].append(_atlas_epoch_years(dt[m], sdp)); local["quality"].append(q[m])
+            local["t"].append(_atlas_epoch_years(dt[m], r["sdp_epoch"])); local["quality"].append(q[m])
         return local
 
-    # Each granule's fetch+decode is independent and network-I/O-bound, so run several granules concurrently (each
-    # still fetches its own ranges concurrently inside reader.fetch). Results are reassembled in the original
-    # by_url order below, so the concatenated arrays are byte-identical to the serial version.
     urls = list(by_url)
     nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
     if nw == 1:
@@ -239,7 +332,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     else:
         with ThreadPoolExecutor(nw) as ex:
             parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
-    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+    out = {k: [] for k in _EMPTY}
     for loc in parts:
         for k in out:
             out[k].extend(loc[k])

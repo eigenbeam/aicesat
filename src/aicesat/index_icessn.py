@@ -146,64 +146,143 @@ def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
-def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
-    """Index-driven ILATM2 fetch: byte-range GET only the line spans whose cells touch the bbox, then re-parse/filter.
-    Returns (arrays, stats). `window` filters granules by their filename date (YYYY-MM-DD)."""
+MISSION = "ICESSN"
+BEAM = "na"          # ILATM2 has no beam; chunk_index is fixed at 0 — the cache unit is the (granule, cell) pair
+CHUNK = 0
+_EMPTY = ("lon", "lat", "h", "t")
+
+
+def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
+    """Query the ICESSN line-offset index for the (granule, cell) byte spans whose cell touches the bbox (+window)."""
     import duckdb
 
     from . import planner
-    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no ICESSN index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res)
-    w, s, e, n = bbox
-
+    cols = ["granule", "url", "s3url", "gdate", "h3_cell", "byte_start", "byte_end"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
         where += f" AND gdate BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, s3url, gdate, byte_start, byte_end "
-                           f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
-    empty = {k: np.array([]) for k in ("lon", "lat", "h", "t")}
-    if not rows:
-        return empty, {}
-    by_url: dict[str, dict] = {}
-    for url, s3url, gdate, bs, be in rows:
-        u = by_url.setdefault(access_url(url, s3url), {"gdate": gdate, "spans": []})
-        u["spans"].append((int(bs), int(be)))
+    return want_cells, [dict(zip(cols, r)) for r in rows]
 
-    reader = RangeReader()   # in-region: s3:// keys (S3-direct); else HTTPS presigned up front
+
+def _parse_span_points(blobs, gdate: str, res: int) -> dict:
+    """Parse fetched line spans into the FULL set of usable nadir platelets (track==0, finite, RMS<50 — every filter
+    except the bbox), each tagged with its own H3 cell at `res`. Returns lon/lat/h/t + cell."""
+    from . import planner
+
+    t0 = np.datetime64(datetime.strptime(gdate, "%Y%m%d").isoformat(), "ms")
+    lon, lat, h, t = [], [], [], []
+    for blob in blobs:
+        for ln in blob.split(b"\n"):
+            p = _parse_fields(ln)
+            if p is None:
+                continue
+            la, lo, elev, rms, track = p
+            if track != 0 or not (np.isfinite(elev) and np.isfinite(la) and np.isfinite(lo)) or rms >= MAX_RMS_CM:
+                continue
+            sec = float(ln.split(b",")[0])
+            lon.append(lo); lat.append(la); h.append(elev); t.append(t0 + np.timedelta64(int(sec * 1000), "ms"))
+    lon = np.asarray(lon, "f8"); lat = np.asarray(lat, "f8")
+    cell = planner._cells_vectorized(lat, lon, res) if lon.size else np.array([], "u8")
+    return {"lon": lon, "lat": lat, "h": np.asarray(h, "f8"),
+            "t": np.asarray(t, "datetime64[ms]") if t else np.array([], "datetime64[ms]"), "cell": cell}
+
+
+def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False) -> tuple[dict, dict]:
+    """Lake-first index-driven ILATM2 fetch. The cache unit is the (granule, cell) line span; only the spans for cells
+    not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
+    S3-direct / presigned via access_url). Each fetched granule's spans are parsed to their FULL usable platelets (every
+    filter but bbox) and written to the lake for exactly the fetched cells (a span materialises only the cells it was
+    fetched for — its overlap with a neighbouring cell's span must not partially rewrite that neighbour). The result is
+    read back filtered to bbox (+window via granule selection). A repeat query over the same/overlapping area issues zero GETs."""
+    from . import lake
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
+                         pool_size)
+
+    want_cells, rows = _index_rows(bbox, window, res)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
+    names = sorted({r["granule"] for r in rows})
+    have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+    # group the MISSING (granule, cell) spans by granule URL; a cached cell contributes no span (no re-fetch)
+    by_url: dict[str, dict] = {}
+    n_lake = 0
+    for r in rows:
+        if not force and (r["granule"], BEAM, CHUNK, int(r["h3_cell"])) in have:
+            n_lake += 1; continue
+        u = by_url.setdefault(access_url(r["url"], r["s3url"]),
+                              {"granule": r["granule"], "gdate": r["gdate"], "cells": set(), "spans": []})
+        u["cells"].add(int(r["h3_cell"])); u["spans"].append((int(r["byte_start"]), int(r["byte_end"])))
+
+    reader = None
+    n_nasa = sum(len(u["cells"]) for u in by_url.values())
+    if by_url:
+        reader = RangeReader()
+        reader.presign_all([u for u in by_url if not u.startswith("s3://")])
+
+        def _ingest_granule(url) -> dict:
+            """Fetch the granule's missing spans, parse, materialise ONLY the fetched cells (only_cells guards the
+            partial-cell bug); return {chunk: fetched cells} to mark. Parquet writes hit distinct files (pool-safe)."""
+            u = by_url[url]
+            merged = _merge(u["spans"])                    # union the spans so every physical line is fetched once
+            blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
+            pts = _parse_span_points(blobs, u["gdate"], res)
+            lake.write_point_chunk(MISSION, u["granule"], BEAM, CHUNK, pts, res, only_cells=u["cells"])
+            # mark every fetched cell (even one whose platelets all fail RMS -> no file) so it is never re-fetched
+            return {"granule": u["granule"], "cells": sorted(u["cells"])}
+
+        urls = list(by_url)
+        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+        if nw == 1:
+            parts = [_ingest_granule(u) for u in urls]
+        else:
+            with ThreadPoolExecutor(nw) as ex:
+                parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
+        for pr in parts:
+            lake.mark_ingested(MISSION, pr["granule"], BEAM, {CHUNK: pr["cells"]})
+
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM])
+    evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ICESSN fetch)") if reader else []  # only when the lake grew
+    st = reader.stats.as_dict() if reader else AccessStats().as_dict()
+    st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": n_nasa, "chunks_fetched": n_nasa,
+               "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
+    return arrays, st
+
+
+def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
+    """Reference (pre-lake) path == integration's fetch_bbox: byte-range GET every matching line span, parse, apply the
+    full bbox filter, concat — concurrently per granule, no lake. The golden the lake-first path is validated against."""
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url, pool_size)
+
+    w, s, e, n = bbox
+    _want, rows = _index_rows(bbox, window, res)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {}
+    by_url: dict[str, dict] = {}
+    for r in rows:
+        u = by_url.setdefault(access_url(r["url"], r["s3url"]), {"gdate": r["gdate"], "spans": []})
+        u["spans"].append((int(r["byte_start"]), int(r["byte_end"])))
+    reader = RangeReader()
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
     def _fetch_granule(url) -> dict:
-        """Fetch the line spans, re-split into whole lines, re-parse/filter; sub-lists in the original line order."""
         u = by_url[url]
-        merged = _merge(u["spans"])                       # disjoint, line-aligned -> every line parsed once
+        merged = _merge(u["spans"])
         blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
-        t0 = np.datetime64(datetime.strptime(u["gdate"], "%Y%m%d").isoformat(), "ms")
-        local = {k: [] for k in ("lon", "lat", "h", "t")}
-        for blob in blobs:
-            for ln in blob.split(b"\n"):
-                p = _parse_fields(ln)
-                if p is None:
-                    continue
-                lat, lon, elev, rms, track = p
-                if track != 0 or not (np.isfinite(elev) and np.isfinite(lat) and np.isfinite(lon)) or rms >= MAX_RMS_CM:
-                    continue
-                if not (s <= lat <= n and w <= lon <= e):
-                    continue
-                sec = float(ln.split(b",")[0])
-                local["lon"].append(lon); local["lat"].append(lat); local["h"].append(elev)
-                local["t"].append(t0 + np.timedelta64(int(sec * 1000), "ms"))
-        return local
+        pts = _parse_span_points(blobs, u["gdate"], res)
+        m = (pts["lat"] >= s) & (pts["lat"] <= n) & (pts["lon"] >= w) & (pts["lon"] <= e) if pts["lon"].size else np.array([], bool)
+        return {k: pts[k][m] for k in _EMPTY}
 
-    # Independent, I/O-bound per granule; reassemble in by_url order so the concatenated points are byte-identical.
     urls = list(by_url)
     nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
     if nw == 1:
@@ -211,10 +290,9 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
     else:
         with ThreadPoolExecutor(nw) as ex:
             parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
-    out = {k: [] for k in ("lon", "lat", "h", "t")}
+    out = {k: [] for k in _EMPTY}
     for loc in parts:
         for k in out:
-            out[k].extend(loc[k])
-    arrays = {"lon": np.asarray(out["lon"], "f8"), "lat": np.asarray(out["lat"], "f8"),
-              "h": np.asarray(out["h"], "f8"), "t": np.asarray(out["t"], "datetime64[ms]") if out["t"] else np.array([])}
+            out[k].append(loc[k])
+    arrays = {k: (np.concatenate(v) if v else np.array([])) for k, v in out.items()}
     return arrays, reader.stats.as_dict()

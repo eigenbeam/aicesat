@@ -69,6 +69,96 @@ def write_photons(mission: str, granule: str, beam: str, ph: dict[str, np.ndarra
 ROW_GROUP_ROWS = 65_536
 
 
+def _stem(granule: str) -> str:
+    """Filename-safe, unambiguous granule stem (drop the extension, no '/' or '__' so cell_stats can split on '__')."""
+    return granule.rsplit(".", 1)[0].replace("/", "_").replace("__", "_")
+
+
+def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, arrays: dict, res: int,
+                      extras: tuple[str, ...] = (), only_cells=None) -> dict[int, list[int]]:
+    """Chunk-aware materialization for the index missions (ATL06/GLAS/ICESSN), the analogue of write_photons.
+
+    `arrays` carries ONE fetched chunk's FULL, pre-bbox-mask points (lon, lat, h, t as datetime64[ms], plus any name
+    listed in `extras`, e.g. 'quality'). Each point is written to the file of its OWN H3 cell **at this mission's res**
+    (never res 6), so a later query for the same cell but a different sub-bbox re-filters correctly — the partial-cell
+    bug is impossible by construction. One Parquet file per cell, `<gstem>__<beam>__c<chunk>.parquet`, carrying a
+    `source_chunk_index` column. Returns {chunk_index: [cells written]} suitable for mark_ingested.
+
+    `only_cells` (optional) restricts writing to that set of cells — used by ICESSN, whose per-cell byte spans overlap,
+    so a fetched span must materialize ONLY the cells it was fetched for (writing a sibling cell from a partial span
+    would reintroduce the partial-cell bug). ATL06/GLAS pass None: a fetched chunk materializes every cell it touches.
+    """
+    from . import planner
+
+    lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8")
+    h = np.asarray(arrays["h"], "f8"); t = np.asarray(arrays["t"]).astype("datetime64[ms]")
+    ok = np.isfinite(lon) & np.isfinite(lat)          # a point with no valid position cannot be placed in a cell
+    if not ok.any():
+        return {int(chunk_index): []}
+    cells = np.zeros(lon.size, "u8")
+    cells[ok] = planner._cells_vectorized(lat[ok], lon[ok], res)
+    beam = beam or "na"; gstem = _stem(granule)
+    keep_cells = None if only_cells is None else {int(c) for c in only_cells}
+    written: list[int] = []
+    for cell in np.unique(cells[ok]):
+        if keep_cells is not None and int(cell) not in keep_cells:
+            continue
+        m = ok & (cells == cell)
+        nn = int(m.sum())
+        cols = {"native_lon": lon[m], "native_lat": lat[m], "native_height": h[m], "t": pa.array(t[m]),
+                "source_granule": pa.array([granule] * nn).dictionary_encode(),
+                "beam": pa.array([beam] * nn).dictionary_encode(),
+                "source_chunk_index": np.full(nn, int(chunk_index), "i4")}
+        for ex in extras:
+            cols[ex] = np.asarray(arrays[ex])[m]
+        d = cell_dir(mission, int(cell)); d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table(cols), d / f"{gstem}__{beam}__c{int(chunk_index)}.parquet",
+                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
+        written.append(int(cell))
+    return {int(chunk_index): sorted(written)}
+
+
+def query_points(bbox, cells: list[int], mission: str, granules: list[str] | None = None,
+                 beams: list[str] | None = None, extra_cols: tuple[str, ...] = (), quality_zero: bool = False) -> dict:
+    """Read materialized index-mission points back (the analogue of query_photons): DuckDB over the mission's cell
+    files with cell + bbox (+ granule, + beam, + optional quality) predicate pushdown. Returns the SAME dict shape the
+    mission's fetch_bbox returns: {'lon','lat','h','t'} plus each name in `extra_cols`.
+
+    The glob targets only chunk files (`*__c*.parquet`), so it never picks up ATL03 photon files or a legacy lossy
+    `__pts.parquet`. `granules` restricts the read to the granules the caller's window selected — trimming an
+    accumulated lake (wider granule set from a prior, broader query) to exactly this request, byte-identically to a
+    direct fetch. `beams` likewise restricts to the beams the query selected, so a strong-only ATL06 query never picks
+    up weak-beam points a prior all-beam query may have materialized in the same cell."""
+    base = {"lon": np.array([]), "lat": np.array([]), "h": np.array([]), "t": np.array([]),
+            **{c: np.array([]) for c in extra_cols}}
+    if not cells or not LAKE_DIR.exists():
+        return base
+    glob = f"{LAKE_DIR}/mission={mission}/h3_cell=*/*__c*.parquet"
+    if not any(LAKE_DIR.glob(f"mission={mission}/h3_cell=*/*__c*.parquet")):
+        return base
+    w, s, e, n = bbox
+    cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})",
+            f"native_lat BETWEEN {s} AND {n}", f"native_lon BETWEEN {w} AND {e}"]
+    if granules is not None:
+        cond.append("source_granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
+    if beams is not None:
+        cond.append("beam IN (" + ",".join("'" + b + "'" for b in beams) + ")")
+    if quality_zero and "quality" in extra_cols:
+        cond.append("quality = 0")
+    sel = "native_lon, native_lat, native_height, t" + "".join(f", {c}" for c in extra_cols)
+    con = duckdb.connect()
+    try:
+        r = con.execute(f"SELECT {sel} FROM read_parquet('{glob}', hive_partitioning = true, union_by_name = true) "
+                        f"WHERE {' AND '.join(cond)}").fetchnumpy()
+    finally:
+        con.close()
+    out = {"lon": np.asarray(r["native_lon"], "f8"), "lat": np.asarray(r["native_lat"], "f8"),
+           "h": np.asarray(r["native_height"], "f8"), "t": np.asarray(r["t"]).astype("datetime64[ms]")}
+    for c in extra_cols:
+        out[c] = np.asarray(r[c])
+    return out
+
+
 def write_points(mission: str, arrays: dict, meta: dict) -> list[int]:
     """Materialize a per-scene point collection (GLAS / ATL06 / ICESSN) into the lake so it appears in the Lake view
     as its own collection. Minimal schema (native lon/lat/height/t + provenance) written per H3 res-6 cell, one file
@@ -290,6 +380,37 @@ def enforce_limit(protect=(), mission: str = "ICESAT2") -> list[dict]:
             break
         chosen.append(s["cell"]); total -= s["bytes"]
     return evict_cells(chosen, mission, reason=f"limit {limit} bytes") if chosen else []
+
+
+def _lake_missions() -> list[str]:
+    return [d.name.split("=", 1)[1] for d in LAKE_DIR.glob("mission=*")] if LAKE_DIR.exists() else []
+
+
+def enforce_global_limit(protect=(), reason: str = "limit") -> list[dict]:
+    """Evict least-recently-ingested cells across ALL missions until the WHOLE lake is under max_bytes (the one disk
+    budget the Lake UI sets governs every collection together, not each in isolation). `protect` is a flat set of H3
+    cell ids never evicted — the current scene's cells. H3 ids encode their resolution, so protecting the union of a
+    scene's cells across missions (res 6 ATL03 + res 5 index missions) is unambiguous."""
+    limit = int(get_settings()["max_bytes"])
+    protect = {int(c) for c in protect}
+    items = []  # (mission, cell, stats)
+    for m in _lake_missions():
+        for c, st in cell_stats(m).items():
+            items.append((m, c, st))
+    total = sum(st["bytes"] for _, _, st in items)
+    if total <= limit:
+        return []
+    victims = sorted((x for x in items if x[1] not in protect),
+                     key=lambda x: (x[2]["last_ingested"] or "", x[0], x[1]))
+    chosen: dict[str, list[int]] = {}
+    for m, c, st in victims:
+        if total <= limit:
+            break
+        chosen.setdefault(m, []).append(c); total -= st["bytes"]
+    evicted = []
+    for m, cells in chosen.items():
+        evicted += evict_cells(cells, m, reason=f"{reason} ({limit} bytes)")
+    return evicted
 
 
 def recent_evictions(n: int = 50) -> list[dict]:

@@ -179,74 +179,162 @@ def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
     return tbl
 
 
-def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
-    """Index-driven GLAH06 fetch: only the chunks whose cells touch the bbox are byte-range fetched and decoded.
-    Returns (arrays, stats). `window` filters granules by their stored start date (YYYY-MM-DD)."""
+MISSION = "GLAS"
+BEAM = "na"          # GLAH06 is beamless; a fixed beam token keeps the (mission,granule,beam,chunk,cell) coverage key
+_EMPTY = ("lon", "lat", "h", "t", "quality")
+
+
+def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
+    """Query the GLAS index for the (granule, chunk, cell) refs whose cell touches the bbox (+window)."""
     import duckdb
 
     from . import planner
-    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url,
-                         decode_chunk, pool_size)
 
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no GLAS index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res)
-    w, s, e, n = bbox
-
-    dscols = ", ".join(f"{key}_offset, {key}_size, {key}_dtype, {key}_filters, {key}_mask, {key}_fill" for key in GLAS_KEYS)
+    cols = ["granule", "url", "s3url", "chunk_index", "seg_start", "seg_end", "h3_cell"]
+    for key in GLAS_KEYS:
+        cols += [f"{key}_offset", f"{key}_size", f"{key}_dtype", f"{key}_filters", f"{key}_mask", f"{key}_fill"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
         where += f" AND gdate BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, s3url, chunk_index, seg_start, seg_end, {dscols} "
-                           f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
-    empty = {k: np.array([]) for k in ("lon", "lat", "h", "t", "quality")}
-    if not rows:
-        return empty, {}
-    cols = ["url", "s3url", "chunk_index", "seg_start", "seg_end"]
-    for key in GLAS_KEYS:
-        cols += [f"{key}_offset", f"{key}_size", f"{key}_dtype", f"{key}_filters", f"{key}_mask", f"{key}_fill"]
-    by_url: dict[str, list] = {}
-    for r in rows:
-        rec = dict(zip(cols, r)); by_url.setdefault(access_url(rec["url"], rec["s3url"]), []).append(rec)
+    return want_cells, [dict(zip(cols, r)) for r in rows]
 
-    reader = RangeReader()   # in-region: s3:// keys (S3-direct, no presign); else HTTPS presigned in one parallel pass
+
+def _decode_chunk(raws: dict, r: dict) -> dict:
+    """Decode + fill-clean one chunk's FULL seg range, then reconstruct WGS84 height and time (pre-mask)."""
+    from .access import decode_chunk
+
+    seg_n = r["seg_end"] - r["seg_start"]
+    dec = {}
+    for key in GLAS_KEYS:
+        a = decode_chunk(raws[(r["chunk_index"], key)], r[f"{key}_dtype"], r[f"{key}_filters"], 1, r[f"{key}_mask"])[:seg_n]
+        dec[key] = _nan_fill(a, r[f"{key}_fill"]) if key in _FLOAT_KEYS else a
+    lon = np.where(dec["lon"] > 180, dec["lon"] - 360, dec["lon"])
+    sat = np.where(np.isfinite(dec["sat_corr"]), dec["sat_corr"], 0.0)
+    h = dec["elev"] + sat - dec["delta_ellip"]                       # TOPEX/Poseidon -> WGS84 ellipsoid
+    t = J2000 + (dec["time"] * 1000).astype("timedelta64[ms]")
+    valid = (np.isfinite(dec["elev"]) & np.isfinite(dec["delta_ellip"]) & (dec["elev_use"] == 0)
+             & (dec["sat_flag"] <= MAX_SAT_FLAG) & np.isfinite(dec["lat"]) & np.isfinite(lon))   # bbox-independent
+    return {"lat": dec["lat"], "lon": lon, "h": h, "t": t, "quality": dec["elev_use"], "valid": valid}
+
+
+def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False) -> tuple[dict, dict]:
+    """Lake-first index-driven GLAH06 fetch (mirrors the ATL03 planner / ATL06 path). Only chunks whose wanted cells
+    are not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
+    S3-direct / presigned via access_url). Each fetched chunk's FULL pre-mask shots are written to the lake partitioned
+    by each shot's own res-`res` cell, then read back filtered to bbox (+window via granule selection). A repeat query
+    over the same/overlapping area issues zero NASA GETs. Returns (arrays, stats) with chunks_from_lake / chunks_from_nasa."""
+    from . import lake
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
+                         pool_size)
+
+    want_cells, rows = _index_rows(bbox, window, res)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
+    names = sorted({r["granule"] for r in rows})
+    have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+    chunk_cells, chunk_row = {}, {}
+    for r in rows:
+        k = (r["granule"], r["chunk_index"])
+        chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+    todo = [k for k, cs in chunk_cells.items() if any((k[0], BEAM, k[1], c) not in have for c in cs)]
+    n_lake = len(chunk_cells) - len(todo)
+
+    reader = None
+    if todo:
+        reader = RangeReader()
+        by_url: dict[str, list] = {}
+        for k in todo:
+            r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
+        reader.presign_all([u for u in by_url if not u.startswith("s3://")])
+
+        def _ingest_granule(url) -> dict:
+            """Fetch + decode + materialise one granule's missing chunks; return its {granule: {chunk: cells}} map.
+            Parquet writes hit distinct files (pool-safe); the DuckDB mark runs serially after the pool drains."""
+            rs = by_url[url]
+            ranges, keys = [], []
+            for r in rs:
+                for key in GLAS_KEYS:
+                    ranges.append((r[f"{key}_offset"], r[f"{key}_size"])); keys.append((r["chunk_index"], key))
+            raws = dict(zip(keys, reader.fetch(url, ranges)))
+            local: dict[str, dict] = {}
+            for r in rs:
+                dec = _decode_chunk(raws, r); v = dec["valid"]
+                mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
+                        "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
+                cc = lake.write_point_chunk(MISSION, r["granule"], BEAM, r["chunk_index"], mats, res, extras=("quality",))
+                # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
+                k = (r["granule"], r["chunk_index"])
+                local.setdefault(r["granule"], {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])
+            return local
+
+        urls = list(by_url)
+        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+        if nw == 1:
+            parts = [_ingest_granule(u) for u in urls]
+        else:
+            with ThreadPoolExecutor(nw) as ex:
+                parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
+        ingest: dict[str, dict] = {}
+        for loc in parts:
+            for g, cm in loc.items():
+                ingest.setdefault(g, {}).update(cm)
+        for g, cm in ingest.items():
+            lake.mark_ingested(MISSION, g, BEAM, cm)
+
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",))
+    evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (GLAS fetch)") if reader else []  # only when the lake grew
+    st = reader.stats.as_dict() if reader else AccessStats().as_dict()
+    st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
+               "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
+    return arrays, st
+
+
+def _fetch_direct(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
+    """Reference (pre-lake) path == integration's fetch_bbox: fetch every matching chunk, decode + height-reconstruct,
+    apply the full bbox mask, concat — concurrently per granule, no lake. The golden the lake-first path is validated
+    against (and for in-region byte-identity checks)."""
+    from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, RangeReader, access_url, pool_size)
+
+    w, s, e, n = bbox
+    _want, rows = _index_rows(bbox, window, res)
+    if not rows:
+        return {k: np.array([]) for k in _EMPTY}, {}
+    chunk_row = {}
+    for r in rows:
+        chunk_row.setdefault((r["granule"], r["chunk_index"]), r)
+    by_url: dict[str, list] = {}
+    for r in chunk_row.values():
+        by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
+    reader = RangeReader()
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
     def _fetch_granule(url) -> dict:
-        """Fetch + decode + height-reconstruct + filter one granule; sub-arrays in the original within-granule order."""
         rs = by_url[url]
         ranges, keys = [], []
         for r in rs:
             for key in GLAS_KEYS:
                 ranges.append((r[f"{key}_offset"], r[f"{key}_size"])); keys.append((r["chunk_index"], key))
         raws = dict(zip(keys, reader.fetch(url, ranges)))
-        local = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+        local = {k: [] for k in _EMPTY}
         for r in rs:
-            seg_n = r["seg_end"] - r["seg_start"]
-            dec = {}
-            for key in GLAS_KEYS:
-                a = decode_chunk(raws[(r["chunk_index"], key)], r[f"{key}_dtype"], r[f"{key}_filters"], 1, r[f"{key}_mask"])[:seg_n]
-                dec[key] = _nan_fill(a, r[f"{key}_fill"]) if key in _FLOAT_KEYS else a
-            lat, lon = dec["lat"], dec["lon"]
-            lon = np.where(lon > 180, lon - 360, lon)
-            elev, sat, dell = dec["elev"], dec["sat_corr"], dec["delta_ellip"]
-            sat = np.where(np.isfinite(sat), sat, 0.0)
-            h = elev + sat - dell
-            m = (np.isfinite(elev) & np.isfinite(dell) & (dec["elev_use"] == 0) & (dec["sat_flag"] <= MAX_SAT_FLAG)
-                 & (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e))
+            dec = _decode_chunk(raws, r)
+            m = dec["valid"] & (dec["lat"] >= s) & (dec["lat"] <= n) & (dec["lon"] >= w) & (dec["lon"] <= e)
             if not m.any():
                 continue
-            local["lon"].append(lon[m].astype("f8")); local["lat"].append(lat[m].astype("f8")); local["h"].append(h[m].astype("f8"))
-            local["t"].append(J2000 + (dec["time"][m] * 1000).astype("timedelta64[ms]")); local["quality"].append(dec["elev_use"][m])
+            local["lon"].append(dec["lon"][m].astype("f8")); local["lat"].append(dec["lat"][m].astype("f8")); local["h"].append(dec["h"][m].astype("f8"))
+            local["t"].append(dec["t"][m]); local["quality"].append(dec["quality"][m])
         return local
 
-    # Independent, I/O-bound per granule: fan across a small pool, reassemble in by_url order -> byte-identical arrays.
     urls = list(by_url)
     nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
     if nw == 1:
@@ -254,7 +342,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
     else:
         with ThreadPoolExecutor(nw) as ex:
             parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
-    out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
+    out = {k: [] for k in _EMPTY}
     for loc in parts:
         for k in out:
             out[k].extend(loc[k])
