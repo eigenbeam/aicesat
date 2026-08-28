@@ -91,6 +91,12 @@ def _med_int(vals):
     return None if not xs else int(round(statistics.median(xs)))
 
 
+def _granule_date(g: dict) -> str:
+    """'ATL06_20190314235626_...' -> '2019-03-14'. ATL06 granule names embed the acquisition date at chars 7-14."""
+    d = g["granule"][6:14]
+    return f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+
+
 @contextlib.contextmanager
 def _aws_env(creds: dict):
     """Temporarily expose STS creds as AWS_* env vars so any fsspec/botocore session (e.g. kerchunk's reference
@@ -529,25 +535,44 @@ def main():
     print(f"granule set from the built index: {len(full)} ATL06 v007 granule(s)"
           f" (first: {full[0]['granule']})\n")
 
-    # regions to bench: a granule-step sweep, or a single region (optionally capped by --max-granules)
+    # regions to bench: a granule-step sweep, or a single region (optionally capped by --max-granules).
+    # A granule cap is applied by TIGHTENING THE WINDOW to the first N granules' date range -- because `ours`
+    # (index_atl06.fetch_bbox) is driven by (bbox, window), not by a granule list, so a post-hoc list cap would
+    # leave `ours` fetching the full set while the others saw the subset (the correctness gate would -- correctly --
+    # refuse to compare them). Window-tightening makes every method see the identical granules.
+    def _capped_region(target_n: int):
+        n = min(target_n, len(full))
+        w = (window[0], _granule_date(full[n - 1]))          # upper bound = the Nth granule's acquisition date
+        g = granules_from_index(bbox, w, a.res)              # the actual set the window selects (>= n if dates tie)
+        return (f"N={len(g)}", g, w)
+
     if a.granule_steps:
         steps = [int(x) for x in a.granule_steps.split(",") if x.strip()]
-        regions = [(f"N={min(nn, len(full))}", full[:nn]) for nn in steps]
+        seen, regions = set(), []
+        for nn in steps:                                     # a target beyond the available granules collapses to
+            r = _capped_region(nn)                           # the full set -> dedup so we don't bench N=10 thrice
+            if r[0] not in seen:
+                seen.add(r[0]); regions.append(r)
+        if len(regions) < len(steps):
+            print(f"note: only {len(full)} granules in this bbox/window; sweep collapsed to {[r[0] for r in regions]}. "
+                  "Widen --bbox/--window for a longer sweep.\n")
+    elif a.max_granules:
+        regions = [_capped_region(a.max_granules)]
     else:
-        g = full[: a.max_granules] if a.max_granules else full
-        regions = [(f"N={len(g)}", g)]
+        regions = [(f"N={len(full)}", full, window)]
 
     all_results = []
-    for label, granules in regions:
-        print(f"--- benching {label} ({len(granules)} granules) x {len(methods)} methods, interleaved ---")
-        results = bench_region(label, granules, bbox, window, a.res, methods, a.reps, a.warmup)
+    for label, granules, wr in regions:
+        print(f"--- benching {label} ({len(granules)} granules, window {wr[0]}..{wr[1]}) "
+              f"x {len(methods)} methods, interleaved ---")
+        results = bench_region(label, granules, bbox, wr, a.res, methods, a.reps, a.warmup)
         print_region(label, results, reg)
         all_results.append(results)
 
     # sweep summary: median wall per method across N (the crossover, at a glance)
     if len(all_results) > 1:
         disp = {"ours": "ours (H3 index)", "h5coro": "h5coro", "h5py_s3fs": "h5py+s3fs", "kerchunk": "kerchunk+zarr"}
-        labels = [label for label, _ in regions]
+        labels = [r[0] for r in regions]
         print("\n" + "=" * 116)
         print("SWEEP (median wall seconds by granule count)")
         print("method".ljust(18) + "".join(f"{lab:>12}" for lab in labels))
