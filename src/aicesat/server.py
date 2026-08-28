@@ -4,6 +4,8 @@ Never print to stdout: stdio is the MCP transport. Logging goes to stderr.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -29,9 +31,27 @@ HTTP_HOST = "127.0.0.1"
 HTTP_PORT = int(os.environ.get("AICESAT_PORT", "8765"))  # updated by start_http() if the port is taken
 _lock = api._lock  # serialise compute (one user, one demo)
 
+# Public deployment (beta web app). AICESAT_PUBLIC_URL is the externally-reachable base (e.g. https://host) that
+# CADDY terminates TLS for and reverse-proxies to this localhost server; widget URLs handed back to browsers must
+# use it, not 127.0.0.1. AICESAT_ACCESS_CODE, when set, gates every page and /api behind a shared code (a signed
+# cookie). Neither is set for the owner's private SSH-forwarded process, so that path is unchanged and ungated.
+ACCESS_CODE = os.environ.get("AICESAT_ACCESS_CODE", "").strip()
+
+
+def base_url() -> str:
+    pub = os.environ.get("AICESAT_PUBLIC_URL", "").strip().rstrip("/")
+    return pub or f"http://{HTTP_HOST}:{HTTP_PORT}"
+
 
 def widget_url(scene_id: str) -> str:
-    return f"http://{HTTP_HOST}:{HTTP_PORT}/#scene/{scene_id}"
+    return f"{base_url()}/#scene/{scene_id}"
+
+
+def _gate_token(code: str) -> str:
+    return hmac.new(code.encode(), b"aicesat-gate-v1", hashlib.sha256).hexdigest()
+
+
+_GATE_TOKEN = _gate_token(ACCESS_CODE) if ACCESS_CODE else ""
 
 
 # ----------------------------------------------------------------------------- compute (delegated to api.py)
@@ -63,7 +83,60 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # -------- access-code gate (public beta). No-op when AICESAT_ACCESS_CODE is unset (owner's private process). --------
+    def _authed(self) -> bool:
+        if not ACCESS_CODE:
+            return True
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            part = part.strip()
+            if part.startswith("aicesat_gate="):
+                return hmac.compare_digest(part[len("aicesat_gate="):], _GATE_TOKEN)
+        return False
+
+    def _gate_page(self, msg: str = "") -> None:
+        html = ("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>AIcesat — beta access</title>"
+                "<style>body{background:#0b1422;color:#e6edf3;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}"
+                "form{background:#111a2b;padding:28px 30px;border-radius:12px;border:1px solid #243247;width:280px}"
+                "h1{font-size:18px;margin:0 0 4px}p{color:#9fb0c3;font-size:13px;margin:0 0 16px}"
+                "input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #2c3d55;background:#0b1422;color:#e6edf3;font-size:15px}"
+                "button{margin-top:12px;width:100%;padding:9px;border:0;border-radius:7px;background:#2f6fed;color:#fff;font-size:15px;cursor:pointer}"
+                ".err{color:#ff8080;font-size:13px;margin-top:10px;min-height:16px}</style>"
+                "<form method=POST action=/gate><h1>AIcesat</h1><p>Cross-mission altimetry — beta. Enter your access code.</p>"
+                "<input name=code type=password autofocus placeholder='access code' autocomplete='off'>"
+                f"<button type=submit>Enter</button><div class=err>{msg}</div></form>")
+        body = html.encode()
+        self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+
+    def _gate_guard(self) -> bool:
+        """True if the request may proceed. Handles /gate itself and blocks everything else when unauthenticated."""
+        path = self.path.split("?")[0]
+        if path == "/gate":
+            if self.command == "POST":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0")) or 0).decode("utf-8", "replace")
+                code = parse_qs(raw).get("code", [""])[0]
+                if ACCESS_CODE and hmac.compare_digest(_gate_token(code), _GATE_TOKEN):
+                    self.send_response(303); self.send_header("Location", "/")
+                    self.send_header("Set-Cookie", f"aicesat_gate={_GATE_TOKEN}; Max-Age=2592000; Path=/; HttpOnly; Secure; SameSite=Lax")
+                    self.end_headers()
+                else:
+                    self._gate_page("Incorrect code.")
+            else:
+                self._gate_page()
+            return False
+        if self._authed():
+            return True
+        if path.startswith("/api/"):
+            self._json(401, {"error": "access code required"})
+        else:
+            self._gate_page()
+        return False
+
     def do_GET(self):
+        if not self._gate_guard():
+            return
         if self.path == "/" or self.path.startswith("/?") or self.path == "/index.html":
             dist = uibuild.DIST
             if dist.exists():
@@ -138,6 +211,8 @@ class Handler(SimpleHTTPRequestHandler):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
 
     def do_POST(self):
+        if not self._gate_guard():
+            return
         try:
             if self.path == "/api/extract":
                 body = self._body()
