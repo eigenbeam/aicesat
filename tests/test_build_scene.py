@@ -95,8 +95,8 @@ def test_all_collections_final_doc(monkeypatch, tmp_path):
     # series dict keyed in priority order (GLAS, ICESSN, ATL06, then ATL03's ICESAT2 key)
     assert list(doc["series"]) == ["GLAS", "ICESSN", "ATL06", "ICESAT2"]
 
-    # z0 anchored on GLAS (highest priority), from its RAW heights (pre-cleaning median)
-    assert doc["z0"] == pytest.approx(float(np.median(GLAS_A["h"])))
+    # z0 from the DEM median (terrain-centred, deterministic, independent of collection arrival order)
+    assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))
 
     # every series' z is relative to that one z0 (check via ICESSN, whose base height is well separated)
     assert _z_values(doc["series"]["ICESSN"]).mean() == pytest.approx(ICESSN_A["h"].mean() - doc["z0"], abs=1e-2)
@@ -116,8 +116,8 @@ def test_all_collections_final_doc(monkeypatch, tmp_path):
 def test_z0_priority_when_glas_absent(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path)
     doc = api.build_scene(bbox=BBOX, with_glas=False, with_icessn=True, with_atl06=True, with_atl03=False)
-    assert list(doc["series"]) == ["ICESSN", "ATL06"]
-    assert doc["z0"] == pytest.approx(float(np.median(ICESSN_A["h"])))   # ICESSN is now the priority anchor
+    assert list(doc["series"]) == ["ICESSN", "ATL06"]   # final order normalised to priority even though arrival streams
+    assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))   # z0 from DEM, independent of collections
 
 
 def test_leg_failure_degrades_not_fatal(monkeypatch, tmp_path):
@@ -127,8 +127,18 @@ def test_leg_failure_degrades_not_fatal(monkeypatch, tmp_path):
                           log_fn=logs.append)
     assert "GLAS" not in doc["series"]                     # failed leg skipped
     assert list(doc["series"]) == ["ICESSN", "ATL06"]
-    assert doc["z0"] == pytest.approx(float(np.median(ICESSN_A["h"])))   # z0 falls through to next priority
+    assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))   # z0 from the DEM, unaffected by the GLAS failure
     assert any(l.startswith("GLAS unavailable") for l in logs)
+
+
+def test_z0_falls_back_to_collection_when_no_dem(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    from aicesat import dem
+    monkeypatch.setattr(dem, "surface_for_frame", lambda *a, **k: None)   # no DEM covers the scene
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=False)
+    assert doc["surface"] is None                                          # no DEM -> no surface
+    # z0 falls back to whichever collection arrived first (its median)
+    assert any(doc["z0"] == pytest.approx(float(np.median(a["h"]))) for a in (GLAS_A, ICESSN_A, ATL06_A))
 
 
 def test_no_data_raises_and_marks_error(monkeypatch, tmp_path):

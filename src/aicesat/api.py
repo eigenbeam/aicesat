@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import numpy as np
@@ -206,9 +206,9 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 from . import imagery
                 imagery.build(frame, extent, 4096, source=imagery_source)   # width matches scene.add_imagery's default
 
-            def _prefetch_dem():                     # warm the DEM grid npz (keyed by extent, independent of z0)
-                from . import dem
-                dem.surface_for_frame(frame, extent, 0.0)   # real z0 is applied later, inside set_surface()
+            def _prefetch_dem():                     # fetch the DEM grid (z0=0 -> raw ellipsoidal heights); warms the
+                from . import dem                    # tile npz AND gives us the median for z0 (real z0 applied later)
+                return dem.surface_for_frame(frame, extent, 0.0)
 
             # t=0: every independent leg starts at once. Extracts are I/O-bound (requests/DuckDB/rasterio release the
             # GIL; ATL03 spawns its own ProcessPoolExecutor internally, fine on a thread). Imagery & DEM depend only on
@@ -220,21 +220,37 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 img_fut = ex.submit(_prefetch_imagery) if with_imagery else None
                 dem_fut = ex.submit(_prefetch_dem)
 
-                # z0 barrier + series. Integrate in priority order: the first collection to succeed sets doc["z0"]
-                # (via add_series), exactly as the serial loop did; every series' z is then relative to that z0. Each
-                # integrated series is persisted so it becomes paintable mid-build.
-                for mkey, flag, extractor, integrator, disp in enabled:
+                # z0 from the DEM: terrain-centred, deterministic, and known INDEPENDENT of the collections — so every
+                # collection can then stream in as it arrives without waiting on a specific one (a slow GLAS no longer
+                # blocks the rest). Falls back to the first collection's median if no DEM covers the scene.
+                try:
+                    dem_raw = dem_fut.result()
+                    if dem_raw and dem_raw.get("z"):
+                        zv = np.asarray(dem_raw["z"], dtype="f8"); zv = zv[np.isfinite(zv)]
+                        if zv.size:
+                            doc["z0"] = float(np.median(zv)); log_fn(f"z0 from DEM: {doc['z0']:.1f} m ellipsoidal")
+                except Exception as e:
+                    log.info("DEM z0 unavailable; z0 will come from the first collection to arrive: %s", e)
+
+                # Integrate each collection AS IT COMPLETES (not in priority order): the fastest paints first so the
+                # scene streams. z0 is already set from the DEM above, so add_series just uses it (no collection sets
+                # it unless the DEM was absent). Each integrated series is persisted immediately -> paintable mid-build.
+                leg_by_fut = {cfuts[leg[0]]: (leg[4], leg[3]) for leg in enabled}   # future -> (display, integrator)
+                for fut in as_completed(leg_by_fut):
+                    disp, integrator = leg_by_fut[fut]
                     try:
-                        a, m, ck = cfuts[mkey].result()
+                        a, m, ck = fut.result()
                         integrator(a, m, ck)
                     except Exception as e:
                         log.warning("%s unavailable: %s", disp, e); log_fn(f"{disp} unavailable: {e}")
                         continue
                     registry_upsert(sid, series=sorted(doc["series"]))
-                    cache.save_scene(sid, doc)       # progressive persistence: this series is now readable
+                    cache.save_scene(sid, doc)       # progressive persistence: this series is now paintable
 
                 if not doc["series"]:
                     raise RuntimeError("no collection returned data over this area (check your selection and the token)")
+                # streaming used arrival order; normalise the final series-dict to the canonical priority order
+                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
 
                 # surface: needs z0 (now known). The grid was fetched concurrently, so set_surface() is a cache hit;
                 # set_surface() is the authoritative attempt (fetches inline if the prefetch failed) -> identical result.
