@@ -68,7 +68,8 @@ def _index_covers(bbox) -> bool:
 
 def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_icessn
-    arr, st = index_icessn.fetch_bbox(bbox, window=window, res=index_icessn.ICESSN_RES)
+    # clip_cells: build from the H3 cells the selection actually touches (see glas._extract_via_index for the rationale).
+    arr, st = index_icessn.fetch_bbox(bbox, window=window, res=index_icessn.ICESSN_RES, polygon=polygon, clip_cells=True)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)

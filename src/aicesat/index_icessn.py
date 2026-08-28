@@ -152,8 +152,10 @@ CHUNK = 0
 _EMPTY = ("lon", "lat", "h", "t")
 
 
-def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
-    """Query the ICESSN line-offset index for the (granule, cell) byte spans whose cell touches the bbox (+window)."""
+def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[dict]]:
+    """Query the ICESSN line-offset index for the (granule, cell) byte spans whose cell touches the bbox (+window).
+    With `polygon` the touched-cell set is narrowed to the cells the polygon actually overlaps (not the whole
+    bounding rectangle)."""
     import duckdb
 
     from . import planner
@@ -161,7 +163,7 @@ def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no ICESSN index built at res {res} yet")
-    want_cells = planner.cells_for_bbox(bbox, res=res)
+    want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
     cols = ["granule", "url", "s3url", "gdate", "h3_cell", "byte_start", "byte_end"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
     if window:
@@ -198,18 +200,24 @@ def _parse_span_points(blobs, gdate: str, res: int) -> dict:
             "t": np.asarray(t, "datetime64[ms]") if t else np.array([], "datetime64[ms]"), "cell": cell}
 
 
-def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False) -> tuple[dict, dict]:
+def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, clip_cells: bool = False,
+               polygon=None) -> tuple[dict, dict]:
     """Lake-first index-driven ILATM2 fetch. The cache unit is the (granule, cell) line span; only the spans for cells
     not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
     S3-direct / presigned via access_url). Each fetched granule's spans are parsed to their FULL usable platelets (every
     filter but bbox) and written to the lake for exactly the fetched cells (a span materialises only the cells it was
     fetched for — its overlap with a neighbouring cell's span must not partially rewrite that neighbour). The result is
-    read back filtered to bbox (+window via granule selection). A repeat query over the same/overlapping area issues zero GETs."""
+    read back filtered to bbox (+window via granule selection). A repeat query over the same/overlapping area issues zero GETs.
+
+    `clip_cells` (opt-in) + `polygon`: address (and read back) by the H3 cells the selection actually touches instead of
+    the rectangular bounding bbox. When True the read keeps points by cell-membership at res `res` (query_points drops
+    the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
+    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour."""
     from . import lake
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
-    want_cells, rows = _index_rows(bbox, window, res)
+    want_cells, rows = _index_rows(bbox, window, res, polygon=polygon)
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
@@ -251,7 +259,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False) ->
         for pr in parts:
             lake.mark_ingested(MISSION, pr["granule"], BEAM, {CHUNK: pr["cells"]})
 
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM])
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells)
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ICESSN fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": n_nasa, "chunks_fetched": n_nasa,

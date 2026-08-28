@@ -16,6 +16,7 @@ window.AICESAT = window.AICESAT || {};
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
     imageryUrl: (id, v) => `/api/scene/${id}/imagery.jpg` + (v ? `?v=${v}` : ''),   // v busts the texture cache after a re-fetch
     sceneImagery: (id, source) => post(`/api/scene/${id}/imagery`, {source}),       // re-fetch imagery with a new source
+    deleteScene: id => post(`/api/scene/${id}/delete`, {}),                          // remove a scene (registry + doc); never touches the lake/cache
     coverage: a => j('/api/coverage?' + (a.bbox ? `bbox=${encodeURIComponent(JSON.stringify(a.bbox))}` : `polygon=${encodeURIComponent(JSON.stringify(a.polygon))}`)),
     extract: body => post('/api/extract', body),
     job: id => j(`/api/job/${id}`),
@@ -85,6 +86,7 @@ window.AICESAT = window.AICESAT || {};
         if (b64) imagery.set(id, 'data:image/jpeg;base64,' + b64);
         return meta;
       },
+      deleteScene: async id => { const r = await call('ui_scene_delete', {scene_id: id}); imagery.delete(id); return r; },
       coverage: a => call('ui_coverage', a),
       extract: body => call('ui_extract', body),
       job: id => call('ui_job', {job_id: id}),

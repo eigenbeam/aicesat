@@ -194,6 +194,50 @@ def test_start_job_runs_fanout_to_completion(monkeypatch, tmp_path):
     assert any(l.startswith("imagery: ") for l in log)
 
 
+def test_delete_scene_removes_only_the_scene_not_the_lake_or_cache(monkeypatch, tmp_path):
+    """delete_scene removes ONLY the scene's registry row + doc (+ any scene-scoped dir). The shared lake and the
+    content-addressed extract cache survive, so rebuilding the same area still hits them (zero NASA GETs)."""
+    from aicesat import lake
+
+    (tmp_path / "cache").mkdir(); (tmp_path / "scenes").mkdir()
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "SCENE_DIR", tmp_path / "scenes")
+    monkeypatch.setattr(api, "REGISTRY", tmp_path / "scenes" / "registry.json")
+    monkeypatch.setattr(lake, "LAKE_DIR", tmp_path / "lake")
+
+    sid = "abc1234567"
+    doc = scene.new_scene(sid, tuple(BBOX), "q", polygon=None)
+    doc["series"] = {"GLAS": {"cache_key": "shared-extract-key"}}   # the scene points at a SHARED extract-cache entry
+    cache.save_scene(sid, doc)
+    api.registry_upsert(sid, question="q", bbox=list(BBOX), status="ready", series=["GLAS"])
+    sdir = cache.SCENE_DIR / sid; sdir.mkdir(); (sdir / "artifact.bin").write_bytes(b"x")   # a scene-scoped render dir
+    # SHARED state that MUST survive: the extract cache the series references + a materialized lake cell file
+    cache.save("shared-extract-key", {"lon": np.array([1.0])}, {"n": 1})
+    cell_dir = lake.LAKE_DIR / "mission=GLAS" / "h3_cell=123"; cell_dir.mkdir(parents=True)
+    (cell_dir / "g__na__c0.parquet").write_bytes(b"lakebytes")
+
+    assert cache.load_scene(sid) is not None and sid in api._registry()
+
+    out = api.delete_scene(sid)
+    assert out["deleted"] and out["existed"]
+
+    # the scene's own footprint is gone (doc, registry row, scene-scoped dir), and it drops out of the listing
+    assert cache.load_scene(sid) is None
+    assert not (cache.SCENE_DIR / f"{sid}.json").exists()
+    assert sid not in api._registry()
+    assert not sdir.exists()
+    assert sid not in {s["scene_id"] for s in api.scenes()}
+
+    # SHARED lake + extract cache untouched -> the data survived the delete
+    assert (cell_dir / "g__na__c0.parquet").read_bytes() == b"lakebytes"
+    assert cache.load("shared-extract-key") is not None
+
+    # deleting a non-existent scene is a no-op; path-traversal input is refused
+    assert api.delete_scene(sid)["existed"] is False
+    with pytest.raises(ValueError):
+        api.delete_scene("../evil")
+
+
 def test_legs_overlap_in_time(monkeypatch, tmp_path):
     delay = 0.25
     _install(monkeypatch, tmp_path, delay=delay)

@@ -184,8 +184,9 @@ BEAM = "na"          # GLAH06 is beamless; a fixed beam token keeps the (mission
 _EMPTY = ("lon", "lat", "h", "t", "quality")
 
 
-def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
-    """Query the GLAS index for the (granule, chunk, cell) refs whose cell touches the bbox (+window)."""
+def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[dict]]:
+    """Query the GLAS index for the (granule, chunk, cell) refs whose cell touches the bbox (+window). With `polygon`
+    the touched-cell set is narrowed to the cells the polygon actually overlaps (not the whole bounding rectangle)."""
     import duckdb
 
     from . import planner
@@ -193,7 +194,7 @@ def _index_rows(bbox, window, res: int) -> tuple[list[int], list[dict]]:
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no GLAS index built at res {res} yet")
-    want_cells = planner.cells_for_bbox(bbox, res=res)
+    want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
     cols = ["granule", "url", "s3url", "chunk_index", "seg_start", "seg_end", "h3_cell"]
     for key in GLAS_KEYS:
         cols += [f"{key}_offset", f"{key}_size", f"{key}_dtype", f"{key}_filters", f"{key}_mask", f"{key}_fill"]
@@ -227,17 +228,23 @@ def _decode_chunk(raws: dict, r: dict) -> dict:
     return {"lat": dec["lat"], "lon": lon, "h": h, "t": t, "quality": dec["elev_use"], "valid": valid}
 
 
-def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False) -> tuple[dict, dict]:
+def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip_cells: bool = False,
+               polygon=None) -> tuple[dict, dict]:
     """Lake-first index-driven GLAH06 fetch (mirrors the ATL03 planner / ATL06 path). Only chunks whose wanted cells
     are not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
     S3-direct / presigned via access_url). Each fetched chunk's FULL pre-mask shots are written to the lake partitioned
     by each shot's own res-`res` cell, then read back filtered to bbox (+window via granule selection). A repeat query
-    over the same/overlapping area issues zero NASA GETs. Returns (arrays, stats) with chunks_from_lake / chunks_from_nasa."""
+    over the same/overlapping area issues zero NASA GETs. Returns (arrays, stats) with chunks_from_lake / chunks_from_nasa.
+
+    `clip_cells` (opt-in) + `polygon`: address (and read back) by the H3 cells the selection actually touches instead of
+    the rectangular bounding bbox. When True the read keeps points by cell-membership at res `res` (query_points drops
+    the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
+    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour."""
     from . import lake
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
-    want_cells, rows = _index_rows(bbox, window, res)
+    want_cells, rows = _index_rows(bbox, window, res, polygon=polygon)
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
@@ -291,7 +298,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False) -> t
         for g, cm in ingest.items():
             lake.mark_ingested(MISSION, g, BEAM, cm)
 
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",))
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",), clip_cells=clip_cells)
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (GLAS fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),

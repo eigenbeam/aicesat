@@ -229,6 +229,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, api.lake_evict(self._body()["cells"]))
         except Exception as e:
             return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/scene/") and self.path.split("?")[0].endswith("/delete"):
+            sid = self.path.split("/")[3].split("?")[0]
+            try:
+                return self._json(200, api.delete_scene(sid))
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if self.path.startswith("/api/scene/") and self.path.split("?")[0].endswith("/imagery"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
@@ -429,6 +435,11 @@ def ui_coregister(scene_id: str) -> dict:
 @apps.tool(name="ui_scene_imagery", **_APP)
 def ui_scene_imagery(scene_id: str, source: str = "s2") -> dict:
     return api.scene_add_imagery(scene_id, source)
+
+
+@apps.tool(name="ui_scene_delete", **_APP)
+def ui_scene_delete(scene_id: str) -> dict:
+    return api.delete_scene(scene_id)
 
 
 @apps.tool(name="ui_candidates", **_APP)

@@ -90,7 +90,10 @@ def _index_covers(bbox) -> bool:
 
 def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_glas
-    arr, st = index_glas.fetch_bbox(bbox, window=window, res=index_glas.GLAS_RES)
+    # clip_cells: build from the H3 cells the selection actually touches (a box gains a hex-aligned fringe; a polygon no
+    # longer expands to its bounding rectangle). The precise points_in_polygon below still trims a polygon to its exact
+    # shape; the win is that only the touched hexes are addressed/materialized, not the whole bbox rectangle.
+    arr, st = index_glas.fetch_bbox(bbox, window=window, res=index_glas.GLAS_RES, polygon=polygon, clip_cells=True)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)

@@ -119,7 +119,8 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
 
 
 def query_points(bbox, cells: list[int], mission: str, granules: list[str] | None = None,
-                 beams: list[str] | None = None, extra_cols: tuple[str, ...] = (), quality_zero: bool = False) -> dict:
+                 beams: list[str] | None = None, extra_cols: tuple[str, ...] = (), quality_zero: bool = False,
+                 clip_cells: bool = False) -> dict:
     """Read materialized index-mission points back (the analogue of query_photons): DuckDB over the mission's cell
     files with cell + bbox (+ granule, + beam, + optional quality) predicate pushdown. Returns the SAME dict shape the
     mission's fetch_bbox returns: {'lon','lat','h','t'} plus each name in `extra_cols`.
@@ -128,7 +129,14 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
     `__pts.parquet`. `granules` restricts the read to the granules the caller's window selected — trimming an
     accumulated lake (wider granule set from a prior, broader query) to exactly this request, byte-identically to a
     direct fetch. `beams` likewise restricts to the beams the query selected, so a strong-only ATL06 query never picks
-    up weak-beam points a prior all-beam query may have materialized in the same cell."""
+    up weak-beam points a prior all-beam query may have materialized in the same cell.
+
+    `clip_cells` (opt-in) drops the rectangular native_lat/native_lon bbox predicate and keeps ONLY the cell-membership
+    predicate (`h3_cell IN cells`). The lake partitions every point into the file of its OWN res-`res` cell (computed
+    at ingest with planner._cells_vectorized — see write_point_chunk), so `h3_cell IN cells` is exactly "keep points
+    whose H3 cell at this mission's resolution is in the touched-cell set" — the hex-membership clip the caller wants
+    for a polygon / hex-aligned box. Default (False) keeps today's rectangular-bbox behaviour byte-for-byte (the golden
+    the lake-cache tests and bench_vs_h5coro rely on)."""
     base = {"lon": np.array([]), "lat": np.array([]), "h": np.array([]), "t": np.array([]),
             **{c: np.array([]) for c in extra_cols}}
     if not cells or not LAKE_DIR.exists():
@@ -137,8 +145,9 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
     if not any(LAKE_DIR.glob(f"mission={mission}/h3_cell=*/*__c*.parquet")):
         return base
     w, s, e, n = bbox
-    cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})",
-            f"native_lat BETWEEN {s} AND {n}", f"native_lon BETWEEN {w} AND {e}"]
+    cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})"]
+    if not clip_cells:
+        cond += [f"native_lat BETWEEN {s} AND {n}", f"native_lon BETWEEN {w} AND {e}"]
     if granules is not None:
         cond.append("source_granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
     if beams is not None:
