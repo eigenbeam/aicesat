@@ -1,8 +1,7 @@
 """Offline parser tests for the two added missions: ICESat-2 ATL06 and IceBridge ATM ICESSN (ILATM2)."""
-import h5py
 import numpy as np
 
-from aicesat import atl06, icessn
+from aicesat import icessn
 
 
 def test_icessn_parse_nadir_lon_and_rms(tmp_path):

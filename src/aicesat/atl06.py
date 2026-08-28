@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 
-import h5py
 import numpy as np
 
 from . import cache, coverage
