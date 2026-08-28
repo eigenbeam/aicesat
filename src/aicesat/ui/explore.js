@@ -32,6 +32,8 @@ AICESAT.ExploreView = class {
             <label><input type="radio" name="gran" value="all" checked> all granules</label>
             <label><input type="radio" name="gran" value="limit"> limit <input id="exMaxG" type="number" value="12" min="1" max="500" disabled></label>
           </div>
+          <div class="img-row"><label><input type="checkbox" id="exImg" checked> Satellite imagery</label>
+            <select id="exImgSrc" title="Imagery source"><option value="eox">EOX cloudless</option><option value="s2">Sentinel-2 (in-region)</option></select></div>
           <div class="row"><button id="exBuild" disabled>Build scene</button></div>
         </div>
       </div>
@@ -74,12 +76,14 @@ AICESAT.ExploreView = class {
     };
     // granules: all (unlimited) vs limit N
     root.querySelectorAll('input[name="gran"]').forEach(r => r.onchange = () => { $('exMaxG').disabled = root.querySelector('input[name="gran"]:checked').value !== 'limit'; });
+    $('exImg').onchange = () => { $('exImgSrc').disabled = !$('exImg').checked; };   // imagery off -> disable source picker
 
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColList').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
       const limited = root.querySelector('input[name="gran"]:checked').value === 'limit';
       const body = {...a, max_granules: limited ? +$('exMaxG').value : 100000, ...flags,
         with_coreg: !!(flags.with_atl03 && flags.with_glas),
+        with_imagery: $('exImg').checked, imagery_source: $('exImgSrc').value,
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
       try {

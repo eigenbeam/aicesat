@@ -58,11 +58,16 @@ def _merc(lon, lat, z):
     return x, y  # in tile units
 
 
-def build(frame: dict, extent: tuple[float, float, float, float], width_px: int = 2048, layer: str = LAYER) -> dict:
-    """Base-layer imagery for the scene. Dispatches on env AICESAT_IMAGERY: "s2" -> in-region Sentinel-2 L2A COGs
-    (us-west-2), anything else (default "eox") -> EOX Sentinel-2 cloudless WMTS. Both return the same meta contract:
+SOURCES = ("eox", "s2")   # user-facing imagery sources (see build())
+
+
+def build(frame: dict, extent: tuple[float, float, float, float], width_px: int = 2048, layer: str = LAYER,
+          source: str | None = None) -> dict:
+    """Base-layer imagery for the scene. Source precedence: explicit `source` arg (per-scene, from the UI selector) >
+    env AICESAT_IMAGERY > default "eox". "s2" -> in-region Sentinel-2 L2A COGs (us-west-2); "eox" -> EOX Sentinel-2
+    cloudless WMTS. Both return the same meta contract:
     {path, x0, y0, x1, y1, zoom, m_per_px, width, height, attribution, source}."""
-    src = os.environ.get("AICESAT_IMAGERY", "eox").strip().lower()
+    src = (source or os.environ.get("AICESAT_IMAGERY", "eox")).strip().lower()
     if src == "s2":
         return _build_s2(frame, extent, width_px)
     return _build_eox(frame, extent, width_px, layer)

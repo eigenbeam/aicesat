@@ -121,8 +121,8 @@ def _chunked_bytes(raw: bytes, chunk: int, chunk_bytes: int, mime: str) -> dict:
 
 # ----------------------------------------------------------------------------- building scenes (jobs)
 def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, with_atl03=False, log_fn=lambda m: None,
-                scene_id: str | None = None) -> dict:
+                with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
+                log_fn=lambda m: None, scene_id: str | None = None) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
     plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
     optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
@@ -204,7 +204,7 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
 
             def _prefetch_imagery():                 # warm the imagery JPEG cache; add_imagery() below then cache-hits
                 from . import imagery
-                imagery.build(frame, extent, 4096)   # width matches scene.add_imagery's default
+                imagery.build(frame, extent, 4096, source=imagery_source)   # width matches scene.add_imagery's default
 
             def _prefetch_dem():                     # warm the DEM grid npz (keyed by extent, independent of z0)
                 from . import dem
@@ -217,7 +217,7 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 cfuts = {leg[0]: ex.submit(leg[2]) for leg in enabled}
                 if with_atl03:
                     log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
-                img_fut = ex.submit(_prefetch_imagery)
+                img_fut = ex.submit(_prefetch_imagery) if with_imagery else None
                 dem_fut = ex.submit(_prefetch_dem)
 
                 # z0 barrier + series. Integrate in priority order: the first collection to succeed sets doc["z0"]
@@ -247,17 +247,19 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 cache.save_scene(sid, doc)
 
                 # imagery: independent of z0 and collections; fetched concurrently, finalised here. add_imagery() is
-                # the authoritative attempt (cache hit if the prefetch succeeded, inline fetch otherwise).
-                try:
+                # the authoritative attempt (cache hit if the prefetch succeeded, inline fetch otherwise). Skipped
+                # entirely when imagery is toggled off; `imagery_source` (UI selector) picks EOX vs in-region S2.
+                if with_imagery:
                     try:
-                        img_fut.result()
+                        try:
+                            img_fut.result()
+                        except Exception as e:
+                            log.info("imagery prefetch failed; add_imagery will fetch inline: %s", e)
+                        scene.add_imagery(doc, source=imagery_source)
+                        log_fn(f"imagery: {doc['imagery'].get('source','?')} · {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
                     except Exception as e:
-                        log.info("imagery prefetch failed; add_imagery will fetch inline: %s", e)
-                    scene.add_imagery(doc)
-                    log_fn(f"imagery: {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
-                except Exception as e:
-                    log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
-                cache.save_scene(sid, doc)
+                        log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
+                    cache.save_scene(sid, doc)
         can_coreg = "ICESAT2" in doc["series"] and "GLAS" in doc["series"]
         if with_coreg and can_coreg:
             coregister(sid)
@@ -283,6 +285,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
                                   bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
                                   with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
                                   with_atl03=bool(params.get("with_atl03", False)),
+                                  with_imagery=bool(params.get("with_imagery", True)), imagery_source=params.get("imagery_source"),
                                   log_fn=lambda m: job["log"].append(m), scene_id=sid)
                 job.update(status="done", widget_url=_widget_url(doc["scene_id"]))
             else:

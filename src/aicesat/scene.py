@@ -53,11 +53,12 @@ def bbox_extent(frame: dict) -> tuple[float, float, float, float]:
     return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
 
 
-def add_imagery(doc: dict, width_px: int = 4096) -> dict:
-    """Fetch/warp the imagery base layer for the scene's bbox (network); records the file path and extent."""
+def add_imagery(doc: dict, width_px: int = 4096, source: str | None = None) -> dict:
+    """Fetch/warp the imagery base layer for the scene's bbox (network); records the file path and extent.
+    `source` (from the UI selector) overrides the AICESAT_IMAGERY default; None uses the env/default."""
     from . import imagery
 
-    meta = imagery.build(doc["frame"], bbox_extent(doc["frame"]), width_px)
+    meta = imagery.build(doc["frame"], bbox_extent(doc["frame"]), width_px, source=source)
     doc["imagery"] = {**meta, "url": f"/api/scene/{doc['scene_id']}/imagery.jpg"}
     return doc
 

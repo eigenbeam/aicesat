@@ -244,3 +244,6 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .bar > div.building { background:var(--blue); }
 .idxbuild { color:var(--amber); margin-top:4px; line-height:1.35; }
 .tiptip { color:#9fe6da; }
+
+.img-row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:12px}
+.img-row select{margin-left:auto;font-size:12px}

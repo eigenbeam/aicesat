@@ -93,7 +93,9 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     if not _index_covers(bbox):
         raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first (scripts/build_atl06_index.py)")
     from . import index_atl06
-    arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES)
+    # All 6 beams (strong + weak). The index already stores every beam; weak beams add coverage/cross-mission
+    # coincidence, and atl06_quality_summary==0 (quality_zero) still filters their higher-noise returns.
+    arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES, strong_only=False)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
@@ -104,7 +106,7 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     meta = {"mission": "ATL06", "product": f"ATL06 v{coverage.ATL06_VERSION}", "bbox": list(bbox),
             "window": list(window), "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid",
             "ellipsoid_correction": "none (h_li native WGS84 ellipsoid, ITRF2014)",
-            "quality_filter": "atl06_quality_summary == 0", "n": int(arrays["lon"].size),
+            "quality_filter": "atl06_quality_summary == 0", "beams": "all 6 (strong + weak)", "n": int(arrays["lon"].size),
             "source": "sub-granule H3 index (byte-range)", "access": st, "polygon": polygon, "cache_key": k}
     cache.save(k, arrays, meta)
     log.info("atl06 via index: %d segments, %d GETs, %.1f MB", arrays["lon"].size, st.get("requests", 0), st.get("bytes", 0) / 1e6)
