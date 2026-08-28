@@ -116,7 +116,11 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
 
     t0 = float(YR.min())
     tbin = np.floor((YR - t0) / delta_t).astype("i4")
-    cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), int(h3_res))) for la, lo in zip(LAT, LON)], dtype="u8")
+    try:   # vectorized cell assignment (matches index_atl06); re-runs on every h3_res/delta_t sweep, so it must be fast
+        from h3ronpy.vector import coordinates_to_cells
+        cells = np.asarray(coordinates_to_cells(LAT.astype("f8"), LON.astype("f8"), int(h3_res)), dtype="u8")
+    except Exception:
+        cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), int(h3_res))) for la, lo in zip(LAT, LON)], dtype="u8")
 
     order = np.argsort(cells, kind="mergesort")
     cs = cells[order]

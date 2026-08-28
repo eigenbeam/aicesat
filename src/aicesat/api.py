@@ -280,13 +280,17 @@ _INDEX_CACHE: dict = {}   # collection -> {"seen": {name: mtime}, "cells": set()
 
 def _index_source(collection: str):
     """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet."""
-    from . import index_atl06
+    from . import index_atl06, index_glas, index_icessn
     from . import index as atl03_index
     if collection == "ATL06":
         return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES
     if collection in ("ICESAT2", "ATL03"):
         return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES
-    return None, None   # GLAS, ICESSN: not indexed yet
+    if collection == "GLAS":
+        return index_glas._index_dir(index_glas.GLAS_RES), index_glas.GLAS_RES
+    if collection == "ICESSN":
+        return index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_RES
+    return None, None
 
 
 def index_status(collection: str = "ATL06") -> dict:
@@ -306,15 +310,19 @@ def index_status(collection: str = "ATL06") -> dict:
         if c["seen"].get(pth.name) == mt:
             continue
         try:
-            t = pq.read_table(pth, columns=["h3_cell", "cycle"])
+            names = set(pq.read_schema(pth).names)
+            cols = ["h3_cell"] + [x for x in ("cycle", "gdate") if x in names]
+            t = pq.read_table(pth, columns=cols)
         except Exception:
             continue   # parquet mid-write; skip this poll
-        h3c, cyc = t["h3_cell"].to_pylist(), t["cycle"].to_pylist()
-        cy = int(cyc[0]) if cyc else 0                    # one granule per parquet -> one cycle
+        h3c = t["h3_cell"].to_pylist()
+        gd = str(t["gdate"][0].as_py()) if "gdate" in cols and len(t) else ""
         try:
-            yr = int(pth.stem[6:10])                       # ATL0x_YYYYMMDD... -> year
+            yr = int(gd[:4]) if gd else int(pth.stem[6:10])   # GLAS/ICESSN: gdate column; ATL0x: name YYYYMMDD
         except ValueError:
             yr = 0
+        # depth token per granule: ICESat-2 cycle where present, else the year (GLAS/ICESSN have no repeat cycle)
+        cy = (int(t["cycle"][0].as_py()) if "cycle" in cols and len(t) else yr)
         for cell in {int(x) for x in h3c}:
             inf = c["info"].setdefault(cell, [0, set(), 9999, 0])
             inf[0] += 1; inf[1].add(cy)

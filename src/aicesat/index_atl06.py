@@ -201,14 +201,19 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     for r in rows:
         rec = dict(zip(cols, r)); by_url.setdefault(rec["url"], []).append(rec)
 
+    # Presign ALL granules up front in parallel (avoids the serial ~1.7 s x N), then fetch per-granule with a
+    # warm presign. Per-granule fetch bounds concurrency (8-way within a granule) so a constrained uplink degrades
+    # gracefully instead of splitting its bandwidth across dozens of simultaneous GETs; on a fat in-region link the
+    # batched presign is the win and the per-granule GET serialization costs little (transfers are latency-bound).
     reader = RangeReader(threads=8)
+    reader.presign_all(list(by_url))
     out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
     for url, rs in by_url.items():
         ranges, keys = [], []
         for r in rs:
             for ds in ATL06_DATASETS:
                 ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
-        raws = dict(zip(keys, reader.fetch(url, ranges)))
+        raws = dict(zip(keys, reader.fetch(url, ranges)))   # warm presign -> just byte-range GETs
         for r in rs:
             seg_n = r["seg_end"] - r["seg_start"]; sdp = r["sdp_epoch"]
             dec = {ds: decode_chunk(raws[(r["beam"], r["chunk_index"], ds)], r[f"{ds}_dtype"], r[f"{ds}_filters"], 1, r[f"{ds}_mask"])[:seg_n] for ds in ATL06_DATASETS}

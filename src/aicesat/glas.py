@@ -72,6 +72,47 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
             "rec_ndx": f[V["rec_ndx"]][sl][keep].astype("i8"), "shot": f[V["shot"]][sl][keep].astype("i4")}
 
 
+def _index_covers(bbox) -> bool:
+    """True if the GLAS sub-granule index was built over a region that contains this bbox."""
+    import json
+
+    from . import index_glas
+    mf = index_glas._index_dir(index_glas.GLAS_RES) / "_build.json"
+    if not mf.exists():
+        return False
+    try:
+        b = json.loads(mf.read_text()).get("bbox")
+        w, s, e, n = bbox
+        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
+    except Exception:
+        return False
+
+
+def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
+    from . import index_glas
+    arr, st = index_glas.fetch_bbox(bbox, window=window, res=index_glas.GLAS_RES)
+    if polygon is not None:
+        from .geom import points_in_polygon
+        keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
+        arr = {kk: v[keep] for kk, v in arr.items()}
+    if not arr["h"].size:
+        raise RuntimeError(f"no usable GLAS shots over {bbox} in {window} (index)")
+    arrays = {"lon": arr["lon"], "lat": arr["lat"], "h": arr["h"], "t": arr["t"]}
+    days = arrays["t"].astype("datetime64[D]")
+    camp: dict = {}
+    for d0 in np.unique(days):
+        c = campaign_for(date.fromisoformat(str(d0)))
+        camp[c] = camp.get(c, 0) + int((days == d0).sum())
+    meta = {"mission": "GLAS", "product": f"GLAH06 v{coverage.GLAS_VERSION}", "bbox": list(bbox),
+            "window": list(window), "native_frame": "ITRF2008", "height_ref": "WGS84 ellipsoid (converted)",
+            "ellipsoid_correction": "h = d_elev + d_satElevCorr - d_deltaEllip (TOPEX/Poseidon -> WGS84)",
+            "n": int(arrays["lon"].size), "campaigns": dict(sorted(camp.items())), "max_sat_flag": MAX_SAT_FLAG,
+            "source": "sub-granule H3 index (byte-range)", "access": st, "polygon": polygon, "cache_key": k}
+    cache.save(k, arrays, meta)
+    log.info("glas via index: %d shots, %d GETs, %.1f MB", arrays["lon"].size, st.get("requests", 0), st.get("bytes", 0) / 1e6)
+    return arrays, meta
+
+
 def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("glas", coverage.GLAS_VERSION, bbox, window, max_granules, MAX_SAT_FLAG, polygon)
     hit = cache.load(k)
@@ -79,6 +120,8 @@ def extract(bbox, window, max_granules: int = 400, polygon=None) -> tuple[dict[s
         log.info("glas cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
+    if _index_covers(bbox):   # discovery path: byte-range the indexed chunks, no CMR + no whole-granule download
+        return _extract_via_index(bbox, window, polygon, k)
     import earthaccess
 
     auth.login()

@@ -50,6 +50,44 @@ def _parse_file(path: str, bbox) -> dict[str, np.ndarray] | None:
             "rms_cm": rms_cm[keep], "npt_used": a[:, 7][keep].astype("i4")}
 
 
+def _index_covers(bbox) -> bool:
+    """True if the ICESSN line-offset index was built over a region that contains this bbox."""
+    import json
+
+    from . import index_icessn
+    mf = index_icessn._index_dir(index_icessn.ICESSN_RES) / "_build.json"
+    if not mf.exists():
+        return False
+    try:
+        b = json.loads(mf.read_text()).get("bbox")
+        w, s, e, n = bbox
+        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
+    except Exception:
+        return False
+
+
+def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:
+    from . import index_icessn
+    arr, st = index_icessn.fetch_bbox(bbox, window=window, res=index_icessn.ICESSN_RES)
+    if polygon is not None:
+        from .geom import points_in_polygon
+        keep = points_in_polygon(arr["lon"], arr["lat"], polygon)
+        arr = {kk: v[keep] for kk, v in arr.items()}
+    if not arr["h"].size:
+        raise RuntimeError(f"no usable ICESSN platelets over {bbox} in {window} (index)")
+    arrays = {"lon": arr["lon"], "lat": arr["lat"], "h": arr["h"], "t": arr["t"]}
+    years = np.unique(arrays["t"].astype("datetime64[Y]")).astype(str).tolist()
+    meta = {"mission": "ICESSN", "product": f"ILATM2 v{coverage.ICESSN_VERSION}", "bbox": list(bbox),
+            "window": list(window), "native_frame": "ITRF (campaign-dependent)", "height_ref": "WGS84 ellipsoid",
+            "ellipsoid_correction": "none (icessn elevation native WGS84 ellipsoid)",
+            "quality_filter": f"track==0 (nadir), plane-fit RMS < {MAX_RMS_CM:.0f} cm", "years": years,
+            "n": int(arrays["lon"].size), "source": "sub-granule H3 index (byte-range)", "access": st,
+            "polygon": polygon, "cache_key": k}
+    cache.save(k, arrays, meta)
+    log.info("icessn via index: %d platelets, %d GETs, %.2f MB", arrays["lon"].size, st.get("requests", 0), st.get("bytes", 0) / 1e6)
+    return arrays, meta
+
+
 def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
     k = cache.key("icessn", coverage.ICESSN_VERSION, bbox, window, max_granules, MAX_RMS_CM, polygon)
     hit = cache.load(k)
@@ -57,6 +95,8 @@ def extract(bbox, window, max_granules: int = 12, polygon=None) -> tuple[dict[st
         log.info("icessn cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
+    if _index_covers(bbox):   # discovery path: byte-range only the indexed line spans, no CMR + no whole-file download
+        return _extract_via_index(bbox, window, polygon, k)
     import earthaccess
 
     auth.login()
