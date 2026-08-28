@@ -89,8 +89,18 @@ def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
             continue                                # regional index: only platelets inside the build bbox
         lats.append(lat); lons.append(lon)
         starts.append(start); ends.append(min(pos, size))
-    if not lats:
-        return pa.table({"granule": pa.array([], type=pa.string())})   # nothing inside bbox; write no parquet
+    if not lats:   # no platelets inside bbox: write a schema-matched EMPTY parquet so the granule counts as done
+        d = _index_dir(res)
+        ref = next(iter(d.glob("*.parquet")), None)
+        if ref is None:
+            return pa.table({"granule": pa.array([], type=pa.string())})   # no sibling to match the schema yet; skip
+        empty = pq.read_schema(ref).empty_table()
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{name}.parquet.tmp"
+        pq.write_table(empty, tmp)
+        tmp.replace(d / f"{name}.parquet")
+        log.info("indexed ICESSN %s: 0 platelets in bbox -> empty parquet", name)
+        return empty
     lat_a = np.asarray(lats, "f8"); lon_a = np.asarray(lons, "f8")
     st_a = np.asarray(starts, "i8"); en_a = np.asarray(ends, "i8")
     try:

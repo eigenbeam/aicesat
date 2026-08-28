@@ -153,8 +153,18 @@ def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
                 rows[f"{key}_filters"].append(fl); rows[f"{key}_dtype"].append(dt)
                 rows[f"{key}_mask"].append(int(ci.filter_mask)); rows[f"{key}_fill"].append(float(fills[key]))
 
-    if not rows["granule"]:
-        return pa.table({"granule": pa.array([], type=pa.string())})   # nothing inside bbox; write no parquet
+    if not rows["granule"]:   # no data inside bbox: write a schema-matched EMPTY parquet so the granule counts as done
+        d = _index_dir(res)
+        ref = next(iter(d.glob("*.parquet")), None)
+        if ref is None:
+            return pa.table({"granule": pa.array([], type=pa.string())})   # no sibling to match the schema yet; skip
+        empty = pq.read_schema(ref).empty_table()
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{name}.parquet.tmp"
+        pq.write_table(empty, tmp)
+        tmp.replace(d / f"{name}.parquet")
+        log.info("indexed GLAS %s: 0 rows (no shots in bbox) -> empty parquet", name)
+        return empty
     tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
     tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
