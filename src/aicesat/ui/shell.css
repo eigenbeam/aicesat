@@ -191,6 +191,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 /* scene cards + inline build progress inside the Scenes list */
 .scene-card { border-bottom:1px solid var(--hair); padding:3px 0; }
 .scene-card:last-child { border-bottom:none; }
+/* delete (✕): subtle, sits at the end of the card row; reddens on hover */
+.sc-del { flex:0 0 auto; padding:2px 7px; color:var(--muted); border-color:transparent; background:none; font-size:12px; line-height:1; }
+.sc-del:hover { color:var(--red); border-color:var(--red); background:rgba(217,83,79,.12); }
 .scene-prog { margin:3px 0 5px 6px; padding-left:9px; border-left:2px solid var(--hair); }
 .pstep .pname { font-weight:600; }
 
@@ -231,17 +234,27 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .comp-bar { flex:0 0 46px; height:5px; background:#2a2a33; border-radius:3px; overflow:hidden; }
 .comp-bar i { display:block; height:100%; background:var(--blue); }
 
-/* Data Lake: ATL06 index-build coverage readout */
-.idxstat { margin-top:5px; color:var(--ink); line-height:1.5; }
-.idxswatch { display:inline-block; width:10px; height:10px; border-radius:3px; background:rgba(80,220,200,.55); border:1px solid rgba(80,220,200,.9); margin-right:5px; vertical-align:middle; }
+/* Data Lake: small index swatch (shared by the summary table + tooltips) */
+.idxswatch { display:inline-block; width:9px; height:9px; border-radius:3px; background:rgba(80,220,200,.55); border:1px solid rgba(80,220,200,.9); margin-right:5px; vertical-align:middle; }
 
-/* Data Lake: Index|Data view selector */
-.lkview { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-.lkcoll { flex:1 1 auto; min-width:0; }
-.lkhint { color:var(--muted); line-height:1.35; margin-bottom:6px; }
+/* Data Lake: overall usage row (bytes vs budget + limit control) */
+.lk-usage-row { display:flex; align-items:center; gap:6px; margin-bottom:5px; }
+.lk-usage-row .grow { flex:1; }
+.lk-usage #lkUse b { color:var(--ink); font-variant-numeric:tabular-nums; }
 
-/* Data Lake: index-build progress */
-.bar > div.building { background:var(--blue); }
-.idxbuild { color:var(--amber); margin-top:4px; line-height:1.35; }
-.tiptip { color:#9fe6da; }
+/* Data Lake: per-collection summary table (index built + coverage | data loaded); click a row to focus it */
+.lk-cols { border-collapse:collapse; width:100%; font-size:12px; margin:9px 0 7px; }
+.lk-cols td { padding:5px 6px; border-bottom:1px solid #26262e; vertical-align:top; }
+.lk-cols .lk-col-hd td { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--hair); padding:2px 6px; }
+.lk-col-row { cursor:pointer; }
+.lk-col-row:hover { background:#22222a; }
+.lk-col-row.on { background:rgba(55,138,221,.14); }
+.lk-col-row.on .lk-col-name b { color:var(--blue); }
+.lk-col-name b { font-weight:600; }
+.lk-cols b { font-variant-numeric:tabular-nums; }
+.lk-cols .no { color:var(--muted); opacity:.7; }
+
+/* Data Lake: Index|Loaded map selector + hint */
+.lkview { display:flex; align-items:center; gap:8px; margin:2px 0 6px; }
+.lkhint { color:var(--muted); line-height:1.35; margin-bottom:2px; min-height:1.35em; }
 

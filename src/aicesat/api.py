@@ -73,6 +73,46 @@ def scene_doc(scene_id: str) -> dict | None:
     return cache.load_scene(scene_id)
 
 
+def delete_scene(scene_id: str) -> dict:
+    """Permanently remove ONE scene from Explore: its registry row + its scene doc (cache.SCENE_DIR/<id>.json) + any
+    scene-scoped subdirectory (cache.SCENE_DIR/<id>/...). Irreversible and user-initiated — that's fine here.
+
+    Scoped tightly to the scene's OWN files. It deliberately touches NOTHING shared:
+      * the Parquet lake (data/lake/mission=*/... + its coverage DuckDB) — the materialized cell cache is shared across
+        scenes and is the point of the lake-cache feature; never evicted/removed here;
+      * the content-addressed extract cache (cache.py CACHE_DIR entries the scene's series reference by cache_key) —
+        the fetched GLAS/ICESSN/ATL06/ATL03 arrays, reused by other scenes over overlapping areas;
+      * the content-addressed imagery JPEG (data/cache/imagery/<hash>.jpg, keyed by extent, shared by any scene over
+        the same area) — the scene doc only points at it by path.
+    So re-building the same area afterward hits the lake/extract cache (zero NASA GETs), proving the data survived."""
+    import re
+    import shutil
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", scene_id or ""):   # scene ids are uuid4 hex[:10]; refuse path-traversal input
+        raise ValueError(f"invalid scene id {scene_id!r}")
+    existed = False
+    # 1) registry row — atomic rewrite, mirroring registry_upsert
+    reg = _registry()
+    if scene_id in reg:
+        del reg[scene_id]
+        existed = True
+        cache.SCENE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = REGISTRY.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(reg, indent=1, default=str))
+        os.replace(tmp, REGISTRY)
+    # 2) the scene doc itself (SCENE_DIR/<id>.json)
+    p = cache.SCENE_DIR / f"{scene_id}.json"
+    if p.exists():
+        p.unlink()
+        existed = True
+    # 3) any scene-scoped render subdirectory (SCENE_DIR/<id>/...) — never anything outside SCENE_DIR/<id>
+    d = cache.SCENE_DIR / scene_id
+    if d.is_dir():
+        shutil.rmtree(d, ignore_errors=True)
+        existed = True
+    return {"scene_id": scene_id, "deleted": True, "existed": existed}
+
+
 def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = 96_000, stride: int = 1) -> dict:
     """Chunked access for hosts with small result limits. parts: meta | surface | imagery | coreg | positions:<MISSION>
     (base64 float32 xyz, chunked) | dh (histogram data)."""

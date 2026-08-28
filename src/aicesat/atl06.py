@@ -95,7 +95,9 @@ def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[st
     from . import index_atl06
     # All 6 beams (strong + weak). The index already stores every beam; weak beams add coverage/cross-mission
     # coincidence, and atl06_quality_summary==0 (quality_zero) still filters their higher-noise returns.
-    arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES, strong_only=False)
+    # clip_cells: build from the H3 cells the selection actually touches (see glas._extract_via_index for the rationale).
+    arr, st = index_atl06.fetch_bbox(bbox, window=window, res=index_atl06.ATL06_RES, strong_only=False,
+                                     polygon=polygon, clip_cells=True)
     if polygon is not None:
         from .geom import points_in_polygon
         keep = points_in_polygon(arr["lon"], arr["lat"], polygon)

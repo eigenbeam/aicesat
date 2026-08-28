@@ -166,11 +166,12 @@ MISSION = "ATL06"
 _EMPTY = ("lon", "lat", "h", "t", "quality")
 
 
-def _index_rows(bbox, window, res: int, strong_only: bool) -> tuple[list[int], list[dict]]:
+def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tuple[list[int], list[dict]]:
     """Query the ATL06 index for the (granule, beam, chunk, cell) refs whose cell touches the bbox (+window). DuckDB
     pushes the cell predicate into the Parquet scan. `strong_only` keeps integration's weak-beam support: False fetches
-    all six beams (the index carries a `strong` flag). Returns (want_cells, rows) — one row per (granule,beam,chunk,cell)
-    carrying that chunk's byte refs (identical across the chunk's cells)."""
+    all six beams (the index carries a `strong` flag). With `polygon` the touched-cell set is narrowed to the cells the
+    polygon actually overlaps (not the whole bounding rectangle). Returns (want_cells, rows) — one row per
+    (granule,beam,chunk,cell) carrying that chunk's byte refs (identical across the chunk's cells)."""
     import duckdb
 
     from . import planner
@@ -178,7 +179,7 @@ def _index_rows(bbox, window, res: int, strong_only: bool) -> tuple[list[int], l
     d = _index_dir(res)
     if not d.exists():
         raise RuntimeError(f"no ATL06 index built at res {res} yet")
-    want_cells = planner.cells_for_bbox(bbox, res=res)
+    want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
     cols = ["granule", "url", "s3url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end", "h3_cell"]
     for ds in ATL06_DATASETS:
         cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
@@ -206,19 +207,24 @@ def _decode_chunk(raws: dict, r: dict) -> dict:
 
 
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
-               force: bool = False) -> tuple[dict, dict]:
+               force: bool = False, clip_cells: bool = False, polygon=None) -> tuple[dict, dict]:
     """Lake-first index-driven ATL06 fetch (mirrors the ATL03 planner). Only the chunks whose wanted cells are NOT yet
     materialized are byte-range fetched from NASA — the missing granules fetched concurrently (integration's per-granule
     pool + in-region S3-direct / presigned CloudFront via access_url). Each fetched chunk's FULL pre-mask points are
     written to the lake partitioned by each point's own res-`res` cell, then read back filtered to bbox (+window via
     granule selection, +quality). A repeat query over the same/overlapping area issues zero NASA GETs. `force`
     re-fetches. Weak beams are preserved via `strong_only`. Returns (arrays, stats) with chunks_from_lake /
-    chunks_from_nasa alongside the byte-range access counters."""
+    chunks_from_nasa alongside the byte-range access counters.
+
+    `clip_cells` (opt-in) + `polygon`: address (and read back) by the H3 cells the selection actually touches instead of
+    the rectangular bounding bbox. When True the read keeps points by cell-membership at res `res` (query_points drops
+    the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
+    polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour."""
     from . import lake
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
-    want_cells, rows = _index_rows(bbox, window, res, strong_only)
+    want_cells, rows = _index_rows(bbox, window, res, strong_only, polygon=polygon)
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
@@ -278,7 +284,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             lake.mark_ingested(MISSION, g, b, cm)
 
     beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero)
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero, clip_cells=clip_cells)
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ATL06 fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),

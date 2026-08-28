@@ -171,14 +171,28 @@ AICESAT.ExploreView = class {
     list.innerHTML = scenes.map(sc => {
       const meta = `${(sc.series || []).join(' + ') || '…'}${sc.coreg ? ' · coreg' : ''} · ${(sc.created || '').slice(0, 16).replace('T', ' ')}`;
       const head = `<div class="row"><span class="status ${sc.status}">${sc.status}</span><span class="grow" title="${sc.question || ''}">${sc.question || sc.scene_id}<br><span class="small">${meta}</span></span>` +
-        (sc.status === 'ready' ? `<button data-open="${sc.scene_id}">Open</button>` : '') + `</div>`;
+        (sc.status === 'ready' ? `<button data-open="${sc.scene_id}">Open</button>` : '') +
+        (sc.status !== 'loading' ? `<button class="sc-del" data-del="${sc.scene_id}" title="Delete this scene — removes it from Explore and the map. Fetched data stays in the lake, so rebuilding the same area is fast.">✕</button>` : '') + `</div>`;
       const entry = sc.job_id && this.jobs[sc.job_id];
       const prog = (sc.status === 'loading' && entry) ? `<div class="scene-prog">${this.progressHTML(entry.j, entry.plan)}</div>` : '';
       return `<div class="scene-card ${sc.status}">${head}${prog}</div>`;
     }).join('') || '<div class="small">no scenes yet — pick an area and build one</div>';
     list.querySelectorAll('button[data-open]').forEach(b => b.onclick = () => this.openScene(b.dataset.open));
+    list.querySelectorAll('button[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); this.deleteScene(b.dataset.del); });
     // adopt a loading scene whose job we aren't polling yet (e.g. after a page reload)
     scenes.forEach(sc => { if (sc.status === 'loading' && sc.job_id && !this.jobs[sc.job_id]) { this.jobs[sc.job_id] = {plan: {}, j: {status: 'running', log: []}}; this.pollJob(sc.job_id, {}); } });
+  }
+  async deleteScene(id) {
+    // Irreversible: confirm first. Removes only this scene (registry row + doc); the fetched data stays in the lake.
+    if (!window.confirm('Delete this scene? It is removed from Explore and the map. Fetched data stays in the lake (rebuilding the same area is fast). This cannot be undone.')) return;
+    AICESAT.clearError();
+    try {
+      await this.api.deleteScene(id);
+      this.map.state.scenes = (this.map.state.scenes || []).filter(sc => sc.scene_id !== id);
+      this.renderScenes();
+      this.map.render();          // drop its footprint from the map's `scenes` layer immediately
+      this.refresh();             // reconcile footprints + list with the server
+    } catch (e) { AICESAT.showError(e); }
   }
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;

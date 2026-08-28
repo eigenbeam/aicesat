@@ -208,6 +208,34 @@ def test_atl06_window_selects_granules_and_readback_follows():
     assert none["lon"].size == 0 and st["chunks_from_nasa"] == 0
 
 
+def test_atl06_polygon_clip_keeps_only_touched_cells_and_default_is_unchanged():
+    """clip_cells + polygon builds from the H3 cells the selection actually touches — a strict subset of the bbox cells,
+    read back by cell-membership (no rectangular bbox clip) — while the DEFAULT (no polygon, clip_cells=False) fetch
+    stays byte-for-byte the rectangular golden the lake-cache/bench predicate relies on."""
+    from aicesat import planner
+    _atl06_scene()
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+    res = index_atl06.ATL06_RES
+    poly = [(-45.5, 69.5), (-44.5, 69.5), (-44.5, 70.35), (-45.5, 70.35)]   # southern slab of the scene ([lon, lat] pairs)
+    want_full = set(planner.cells_for_bbox(bbox, res=res))
+    want_poly = set(planner.cells_for_bbox(bbox, res=res, polygon=poly))
+    assert want_poly and want_poly < want_full                             # the polygon touches strictly fewer cells
+
+    # polygon clip on a cold lake: only the touched hexes are addressed; the read keeps points by cell-membership
+    clipped, st_c = index_atl06.fetch_bbox(bbox, polygon=poly, clip_cells=True)
+    assert clipped["lon"].size > 0
+    assert st_c["cells"] == len(want_poly)                                 # addressed the touched-cell set, not the bbox
+    got_cells = set(int(c) for c in planner._cells_vectorized(clipped["lat"], clipped["lon"], res))
+    assert got_cells <= want_poly                                          # every returned point's res-5 cell is touched
+
+    # default path (no polygon, clip_cells=False): byte-identical to the rectangular direct golden, and it keeps the
+    # points in the cells the polygon dropped, so it returns strictly more than the clip.
+    golden, _ = index_atl06._fetch_direct(bbox)
+    default, _ = index_atl06.fetch_bbox(bbox)
+    _same(golden, default)
+    assert default["lon"].size > clipped["lon"].size
+
+
 # --------------------------------------------------------------------------------------------------------- GLAS fixture
 G_FLOAT = {"lat": "f8", "lon": "f8", "elev": "f8", "sat_corr": "f8", "delta_ellip": "f8", "time": "f8"}
 G_INT = {"elev_use": "i1", "sat_flag": "i1"}
