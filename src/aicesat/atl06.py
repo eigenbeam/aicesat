@@ -67,18 +67,8 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
 
 def _index_covers(bbox) -> bool:
     """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
-    import json
-
-    from . import index_atl06
-    mf = index_atl06._index_dir(index_atl06.ATL06_RES) / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    from . import index_atl06, index_manifest
+    return index_manifest.covers(index_atl06._index_dir(index_atl06.ATL06_RES), bbox)
 
 
 def extract(bbox, window, max_granules: int = 20, polygon=None) -> tuple[dict[str, np.ndarray], dict]:

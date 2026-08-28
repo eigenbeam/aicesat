@@ -132,17 +132,9 @@ def _index_for(key: str):
 
 
 def _index_covers_bbox(d, bbox) -> bool:
-    """True if the index's build manifest (_build.json) region contains this bbox."""
-    import json
-    mf = d / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    """True if any region in the index's build manifest (_build.json) contains this bbox."""
+    from . import index_manifest
+    return index_manifest.covers(d, bbox)
 
 
 def check_coverage(bbox, **_ignored) -> dict:

@@ -74,18 +74,8 @@ def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
 
 def _index_covers(bbox) -> bool:
     """True if the GLAS sub-granule index was built over a region that contains this bbox."""
-    import json
-
-    from . import index_glas
-    mf = index_glas._index_dir(index_glas.GLAS_RES) / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    from . import index_glas, index_manifest
+    return index_manifest.covers(index_glas._index_dir(index_glas.GLAS_RES), bbox)
 
 
 def _extract_via_index(bbox, window, polygon, k) -> tuple[dict[str, np.ndarray], dict]:

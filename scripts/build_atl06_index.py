@@ -11,7 +11,7 @@ import logging
 import sys
 import time
 
-from aicesat import auth, coverage, index_atl06
+from aicesat import auth, coverage, index_atl06, index_manifest
 
 
 def _index_one(granule, res):
@@ -45,10 +45,12 @@ def main():
     todo = [g for n, g in names.items() if n not in done]
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
-    import json, pathlib
-    md = index_atl06._index_dir(res); md.mkdir(parents=True, exist_ok=True)
-    (md / "_build.json").write_text(json.dumps({"bbox": bbox, "res": res, "target": len(names), "started": time.time()}))
+    # target counts every granule this directory will hold once the build finishes — this region's CMR set
+    # plus whatever another region already put here — so the UI's granules/target stays honest across regions.
+    md = index_atl06._index_dir(res)
+    index_manifest.record(md, bbox, res, target=len(set(names) | done), complete=False)
     if not todo:
+        index_manifest.mark_complete(md)
         log.info("nothing to do — index complete"); return
 
     t0 = time.time(); ok = err = rows = 0
@@ -62,6 +64,12 @@ def main():
                 el = time.time() - t0; rate = i / el if el else 0
                 log.info("%d/%d (%d ok, %d err, %d rows) | %.2f gran/s | elapsed %.1fm | ETA %.1fm",
                          i, len(todo), ok, err, rows, rate, el / 60, (len(todo) - i) / rate / 60 if rate else 0)
+    # Only now is the manifest's coverage claim true: it is written up front so the UI can show progress,
+    # so an interrupted build must stay complete=false or a copied-back index looks finished when it isn't.
+    if err == 0:
+        index_manifest.mark_complete(md)
+    else:
+        log.warning("%d granule(s) failed — leaving the manifest incomplete; re-run to retry them", err)
     log.info("DONE res %d: %d ok, %d err, %d rows in %.1fm -> %s",
              res, ok, err, rows, (time.time() - t0) / 60, index_atl06._index_dir(res))
 

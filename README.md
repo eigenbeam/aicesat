@@ -119,6 +119,24 @@ uv run scripts/serve.py                                     # widget server only
 uv run scripts/bench_access.py                              # access-method comparison
 ```
 
+Sub-granule index builders (one per collection; resumable, re-run to continue):
+
+```bash
+uv run scripts/build_atl06_index.py -52 62 -44 70 5 8       # ATL06 over W S E N [res] [workers]
+uv run scripts/build_glas_index.py  -52 62 -44 70 5 8       # GLAH06
+uv run scripts/build_icessn_index.py -52 62 -44 70 5 8      # IceBridge ILATM2
+```
+
+ATL06 has no whole-granule fallback, so without its index ICESat-2 data simply never loads. Building it
+is latency-bound rather than CPU-bound, so it is much faster in AWS us-west-2 where NSIDC S3-direct
+access works. To build it elsewhere and bring it home — see `docs/cryocloud-index-build.md`:
+
+```bash
+bash scripts/cryocloud_build_index.sh                       # on CryoCloud: build + package a tar
+uv run scripts/export_index.py                              #   (packaging alone)
+uv run scripts/import_index.py index.tar --dry-run          # on the laptop: merge it in
+```
+
 Data (`data/`) is gitignored; delete it to force a re-fetch.
 
 ## How Δh is measured
