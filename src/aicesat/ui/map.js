@@ -68,13 +68,14 @@ AICESAT.MapView = class {
     let html = null;
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
-    else if (info.layer && info.layer.id === 'index-cov' && info.object) { const o = info.object, p = s.indexPct; html = `<b>cell ${o.h}</b><br>${o.g} granule${o.g === 1 ? '' : 's'} · <b>${o.c}</b> cycle${o.c === 1 ? '' : 's'} indexed so far<br>${o.y0}\u2013${o.y1}` + (p != null && p < 100 ? `<br><span class="tiptip">index build ${p}% done — counts still rising</span>` : ''); }
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
     this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
   cellTooltip(o) {
     const U = AICESAT.util, st = o.stats;
     const head = `<b>H3 ${o.hexagon}</b> (res ${h3.getResolution(o.hexagon)})`;
+    if (o.idx) { const p = this.state.indexPct, x = o.idx;
+      return head + `<br><b>${x.g}</b> granule${x.g === 1 ? '' : 's'}, <b>${x.c}</b> cycle${x.c === 1 ? '' : 's'} indexed` + (x.y0 ? ` (${x.y0}-${x.y1})` : '') + (p != null && p < 100 ? `<br>index build ${p}% of granules done` : ''); }
     if (!st || !st.bytes) return head + '<br>not in the lake';
     return head + `<br>${U.fmtBytes(st.bytes)} · ${U.fmtN(st.rows)} rows · ${st.files} files<br>${(st.granules || []).length} granules · ${st.chunks || 0} chunks` +
       (st.last_ingested ? `<br>ingested ${U.fmtAge(st.age_s)}` : '') + (st.n_cells ? `<br>(${st.n_cells} res-6 cells aggregated)` : '');
@@ -147,21 +148,47 @@ AICESAT.MapView = class {
     let center = null; try { center = h3.latLngToCell(vs.latitude, vs.longitude, res0); } catch (e) {}
     const key = center + '|' + res0;
     const c = this._gridCache;
-    if (c && (this._interacting || (c.key === key && c.cellsRef === s.cells))) return c.layers;
+    if (c && (this._interacting || (c.key === key && c.cellsRef === s.cells && c.indexRef === s.indexCells))) return c.layers;
     const {cells, res} = this.gridCells();
     s.gridRes = res;
     const agg = this.gridData();
+    const idxFor = this.indexAt(res);   // grid-cell -> sub-granule-index info (or null), mapped to THIS grid resolution
     const patch = new Set(cells);
-    const fill = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
-    const grid = new H3HexagonLayer({id: 'grid', data: cells.map(hx => agg[hx] || {hexagon: hx, stats: null}), getHexagon: d => d.hexagon, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
-      getFillColor: fill, getLineColor: d => (d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40], lineWidthMinPixels: 1, pickable: true});
-    const loaded = Object.values(agg).filter(a => !patch.has(a.hexagon));   // loaded cells outside the patch -> always drawn
+    // In index mode the grid IS the index view: a cell in the index is coloured by temporal depth (distinct cycles);
+    // otherwise it falls back to the lake-data colouring. One layer, so it always aligns with the grid at every zoom.
+    const ramp = d => { const t = Math.min(1, (d.idx.c || 1) / 21); return [70 + t * 185, 220 - t * 30, 200 - t * 150, 175]; };
+    const lake = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
+    const fill = d => d.idx ? ramp(d) : lake(d);
+    const line = d => d.idx ? [90, 230, 210, 170] : ((d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40]);
+    const mk = hx => { const a = agg[hx]; return {hexagon: hx, stats: a ? a.stats : null, idx: idxFor(hx)}; };
+    const trig = {getFillColor: [s.indexCells, s.cells], getLineColor: [s.indexCells, s.cells]};
+    const grid = new H3HexagonLayer({id: 'grid', data: cells.map(mk), getHexagon: d => d.hexagon, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
+      getFillColor: fill, getLineColor: line, lineWidthMinPixels: 1, pickable: true, updateTriggers: trig});
+    const loaded = Object.values(agg).filter(a => !patch.has(a.hexagon)).map(a => ({hexagon: a.hexagon, stats: a.stats, idx: idxFor(a.hexagon)}));   // loaded cells outside the patch -> always drawn
     const layers = loaded.length
       ? [grid, new H3HexagonLayer({id: 'grid-data', data: loaded, getHexagon: d => d.hexagon, highPrecision: 'auto', filled: true, stroked: true, extruded: false,
-          getFillColor: fill, getLineColor: [120, 190, 255, 160], lineWidthMinPixels: 1, pickable: true})]
+          getFillColor: fill, getLineColor: line, lineWidthMinPixels: 1, pickable: true, updateTriggers: trig})]
       : [grid];
-    this._gridCache = {key, cellsRef: s.cells, layers};
+    this._gridCache = {key, cellsRef: s.cells, indexRef: s.indexCells, layers};
     return layers;
+  }
+  // Map the sub-granule index onto the CURRENT grid resolution so the one grid can be coloured by index membership
+  // (no separate res-5 layer, which renders badly on the globe). Returns gridHex -> {g,c,y0,y1} or null.
+  indexAt(gridRes) {
+    const cells = this.state.indexCells || [];
+    if (!cells.length) return () => null;
+    let idxRes = 5; try { idxRes = h3.getResolution(cells[0].h); } catch (e) {}
+    if (gridRes === idxRes) { const m = new Map(cells.map(x => [x.h, x])); return hx => m.get(hx) || null; }
+    if (gridRes > idxRes) { const m = new Map(cells.map(x => [x.h, x])); return hx => { try { return m.get(h3.cellToParent(hx, idxRes)) || null; } catch (e) { return null; } }; }
+    const coarse = new Map();   // grid coarser than the index -> roll index cells up to their grid-res ancestor
+    for (const x of cells) {
+      let k; try { k = h3.cellToParent(x.h, gridRes); } catch (e) { continue; }
+      const e = coarse.get(k) || {g: 0, c: 0, y0: x.y0, y1: x.y1};
+      e.g += x.g || 0; e.c = Math.max(e.c, x.c || 0);
+      if (x.y0) e.y0 = Math.min(e.y0 || 9999, x.y0); if (x.y1) e.y1 = Math.max(e.y1 || 0, x.y1);
+      coarse.set(k, e);
+    }
+    return hx => coarse.get(hx) || null;
   }
   render() {
     const {TileLayer, BitmapLayer, PolygonLayer, PathLayer, TextLayer, GeoJsonLayer, H3HexagonLayer, ScatterplotLayer, SolidPolygonLayer} = deck;
@@ -174,11 +201,7 @@ AICESAT.MapView = class {
     } else if (s.cells) {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
     }
-    if (s.indexCells && s.indexCells.length) {   // sub-granule index coverage; colour = distinct cycles (temporal depth)
-      const ramp = c => { const t = Math.min(1, (c || 1) / 21); return [70 + t * 185, 220 - t * 30, 200 - t * 150, 115]; };
-      layers.push(new H3HexagonLayer({id: 'index-cov', data: s.indexCells, getHexagon: d => d.h, highPrecision: 'auto', filled: true, stroked: true, extruded: false, pickable: true,
-        getFillColor: d => ramp(d.c), getLineColor: [90, 230, 210, 110], lineWidthMinPixels: 0.4, updateTriggers: {getFillColor: s.indexCells.length}}));
-    }
+    // (sub-granule index coverage is drawn by colouring the grid itself in gridLayers — no separate layer)
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
     const regs = Object.entries(s.regions).map(([k, v]) => ({name: k, poly: U.areaRing({bbox: v.bbox}), bbox: v.bbox}));
