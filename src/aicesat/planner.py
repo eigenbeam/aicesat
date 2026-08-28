@@ -75,15 +75,16 @@ def _materialize(out: dict) -> dict:
 def _process_group(item) -> dict:
     """Worker: fetch one (granule, beam) group's chunks (presigned URL supplied), decode, materialize, write cell files.
     Returns access stats + the chunk->cells map; the coverage table is updated by the parent (single DuckDB writer)."""
-    (gname, beam), rs, purl, threads = item
+    (gname, beam), rs, fetch_url, purl, threads = item
     reader = RangeReader(threads=threads)
-    reader._presigned[rs[0]["url"]] = (purl, time.time())  # no EDL round trip in the worker
+    if purl:  # out-of-region: seed the presigned HTTPS URL so the worker does no EDL round trip
+        reader._presigned[fetch_url] = (purl, time.time())
     ranges, keys = [], []
     for r in rs:
         for d in index.DATASETS:
             ranges.append((r[f"{d}_offset"], r[f"{d}_size"])); keys.append((d, r["chunk_index"]))
     t0 = time.time()
-    raws = dict(zip(keys, reader.fetch(rs[0]["url"], ranges)))
+    raws = dict(zip(keys, reader.fetch(fetch_url, ranges)))
     t_fetch = time.time() - t0
     t1 = time.time()
     ph = _materialize(_decode_photons(rs, raws, rs[0]["sdp_epoch"]))
@@ -133,11 +134,16 @@ def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, p
     # Presign every touched granule concurrently in the parent (1-2 s each from outside the region), then hand
     # (group, presigned URL) to worker PROCESSES: decode + cell assignment + co-registration + Parquet writes are CPU
     # and the parent's GIL would serialize them. Coverage marks happen here (DuckDB is single-writer).
+    from .access import access_url, in_region
     reader = RangeReader(threads=threads)
     t_p0 = time.time()
-    presigned = reader.presign_all(sorted({rs[0]["url"] for rs in by_gb.values()})) if by_gb else {}
+    if in_region():   # S3-direct: workers fetch the s3:// URL with STS creds — no presign round trips
+        items = [(gb, rs, access_url(rs[0]["url"], rs[0].get("s3url")), None, threads) for gb, rs in by_gb.items()]
+    else:
+        presigned = reader.presign_all(sorted({rs[0]["url"] for rs in by_gb.values()})) if by_gb else {}
+        items = [(gb, rs, rs[0]["url"], presigned[rs[0]["url"]], threads) for gb, rs in by_gb.items()]
     t_presign = time.time() - t_p0
-    items = [(gb, rs, presigned[rs[0]["url"]], threads) for gb, rs in by_gb.items()]
+    n_granules = len({rs[0]["url"] for rs in by_gb.values()})
     from concurrent.futures import ProcessPoolExecutor
     t_f0 = time.time()
     results = []
@@ -157,7 +163,7 @@ def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, p
                  res["n_chunks"], res["stats"]["n_photons"], len(res["stats"]["cells_written"]), res["stats"]["fetch_seconds"], res["stats"]["materialize_seconds"])
     evicted = lake.enforce_limit(protect=cells) if results else []
     st = {"requests": agg["requests"], "bytes": agg["bytes"], "seconds": round(agg["seconds"], 2), "chunks": agg["chunks"], "spans": agg["spans"],
-          "gap_bytes": agg["gap_bytes"], "presigns": agg["presigns"], "granules_touched": len(presigned),
+          "gap_bytes": agg["gap_bytes"], "presigns": agg["presigns"], "granules_touched": n_granules,
           "hdf5_opens_at_query_time": 0, "structure_parses_at_query_time": 0}
     st.update({"cells": len(cells), "granules": names, "index": idx, "chunk_refs": len(rows), "chunks_fetched": len(todo),
                "chunk_refs_by_cells_only": refs_cells.num_rows, "chunks_pruned_by_boxes": refs_cells.num_rows - len(rows),

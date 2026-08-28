@@ -77,9 +77,11 @@ def _nan_fill(a: np.ndarray, fill: float) -> np.ndarray:
     return a
 
 
-def build_glas_index(granule, res: int = GLAS_RES) -> pa.Table:
-    """Parse one GLAH06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows."""
-    import earthaccess
+def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
+    """Parse one GLAH06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows.
+    GLAH06 granules are long orbit arcs; pass `bbox` to index only the cells inside it (a regional index) rather
+    than the whole pole-to-pole track — chunk byte ranges are unchanged, so fetch over that bbox is identical."""
+    from . import access
 
     auth.login()
     from .coverage import granule_name
@@ -95,7 +97,7 @@ def build_glas_index(granule, res: int = GLAS_RES) -> pa.Table:
         for suf in ("offset", "size", "filters", "dtype", "mask", "fill"):
             rows[f"{key}_{suf}"] = []
 
-    with h5py.File(earthaccess.open([granule], show_progress=False, open_kwargs={"block_size": 1 << 20})[0], "r") as f:
+    with h5py.File(access.cloud_hdf5_file(url, s3), "r") as f:   # in-region: s3fs direct; else one presign to CloudFront
         dsets = {key: f[path] for key, path in GLAS_DATASETS}
         C = int(dsets["lat"].chunks[0])
         nchunks = dsets["lat"].id.get_num_chunks()
@@ -120,6 +122,9 @@ def build_glas_index(granule, res: int = GLAS_RES) -> pa.Table:
         n = int(lat.shape[0])
         seg = np.arange(n)
         ok = np.isfinite(lat) & np.isfinite(lon) & (np.abs(lat) <= 90)
+        if bbox is not None:   # regional index: keep only cells inside the build bbox (chunk ranges stay whole)
+            bw, bs, be, bn = bbox
+            ok &= (lat >= bs) & (lat <= bn) & (lon >= bw) & (lon <= be)
         ks = (seg[ok] // C).astype("i8")
         latok, lonok = lat[ok].astype("f8"), lon[ok].astype("f8")
         try:
@@ -148,6 +153,8 @@ def build_glas_index(granule, res: int = GLAS_RES) -> pa.Table:
                 rows[f"{key}_filters"].append(fl); rows[f"{key}_dtype"].append(dt)
                 rows[f"{key}_mask"].append(int(ci.filter_mask)); rows[f"{key}_fill"].append(float(fills[key]))
 
+    if not rows["granule"]:
+        return pa.table({"granule": pa.array([], type=pa.string())})   # nothing inside bbox; write no parquet
     tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
     tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
@@ -167,7 +174,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
     import duckdb
 
     from . import planner
-    from .access import RangeReader, decode_chunk
+    from .access import RangeReader, access_url, decode_chunk
 
     d = _index_dir(res)
     if not d.exists():
@@ -182,22 +189,22 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
         where += f" AND gdate BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, chunk_index, seg_start, seg_end, {dscols} "
+        rows = con.execute(f"SELECT DISTINCT url, s3url, chunk_index, seg_start, seg_end, {dscols} "
                            f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
     empty = {k: np.array([]) for k in ("lon", "lat", "h", "t", "quality")}
     if not rows:
         return empty, {}
-    cols = ["url", "chunk_index", "seg_start", "seg_end"]
+    cols = ["url", "s3url", "chunk_index", "seg_start", "seg_end"]
     for key in GLAS_KEYS:
         cols += [f"{key}_offset", f"{key}_size", f"{key}_dtype", f"{key}_filters", f"{key}_mask", f"{key}_fill"]
     by_url: dict[str, list] = {}
     for r in rows:
-        rec = dict(zip(cols, r)); by_url.setdefault(rec["url"], []).append(rec)
+        rec = dict(zip(cols, r)); by_url.setdefault(access_url(rec["url"], rec["s3url"]), []).append(rec)
 
-    reader = RangeReader(threads=8)
-    reader.presign_all(list(by_url))
+    reader = RangeReader()   # in-region: s3:// keys (S3-direct, no presign); else HTTPS presigned in one parallel pass
+    reader.presign_all([u for u in by_url if not u.startswith("s3://")])
     out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
     for url, rs in by_url.items():
         ranges, keys = [], []

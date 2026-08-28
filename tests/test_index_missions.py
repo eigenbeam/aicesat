@@ -51,3 +51,25 @@ def test_index_source_maps_all_missions():
         d, res = api._index_source(coll)
         assert d is not None and isinstance(res, int), coll
     assert api._index_source("NOPE") == (None, None)
+
+
+# ---- in-region S3-direct gating (pure; the S3 read path itself is validated in us-west-2) -----------------------
+def test_in_region_env_gating(monkeypatch):
+    from aicesat import access
+    for v in ("AICESAT_S3_DIRECT", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(v, raising=False)
+    assert access.in_region() is False
+    monkeypatch.setenv("AWS_REGION", "us-west-2"); assert access.in_region() is True
+    monkeypatch.setenv("AWS_REGION", "us-east-1"); assert access.in_region() is False
+    monkeypatch.setenv("AICESAT_S3_DIRECT", "1"); assert access.in_region() is True     # explicit override wins
+    monkeypatch.setenv("AICESAT_S3_DIRECT", "0"); assert access.in_region() is False
+
+
+def test_access_url_prefers_s3_only_in_region(monkeypatch):
+    from aicesat import access
+    monkeypatch.setenv("AICESAT_S3_DIRECT", "0")
+    assert access.access_url("https://cf/x", "s3://b/x") == "https://cf/x"
+    monkeypatch.setenv("AICESAT_S3_DIRECT", "1")
+    assert access.access_url("https://cf/x", "s3://b/x") == "s3://b/x"
+    assert access.access_url("https://cf/x", None) == "https://cf/x"    # no s3 link -> HTTPS even in-region
+    assert access.access_url("https://cf/x", "") == "https://cf/x"

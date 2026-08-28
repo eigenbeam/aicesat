@@ -66,8 +66,6 @@ def strong_beams(sc_orient: int) -> set[str]:
 
 def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
     """Parse one granule's structure (the only time its HDF5 b-trees are ever read) into addressing rows."""
-    import earthaccess
-
     auth.login()
     from .coverage import granule_name
     url = granule.data_links()[0]
@@ -83,10 +81,10 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
     # Open with 1 MB blocks: the metadata walk (superblock, groups, ~900 datasets, chunk B-trees) is many small reads,
     # and earthaccess' default 16 MB blocks pull ~10x the bytes. The bulk geolocation arrays are then read through
     # their own chunk map with coalesced range GETs (the NSIDC spike's technique), not through the block cache.
-    from .access import RangeReader, decode_chunk
+    from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
 
-    reader = RangeReader(threads=8)
-    with h5py.File(earthaccess.open([granule], show_progress=False, open_kwargs={"block_size": 1 << 20})[0], "r") as f:
+    reader = RangeReader()
+    with h5py.File(cloud_hdf5_file(url, s3, reader=reader), "r") as f:   # in-region: s3fs; else one shared presign
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
         strong = strong_beams(sc_orient)
@@ -94,7 +92,7 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
         def read_via_chunks(ds: h5py.Dataset) -> np.ndarray:
             infos = _chunk_manifest(ds)
             fl = _filters(ds)
-            raws = reader.fetch(url, [(int(ci.byte_offset), int(ci.size)) for ci in infos])
+            raws = reader.fetch(access_url(url, s3), [(int(ci.byte_offset), int(ci.size)) for ci in infos])
             parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
             return np.concatenate(parts)[: ds.shape[0]]
 
@@ -226,6 +224,6 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
         cond.append(f"lat_max >= {s_} AND lat_min <= {n} AND lon_max >= {w} AND lon_min <= {e}")
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
     cell_col = "h3_cell, " if per_cell else ""
-    q = f"""SELECT DISTINCT granule, url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end, {cols}
+    q = f"""SELECT DISTINCT granule, url, s3url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end, {cols}
             FROM read_parquet('{ATL03_INDEX_DIR}/*.parquet') WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
     return con.execute(q).to_arrow_table()

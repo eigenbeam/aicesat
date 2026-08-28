@@ -57,9 +57,10 @@ def _parse_fields(ln: bytes):
     return lat, lon, elev, rms, track
 
 
-def build_icessn_index(granule, res: int = ICESSN_RES) -> pa.Table:
-    """Scan one ILATM2 CSV once (the only full read) into per-(cell) byte-span rows."""
-    import earthaccess
+def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
+    """Scan one ILATM2 CSV once (the only full read) into per-(cell) byte-span rows. Pass `bbox` to index only the
+    nadir platelets inside it (a regional index)."""
+    from .access import RangeReader, access_url
 
     auth.login()
     from .coverage import granule_name
@@ -71,9 +72,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES) -> pa.Table:
     gdate = m.group(1) if m else "00000000"
     t0 = time.time()
 
-    fh = earthaccess.open([granule], show_progress=False)[0]
-    data = fh.read()
-    fh.close()
+    data = RangeReader().read_all(access_url(url, s3))   # in-region: S3-direct whole-file GET; else cloud presign+GET
     size = len(data)
 
     lats, lons, starts, ends = [], [], [], []
@@ -86,10 +85,12 @@ def build_icessn_index(granule, res: int = ICESSN_RES) -> pa.Table:
         lat, lon, _elev, _rms, track = p
         if track != 0 or not (np.isfinite(lat) and np.isfinite(lon)):
             continue                                # index every nadir platelet; the rms<50 cut is re-applied at fetch
+        if bbox is not None and not (bbox[1] <= lat <= bbox[3] and bbox[0] <= lon <= bbox[2]):
+            continue                                # regional index: only platelets inside the build bbox
         lats.append(lat); lons.append(lon)
         starts.append(start); ends.append(min(pos, size))
     if not lats:
-        raise RuntimeError(f"{name}: no nadir platelets to index")
+        return pa.table({"granule": pa.array([], type=pa.string())})   # nothing inside bbox; write no parquet
     lat_a = np.asarray(lats, "f8"); lon_a = np.asarray(lons, "f8")
     st_a = np.asarray(starts, "i8"); en_a = np.asarray(ends, "i8")
     try:
@@ -140,7 +141,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
     import duckdb
 
     from . import planner
-    from .access import RangeReader
+    from .access import RangeReader, access_url
 
     d = _index_dir(res)
     if not d.exists():
@@ -154,7 +155,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
         where += f" AND gdate BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, gdate, byte_start, byte_end "
+        rows = con.execute(f"SELECT DISTINCT url, s3url, gdate, byte_start, byte_end "
                            f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
@@ -162,12 +163,12 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]:
     if not rows:
         return empty, {}
     by_url: dict[str, dict] = {}
-    for url, gdate, bs, be in rows:
-        u = by_url.setdefault(url, {"gdate": gdate, "spans": []})
+    for url, s3url, gdate, bs, be in rows:
+        u = by_url.setdefault(access_url(url, s3url), {"gdate": gdate, "spans": []})
         u["spans"].append((int(bs), int(be)))
 
-    reader = RangeReader(threads=8)
-    reader.presign_all(list(by_url))
+    reader = RangeReader()   # in-region: s3:// keys (S3-direct); else HTTPS presigned up front
+    reader.presign_all([u for u in by_url if not u.startswith("s3://")])
     out = {k: [] for k in ("lon", "lat", "h", "t")}
     for url, u in by_url.items():
         merged = _merge(u["spans"])                       # disjoint, line-aligned -> every line parsed once

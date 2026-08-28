@@ -13,9 +13,9 @@ import time
 from aicesat import auth, coverage, index_glas
 
 
-def _index_one(granule, res):
+def _index_one(granule, res, bbox):
     try:
-        t = index_glas.build_glas_index(granule, res=res)
+        t = index_glas.build_glas_index(granule, res=res, bbox=bbox)
         return (coverage.granule_name(granule), t.num_rows, None)
     except Exception as e:
         try:
@@ -50,7 +50,7 @@ def main():
 
     t0 = time.time(); ok = err = rows = 0
     with cf.ProcessPoolExecutor(max_workers=workers) as ex:
-        for i, (name, nrows, e) in enumerate(ex.map(functools.partial(_index_one, res=res), todo, chunksize=1), 1):
+        for i, (name, nrows, e) in enumerate(ex.map(functools.partial(_index_one, res=res, bbox=bbox), todo, chunksize=1), 1):
             if e:
                 err += 1; log.warning("FAIL %s: %s", name, e)
             else:

@@ -59,10 +59,8 @@ def parse_granule_name(name: str) -> dict:
 
 def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
     """Parse one ATL06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows."""
-    import earthaccess
-
     auth.login()
-    from .access import RangeReader, decode_chunk
+    from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
     from .coverage import granule_name
 
     url = granule.data_links()[0]
@@ -77,8 +75,8 @@ def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
         for k in ("offset", "size", "filters", "dtype", "ncols", "mask"):
             rows[f"{ds}_{k}"] = []
 
-    reader = RangeReader(threads=8)
-    with h5py.File(earthaccess.open([granule], show_progress=False, open_kwargs={"block_size": 1 << 20})[0], "r") as f:
+    reader = RangeReader()
+    with h5py.File(cloud_hdf5_file(url, s3, reader=reader), "r") as f:   # in-region: s3fs; else one shared presign
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
         strong = strong_beams(sc_orient)
@@ -86,7 +84,7 @@ def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
         def read_via_chunks(ds: h5py.Dataset) -> np.ndarray:
             infos = _chunk_manifest(ds)
             fl = _filters(ds)
-            raws = reader.fetch(url, [(int(ci.byte_offset), int(ci.size)) for ci in infos])
+            raws = reader.fetch(access_url(url, s3), [(int(ci.byte_offset), int(ci.size)) for ci in infos])
             parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
             return np.concatenate(parts)[: ds.shape[0]]
 
@@ -169,7 +167,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     import duckdb
 
     from . import planner
-    from .access import RangeReader, decode_chunk
+    from .access import RangeReader, access_url, decode_chunk
 
     d = _index_dir(res)
     if not d.exists():
@@ -188,25 +186,23 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         where += f" AND substr(granule, 7, 8) BETWEEN '{lo}' AND '{hi}'"
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT url, sdp_epoch, beam, chunk_index, seg_start, seg_end, {dscols} "
+        rows = con.execute(f"SELECT DISTINCT url, s3url, sdp_epoch, beam, chunk_index, seg_start, seg_end, {dscols} "
                            f"FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
     finally:
         con.close()
     if not rows:
         return {k: np.array([]) for k in ("lon", "lat", "h", "t", "quality")}, {}
-    cols = ["url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end"]
+    cols = ["url", "s3url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end"]
     for ds in ATL06_DATASETS:
         cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
     by_url: dict[str, list] = {}
     for r in rows:
-        rec = dict(zip(cols, r)); by_url.setdefault(rec["url"], []).append(rec)
+        rec = dict(zip(cols, r)); by_url.setdefault(access_url(rec["url"], rec["s3url"]), []).append(rec)
 
-    # Presign ALL granules up front in parallel (avoids the serial ~1.7 s x N), then fetch per-granule with a
-    # warm presign. Per-granule fetch bounds concurrency (8-way within a granule) so a constrained uplink degrades
-    # gracefully instead of splitting its bandwidth across dozens of simultaneous GETs; on a fat in-region link the
-    # batched presign is the win and the per-granule GET serialization costs little (transfers are latency-bound).
-    reader = RangeReader(threads=8)
-    reader.presign_all(list(by_url))
+    # In-region the by_url keys are s3:// (S3-direct, no presign); out-of-region they are HTTPS and we presign all
+    # granules up front in parallel (avoids the serial ~1.7 s x N), then fetch per-granule with a warm presign.
+    reader = RangeReader()
+    reader.presign_all([u for u in by_url if not u.startswith("s3://")])
     out = {k: [] for k in ("lon", "lat", "h", "t", "quality")}
     for url, rs in by_url.items():
         ranges, keys = [], []

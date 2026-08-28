@@ -69,12 +69,50 @@ def coalesce(ranges: list[tuple[int, int]], max_gap: int = MAX_GAP_BYTES, max_sp
     return out
 
 
-class RangeReader:
-    """Concurrent byte-range reader over Earthdata Cloud HTTPS URLs (bearer token -> 303 -> presigned CloudFront).
-    Wanted ranges are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
+def in_region() -> bool:
+    """True where NSIDC S3 direct access works (us-west-2): reads go straight to S3 with STS creds — no presign, no
+    CloudFront hop, no egress charge. AICESAT_S3_DIRECT=1/0 forces it on/off (tests, or a non-standard region var)."""
+    o = os.environ.get("AICESAT_S3_DIRECT")
+    if o is not None:
+        return o == "1"
+    return "us-west-2" in os.environ.get("AWS_REGION", "") or "us-west-2" in os.environ.get("AWS_DEFAULT_REGION", "")
 
-    def __init__(self, threads: int = 8, max_gap: int = MAX_GAP_BYTES):
-        self.max_gap = max_gap
+
+_S3_CREDS: dict = {"v": None, "exp": 0.0}
+_S3_CRED_LOCK = threading.Lock()
+
+
+def s3_credentials(refresh: bool = False) -> dict:
+    """NSIDC temporary S3 credentials (accessKeyId/secretAccessKey/sessionToken), valid ~1 h, cached and refreshed.
+    Only meaningful in-region; the STS-scoped creds are rejected out-of-region."""
+    with _S3_CRED_LOCK:
+        if not refresh and _S3_CREDS["v"] and time.time() < _S3_CREDS["exp"]:
+            return _S3_CREDS["v"]
+        import earthaccess
+        auth.login()
+        _S3_CREDS["v"] = earthaccess.get_s3_credentials(daac="NSIDC")
+        _S3_CREDS["exp"] = time.time() + 3000   # refresh comfortably before the ~1 h expiry
+        return _S3_CREDS["v"]
+
+
+def access_url(https_url: str, s3_url: str | None) -> str:
+    """The URL to byte-range at run time: S3-direct in-region (no presign, no egress), else HTTPS/CloudFront.
+    The index stores both, so a query picks the fast path for wherever it runs."""
+    return s3_url if (in_region() and s3_url) else https_url
+
+
+class RangeReader:
+    """Concurrent byte-range reader over Earthdata Cloud granules. Out-of-region: bearer -> 303 -> presigned CloudFront
+    HTTPS GETs. In-region (s3:// URLs): boto3 range GETs against nsidc-cumulus S3 with STS creds — no presign, no
+    egress. Wanted ranges are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
+
+    def __init__(self, threads: int | None = None, max_gap: int | None = None):
+        reg = in_region()
+        # In-region the round trip is ~10-30 ms and egress is free, so a SMALL coalescing gap wins (less over-fetch);
+        # from a remote laptop the ~150 ms TTFB makes a large gap (fewer round trips) win. Override: AICESAT_COALESCE_GAP.
+        self.max_gap = (max_gap if max_gap is not None else
+                        int(os.environ["AICESAT_COALESCE_GAP"]) if os.environ.get("AICESAT_COALESCE_GAP")
+                        else (256 << 10 if reg else 2 << 20))
         auth.login()
         self.token = os.environ["EARTHDATA_TOKEN"]
         self.session = requests.Session()
@@ -84,11 +122,40 @@ class RangeReader:
         retry = Retry(total=5, backoff_factor=0.6, status_forcelist=(429, 500, 502, 503, 504),
                       allowed_methods=frozenset({"GET"}), respect_retry_after_header=True)
         self.session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=32, pool_maxsize=32))
-        self.threads = threads
+        self.threads = threads if threads is not None else (16 if reg else 8)   # S3 scales; in-region go wider
         self.stats = AccessStats()
         self._presigned: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
         self._url_locks: dict[str, threading.Lock] = {}  # one lock per granule URL: presigns for different granules overlap
+        self._s3 = None                                  # lazily-built boto3 client (in-region S3-direct)
+
+    def _s3fs(self):
+        if self._s3 is None:
+            import s3fs
+            c = s3_credentials()
+            self._s3 = s3fs.S3FileSystem(key=c["accessKeyId"], secret=c["secretAccessKey"], token=c["sessionToken"])
+        return self._s3
+
+    def _get_s3(self, s3url: str, offset: int, size: int) -> bytes:
+        try:
+            b = self._s3fs().cat_file(s3url, start=offset, end=offset + size)   # end is exclusive (fsspec)
+        except Exception as e:                           # STS creds expire ~hourly: refresh once and retry
+            if "ExpiredToken" in str(e) or "InvalidAccessKeyId" in str(e):
+                self._s3 = None
+                s3_credentials(refresh=True)
+                b = self._s3fs().cat_file(s3url, start=offset, end=offset + size)
+            else:
+                raise
+        if len(b) != size:
+            raise IOError(f"s3 range GET short: got {len(b)} of {size} bytes")
+        return b
+
+    def _getter(self, url: str, refresh: bool = False):
+        """A callable (offset, size) -> bytes for one granule: S3-direct for s3:// URLs, presigned HTTPS otherwise."""
+        if url.startswith("s3://"):
+            return lambda off, size: self._get_s3(url, off, size)
+        purl = self.presigned(url, refresh=refresh)
+        return lambda off, size: self._get(purl, off, size)
 
     def presigned(self, url: str, refresh: bool = False) -> str:
         with self._lock:
@@ -127,14 +194,14 @@ class RangeReader:
         Adjacent/near ranges are fetched as one span and sliced apart."""
         t0 = time.time()
         spans = coalesce(ranges, self.max_gap)
-        purl = self.presigned(url)
+        get = self._getter(url)
         try:
             with ThreadPoolExecutor(self.threads) as ex:
-                blobs = list(ex.map(lambda r: self._get(purl, *r), spans))
+                blobs = list(ex.map(lambda r: get(*r), spans))
         except IOError:
-            purl = self.presigned(url, refresh=True)  # presigned URL may have expired: refresh once and retry
+            get = self._getter(url, refresh=True)  # HTTPS presigned URL may have expired: refresh + retry (S3 self-heals in _get_s3)
             with ThreadPoolExecutor(self.threads) as ex:
-                blobs = list(ex.map(lambda r: self._get(purl, *r), spans))
+                blobs = list(ex.map(lambda r: get(*r), spans))
         out = []
         for off, size in ranges:
             for (so, ss), blob in zip(spans, blobs):
@@ -154,6 +221,48 @@ class RangeReader:
             self.stats.seconds += time.time() - t0
             self.stats.granules_touched.add(url)
         return out
+
+    def read_all(self, url: str) -> bytes:
+        """GET an entire Earthdata Cloud object in one request. In-region s3:// -> boto3 get_object; else bearer ->
+        presigned CloudFront -> whole-object GET. For small non-chunked files (e.g. ILATM2 CSV) scanned whole at
+        index-build time. Never the retired on-prem hosts earthaccess.open can fall back to (n5eil01u)."""
+        if url.startswith("s3://"):
+            try:
+                data = self._s3fs().cat_file(url)
+            except Exception as e:
+                if "ExpiredToken" in str(e) or "InvalidAccessKeyId" in str(e):
+                    self._s3 = None
+                    s3_credentials(refresh=True)
+                    data = self._s3fs().cat_file(url)
+                else:
+                    raise
+        else:
+            resp = self.session.get(self.presigned(url), timeout=120)
+            if resp.status_code == 403:
+                resp = self.session.get(self.presigned(url, refresh=True), timeout=120)
+            resp.raise_for_status()
+            data = resp.content
+        with self._lock:
+            self.stats.requests += 1
+            self.stats.bytes += len(data)
+        return data
+
+
+def cloud_hdf5_file(url: str, s3url: str | None = None, block_size: int = 1 << 20, reader: "RangeReader | None" = None):
+    """Open an Earthdata Cloud granule as a block-cached fsspec file for h5py. In-region (s3:// available) -> s3fs with
+    STS creds, no presign; out-of-region -> a single presign to CloudFront, then range GETs over the presigned URL.
+    Use INSTEAD of earthaccess.open at index-build time: its link picker can fall back to retired on-prem hosts (the
+    decommissioned n5eil01u). Pass `reader` to share one presign/session with the caller's own byte-range reads."""
+    if in_region() and s3url:
+        import s3fs
+        c = s3_credentials()
+        fs = s3fs.S3FileSystem(key=c["accessKeyId"], secret=c["secretAccessKey"], token=c["sessionToken"],
+                               default_block_size=block_size)
+        return fs.open(s3url)
+    import fsspec
+    purl = (reader or RangeReader()).presigned(url)
+    fs = fsspec.filesystem("https", block_size=block_size)
+    return fs.open(purl)
 
 
 def unshuffle(buf: bytes, itemsize: int) -> bytes:
