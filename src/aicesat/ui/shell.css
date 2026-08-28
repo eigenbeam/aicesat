@@ -104,8 +104,8 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .misrow .dot { width:9px; height:9px; border-radius:50%; display:inline-block; flex:0 0 auto; }
 .misrow.off .dot { opacity:.3; }
 .misrow input { margin:0 2px 0 0; flex:0 0 auto; }
-.misrow .misname { white-space:nowrap; }
-.misrow .mismeta { margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap; padding-left:8px; }
+.misrow .misname { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.misrow .mismeta { flex:0 0 auto; margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap; padding-left:8px; }
 #hud .legend .legend-info { margin-top:4px; }
 #hud .legend .legend-info span { display:block; font-size:11px; color:var(--muted); }
 /* scene controls: one unified box (Missions / View / Satellite imagery), consistent aligned rows + rhythm */
