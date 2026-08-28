@@ -149,9 +149,13 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
 
+    lake_grew = {"v": False}   # set when any leg actually fetched+materialized new chunks -> eviction worth running
+
     def _log_cache(mission, meta):
         """Surface the lake-cache effect for an index mission (fetch_bbox threads it through meta['access'])."""
         st = meta.get("access", {}) or {}
+        if st.get("chunks_from_nasa"):
+            lake_grew["v"] = True
         if "chunks_from_nasa" in st:
             log_fn(f"{mission}: {st['chunks_from_nasa']} chunks from NASA ({st.get('bytes', 0) / 1e6:.1f} MB, "
                    f"{st.get('requests', 0)} GETs), {st.get('chunks_from_lake', 0)} served from the lake")
@@ -197,6 +201,8 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
 
     def _int_atl03(a, m, ck):
         st = m.get("access", {})
+        if st.get("chunks_fetched"):
+            lake_grew["v"] = True
         log_fn(f"ATL03: {m['n']:,} photons; {st.get('chunks_fetched', 0)} chunks fetched "
                f"({st.get('bytes', 0) / 1e6:.0f} MB, {st.get('requests', 0)} requests), "
                f"{st.get('chunks_skipped_already_materialized', 0)} already in the lake")
@@ -275,7 +281,13 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                     raise RuntimeError("no collection returned data over this area (check your selection and the token)")
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
                 doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
-                _enforce_lake_limit(bb, poly, log_fn)     # once, after all legs: the one disk budget spans every mission
+                # Disk-budget eviction is pure housekeeping — the scene is already built, saved and streaming. Run it
+                # OFF the build path (background daemon) and ONLY when this build actually materialized new chunks, so
+                # footer-scanning never delays the response and idle/cache-hit builds skip it entirely. The synchronous
+                # hard trigger stays on the UI's lake_settings (lowering the limit evicts immediately).
+                if lake_grew["v"]:
+                    threading.Thread(target=_enforce_lake_limit, args=(bb, poly, log_fn),
+                                     name=f"lake-evict-{sid}", daemon=True).start()
 
                 # surface fallback: the DEM normally set z0+surface up front; only reach here if z0 came from a
                 # collection instead (DEM gave no z0). If no DEM covers the scene, set_surface attaches nothing.

@@ -49,6 +49,10 @@ def _install(monkeypatch, tmp_path, *, delay=0.0, fail=()):
     monkeypatch.setattr(cache, "SCENE_DIR", tmp_path / "scenes")
     monkeypatch.setattr(api, "REGISTRY", tmp_path / "scenes" / "registry.json")
     monkeypatch.setattr(lake, "write_points", lambda *a, **k: None)
+    # Sandbox the lake so the post-build background eviction (spawned because the ATL03 mock reports chunks_fetched)
+    # scans an empty tmp lake, never the real data/lake or its shared meta DuckDB.
+    monkeypatch.setattr(lake, "LAKE_DIR", tmp_path / "lake")
+    monkeypatch.setattr(lake, "META_DB", tmp_path / "meta.duckdb")
 
     def mk(name, arrays, extra):
         def _extract(*a, **k):
