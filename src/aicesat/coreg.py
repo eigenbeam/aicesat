@@ -281,8 +281,6 @@ def _gia_block(doc: dict, t_is2: float, t_glas: float) -> dict | None:
 def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_m: float = 35.0,
                      exaggeration: float = 0.0, dynamic_ice_flag: bool | None = None) -> dict:
     """Run the live co-registration over a scene document (both series required). Returns the result block."""
-    from . import cache
-
     p = Params(common_epoch, colocation_radius_m, exaggeration)
     if "ICESAT2" not in doc["series"] or "GLAS" not in doc["series"]:
         raise ValueError("scene needs both ICESAT2 and GLAS series before co-registration")

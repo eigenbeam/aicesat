@@ -65,10 +65,6 @@ def scenes() -> list[dict]:
     return out
 
 
-def scene_doc(scene_id: str) -> dict | None:
-    return cache.load_scene(scene_id)
-
-
 def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = 96_000, stride: int = 1) -> dict:
     """Chunked access for hosts with small result limits. parts: meta | surface | imagery | coreg | positions:<MISSION>
     (base64 float32 xyz, chunked) | dh (histogram data)."""

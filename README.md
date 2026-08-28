@@ -91,9 +91,9 @@ The ATL03 path does not open HDF5 at query time. Per granule, an index build (`i
 range, filter pipeline, and the H3 cells it touches. Queries resolve a bbox/polygon to cells, fetch only the needed
 chunks by HTTPS range request (EDL bearer token → presigned URL), decode them without an HDF5 library, and materialize
 photons into a hive-partitioned Parquet lake (`lake.py`) with per-row provenance and co-registered coordinates. DuckDB
-answers over the lake (`api.py`); a coverage table records what is materialized so repeat queries fetch nothing. The
-earlier `earthaccess.open + h5py` path is kept as `atl03.extract_legacy` for comparison. `scripts/bench_access.py`
-compares the access methods; see the spec (Appendix C) for the approach.
+answers over the lake (`api.py`); a coverage table records what is materialized so repeat queries fetch nothing.
+`scripts/bench_access.py` compares this index-driven access against the earlier `earthaccess.open + h5py`
+whole-granule path; see the spec (Appendix C) for the approach.
 
 Scene geometry is latitude-aware (`scene.frame_crs`): polar-stereographic near the poles, a per-scene
 azimuthal-equidistant projection elsewhere, so scenes render anywhere on Earth.

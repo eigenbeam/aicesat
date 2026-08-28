@@ -11,13 +11,12 @@ Frame: ITRF2014 at observation epoch, WGS84 ellipsoid heights (ATL03 user guide)
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 
 import h5py
 import numpy as np
 
-from . import auth, cache, coverage
+from . import cache, coverage
 
 log = logging.getLogger(__name__)
 
@@ -73,63 +72,6 @@ def delta_time_to_utc(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.ndar
     utc = GPS_EPOCH + timedelta(seconds=-GPS_UTC_LEAP)
     base = np.datetime64(utc.replace(tzinfo=None), "ms")
     return base + (gps_s * 1000).astype("timedelta64[ms]")
-
-
-def extract_legacy(bbox, window, max_granules: int = 3, max_photons: int = 20_000_000) -> tuple[dict[str, np.ndarray], dict]:
-    """Original path (kept for the access-method comparison): earthaccess.open + h5py over fsspec, segment-index slicing."""
-    k = cache.key("atl03", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF, max_photons)
-    hit = cache.load(k)
-    if hit:
-        log.info("atl03 cache hit %s", k)
-        hit[1]["cache_key"] = k
-        return hit
-    import earthaccess
-
-    auth.login()
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)
-    if not granules:
-        raise RuntimeError(f"no ATL03 granules over {bbox} in {window}")
-    granules = granules[:max_granules]
-    files = earthaccess.open(granules, show_progress=False)
-    parts, prov = [], []
-    for g, fobj in zip(granules, files):
-        name = g["meta"]["native-id"]
-        t0 = time.time()
-        with h5py.File(fobj, "r") as f:
-            sc_orient = int(f["orbit_info/sc_orient"][0])
-            sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
-            beams = strong_beams(sc_orient)
-            if not beams:
-                log.warning("%s: sc_orient=%d (transition) -> skipped", name, sc_orient)
-                continue
-            for b in beams:
-                if b not in f:
-                    continue
-                d = _extract_beam(f, b, bbox)
-                if d is None:
-                    continue
-                d["t"] = delta_time_to_utc(d["delta_time"], sdp)
-                d["granule_idx"] = np.full(d["lon"].size, len(prov), dtype="i2")
-                d["beam_idx"] = np.full(d["lon"].size, BEAM_PAIRS.index(b[:3]), dtype="i1")
-                parts.append(d)
-                log.info("%s %s: %d signal photons in bbox", name, b, d["lon"].size)
-        prov.append({"granule": name, "sc_orient": sc_orient, "strong_beams": beams,
-                     "seconds": round(time.time() - t0, 1)})
-    if not parts:
-        raise RuntimeError("ATL03 granules found but no land-ice signal photons in bbox")
-    arrays = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
-    n = arrays["lon"].size
-    if n > max_photons:
-        stride = int(np.ceil(n / max_photons))
-        arrays = {key: v[::stride] for key, v in arrays.items()}
-        log.info("subsampled %d -> %d photons (stride %d)", n, arrays["lon"].size, stride)
-    meta = {"mission": "ICESAT2", "product": f"ATL03 v{coverage.ATL03_VERSION}", "bbox": list(bbox),
-            "window": list(window), "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid",
-            "n_total_in_bbox": int(n), "n": int(arrays["lon"].size), "min_conf": MIN_CONF,
-            "granules": prov, "beam_pairs": list(BEAM_PAIRS)}
-    meta["cache_key"] = k
-    cache.save(k, arrays, meta)
-    return arrays, meta
 
 
 def extract(bbox, window, max_granules: int = 8, max_photons: int = 20_000_000, force: bool = False, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
