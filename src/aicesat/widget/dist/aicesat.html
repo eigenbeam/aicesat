@@ -10262,7 +10262,7 @@ const visible = {};   // mission key -> shown; initialised per scene (all on)
 // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before this palette.
 // Okabe-Ito blue/yellow/green (colour-blind-safe by construction): the dense ATL06 becomes a receding blue base,
 // GLAS a bright yellow, IceBridge green; ATL03 (rarely shown) a distinct vermillion.
-const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [0, 158, 115], ATL06: [0, 114, 178], ICESAT2: [213, 94, 0]};
+const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [40, 200, 120], ATL06: [40, 140, 225], ICESAT2: [213, 94, 0]};
 const colorOf = m => MISSION_COLORS[m] || (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
 
 const deckgl = new Deck({
@@ -10689,8 +10689,16 @@ function candidateLayers() {
     const base = [c.center[0], c.center[1], c.center[2] * Z_EXAG];
     const top = [c.center[0], c.center[1], c.center[2] * Z_EXAG + stickH];
     const MARK = [150, 235, 255];
-    layers.push(new PathLayer({id: 'cand-stick', data: [[base, top]], getPath: d => d, getColor: MARK, getWidth: 3,
-      widthUnits: 'pixels', updateTriggers: {getPath: Z_EXAG}}));
+    // Leader line from the hex up to the floating label. depthTest off so the tether is ALWAYS visible (never buried
+    // in the dense point cloud); a dark halo behind it keeps it legible over any colour, and an anchor dot sits right
+    // on the hex centre so the connection reads unambiguously.
+    const stickPath = [[base, top]];
+    layers.push(new PathLayer({id: 'cand-stick-halo', data: stickPath, getPath: d => d, getColor: [8, 14, 22, 190],
+      getWidth: 6, widthUnits: 'pixels', parameters: {depthTest: false}, updateTriggers: {getPath: Z_EXAG}}));
+    layers.push(new PathLayer({id: 'cand-stick', data: stickPath, getPath: d => d, getColor: MARK, getWidth: 2.5,
+      widthUnits: 'pixels', parameters: {depthTest: false}, updateTriggers: {getPath: Z_EXAG}}));
+    layers.push(new PointCloudLayer({id: 'cand-stick-base', data: [0], getPosition: () => base, getColor: MARK,
+      pointSize: 5, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG}}));
     layers.push(new PointCloudLayer({id: 'cand-stick-top', data: [0], getPosition: () => top, getColor: MARK,
       pointSize: 7, sizeUnits: 'pixels', updateTriggers: {getPosition: Z_EXAG}}));
     layers.push(new TextLayer({id: 'cand-stick-label', data: [{position: top}], getPosition: d => d.position,
