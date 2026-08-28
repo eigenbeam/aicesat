@@ -1,49 +1,36 @@
-"""Query-time comparison: our H3 sub-granule index vs h5coro (and other cloud-HDF5 readers), same bbox + granules.
+"""Honest, same-subset query-time comparison of the project's H3 sub-granule index vs cloud-HDF5 readers.
 
-WHAT THIS MEASURES (get the framing right)
-------------------------------------------
-This is an ARCHITECTURE comparison, not a fetch-mechanism swap.
+Targets ATL06 (the clean ICESat-2 land-ice case h5coro / SlideRule are built for). Every reader is handed the SAME
+granule set (from the built index) and applies the SAME bbox+quality predicate, so all return byte-identical points;
+only then are timings compared. Readers:
+  ours       -- index_atl06.fetch_bbox (H3 addressing; 0 query-time HDF5 opens; GETs/bytes from reader.stats)
+  h5coro     -- SlideRule's cloud-native HDF5 reader (re-walks each granule's structure per query)
+  h5py_s3fs  -- baseline: h5py slice over s3fs S3-direct
+  kerchunk   -- pre-extract chunk refs (amortizable, like our index build), then read via zarr (optional)
 
-  * OUR PATH  (index_atl06.fetch_bbox): a pre-built H3 sub-granule index stores every chunk's byte range OFFLINE.
-    Query time does ZERO HDF5 structure parsing -- it reads the wanted chunks by byte range (in-region S3-direct
-    via s3fs) and decodes them. The win is bought with a one-time index build+maintenance cost the others do not pay
-    (the project measures ~$6 to index the whole Earth's ATL06; amortized over every future query).
+ROBUSTNESS (this is a benchmark harness, so fairness matters):
+  * Methods are INTERLEAVED within each rep (rep0: ours,h5coro,... ; rep1: ours,h5coro,... ), so a transient network
+    hiccup penalises every method equally instead of whichever one happened to be running -- the single biggest
+    reason a naive run's winner flips between invocations.
+  * Full variance is reported (median, p95, stdev, min over reps), not just the median, so noise is visible.
+  * --granule-steps sweeps the SAME box at increasing granule counts to find the crossover where h5coro's per-granule
+    structure walk overtakes our fixed index overhead -- the interesting axis, not a single point.
+  * --warmup discards the first N (cold) reps per method; --csv captures every (region, method, rep) row.
 
-  * h5coro   (pip install h5coro): the SlideRule team's cloud-optimized HDF5 reader. No pre-build, but EVERY query
-    re-reads the (coalesced) HDF5 b-tree structure of each granule before it can slice. This is the key contender --
-    it is what SlideRule uses under the hood.
-
-  * h5py-over-s3fs: plain open+slice per granule (current client-side best practice). Reference baseline.
-
-  * kerchunk/VirtualiZarr: the closest analog to us -- pre-extract chunk references, then read via zarr. Optional /
-    best-effort (its reference build is a structure parse, i.e. the amortizable analog of our index build); skips
-    cleanly if the stack or the in-region auth plumbing is not present.
-
-So the honest comparison is QUERY-TIME cost for the SAME bbox subset, with an explicit note that our query-time win
-is paid for by a one-time index build the others do not have. Same granules, same bbox, same variables, same reps;
-we verify the methods return the SAME points (count + lat/h checksum) BEFORE trusting any timing.
-
-OPTIONAL DEPS (not project dependencies -- install on the us-west-2 box to benchmark them):
-    uv pip install h5coro          # the priority contender
-    uv pip install kerchunk zarr xarray   # optional closest-analog path
-h5py / s3fs / duckdb are already project deps. Missing readers are detected and skipped with a clear message; the
-script never hard-imports them at module load.
-
-IN-REGION ONLY: the S3-direct reads (ours AND h5coro's S3 driver) only work from us-west-2. Out of region the script
-validates the harness + that the h5coro API calls are well-formed, then skips the S3 work -- real numbers come from
-the box. Wall-clock out of region is your local link, not the system.
-
-usage:
-    uv pip install h5coro
-    uv run scripts/bench_vs_h5coro.py                      # default SW-Greenland ATL06 box
-    uv run scripts/bench_vs_h5coro.py --methods ours,h5coro,h5py_s3fs,kerchunk --reps 3
-    uv run scripts/bench_vs_h5coro.py --bbox -50 69 -49.5 69.4 --window 2019-03-01 2019-05-31
+Run IN-REGION on the us-west-2 box (S3-direct) for real numbers:
+    set -a; . ./aicesat.env; set +a
+    uv pip install h5coro                          # + optionally: uv pip install 'zarr<3' kerchunk xarray
+    uv run scripts/build_atl06_index.py            # if the ATL06 index isn't already built
+    uv run scripts/bench_vs_h5coro.py --reps 7 --warmup 1
+    uv run scripts/bench_vs_h5coro.py --granule-steps 1,3,10,25,50 --reps 5 --warmup 1 --csv bench.csv
+    uv run scripts/bench_vs_h5coro.py --methods ours,h5coro,h5py_s3fs,kerchunk --reps 7 --warmup 1
 """
-from __future__ import annotations
-
 import argparse
+import contextlib
 import functools
 import importlib.util
+import math
+import os
 import statistics
 import time
 
@@ -87,6 +74,42 @@ def checksum(lat, h) -> tuple[float, float]:
     return (round(float(np.sum(lat)), 3), round(float(np.sum(h)), 1))
 
 
+def stats_of(times: list[float]) -> dict:
+    """Median/mean/stdev/p95/min over the (post-warmup) reps -- the honest spread, not one number."""
+    ts = sorted(times)
+    n = len(ts)
+    if n == 0:
+        return {"n": 0, "min": float("nan"), "med": float("nan"), "mean": float("nan"), "std": float("nan"), "p95": float("nan")}
+    p95 = ts[min(n - 1, int(math.ceil(0.95 * n)) - 1)]
+    return {"n": n, "min": ts[0], "med": statistics.median(ts), "mean": statistics.fmean(ts),
+            "std": statistics.pstdev(ts) if n > 1 else 0.0, "p95": p95}
+
+
+def _med_int(vals):
+    """Median of the per-rep request/byte counts, ignoring None (methods without a counter)."""
+    xs = [v for v in vals if v is not None]
+    return None if not xs else int(round(statistics.median(xs)))
+
+
+@contextlib.contextmanager
+def _aws_env(creds: dict):
+    """Temporarily expose STS creds as AWS_* env vars so any fsspec/botocore session (e.g. kerchunk's reference
+    filesystem, which does not reliably thread remote_options) resolves them. Scoped + restored, so interleaved
+    runs of the other methods are unaffected."""
+    keys = {"AWS_ACCESS_KEY_ID": creds["accessKeyId"], "AWS_SECRET_ACCESS_KEY": creds["secretAccessKey"],
+            "AWS_SESSION_TOKEN": creds["sessionToken"]}
+    old = {k: os.environ.get(k) for k in keys}
+    os.environ.update(keys)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 # ----------------------------------------------------------------------------- granule set (from the built index)
 def granules_from_index(bbox, window, res: int) -> list[dict]:
     """The EXACT (granule, url, s3url) set our fetch_bbox touches for this bbox+window: DISTINCT rows whose H3 cell
@@ -117,27 +140,24 @@ def granules_from_index(bbox, window, res: int) -> list[dict]:
     return [{"granule": g, "url": u, "s3url": s} for g, u, s in rows]
 
 
+# ============================================================================= setups: each returns a uniform handle
+# handle = {"method", "one_pass": ()->(n_pts, lat, h, requests|None, bytes|None), "opens", "granules", "note",
+#           "teardown"()?, "build_s"?}  OR  {"method", "skipped": reason}
+# The harness drives the rep loop and interleaves methods, so setups do ONE-TIME work (creds, presign, ref build)
+# and one_pass does the per-query work that is actually timed.
+
 # ----------------------------------------------------------------------------- A. OUR PATH: H3 index + byte-range
-def run_ours(bbox, window, res, reps):
+def setup_ours(granules, bbox, window, res):
     from aicesat import index_atl06
 
-    times, last = [], None
-    for _ in range(reps):
-        t0 = time.time()
+    def one_pass():
         arr, st = index_atl06.fetch_bbox(bbox, window=window, res=res)
-        times.append(time.time() - t0)
-        last = (arr, st)
-    arr, st = last
-    m = arr["h"].size > 0
-    return {
-        "method": "ours (H3 index)", "granules": st.get("granules_touched", 0),
-        "opens": st.get("hdf5_opens_at_query_time", 0), "requests": st.get("requests", 0),
-        "bytes": st.get("bytes", 0), "gap_bytes": st.get("gap_bytes", 0), "spans": st.get("spans", 0),
-        "presigns": st.get("presigns", 0), "wall_med": statistics.median(times), "wall_min": min(times),
-        "points": int(arr["h"].size),
-        "checksum": checksum(arr["lat"], arr["h"]) if m else (0.0, 0.0),
-        "note": "query-time HDF5 opens = 0 (addressing came from the index)",
-    }
+        m = arr["h"].size > 0
+        return (int(arr["h"].size), arr["lat"] if m else np.array([]), arr["h"] if m else np.array([]),
+                st.get("requests"), st.get("bytes"))
+
+    return {"method": "ours (H3 index)", "one_pass": one_pass, "opens": 0, "granules": len(granules),
+            "note": "query-time HDF5 opens = 0 (addressing came from the index)"}
 
 
 # ----------------------------------------------------------------------------- B. h5coro (query-time structure walk)
@@ -188,11 +208,10 @@ def _instrument_s3driver(s3driver):
     return counter, (lambda: setattr(s3driver.S3Driver, "read", orig))
 
 
-def run_h5coro(granules, bbox, reps):
+def setup_h5coro(granules, bbox, window, res):
     if not have("h5coro"):
         return {"method": "h5coro", "skipped": "not installed -- run: uv pip install h5coro"}
     if not access.in_region():
-        # Out of region: prove the API calls are well-formed (no network), then skip the S3 reads.
         from h5coro import h5coro as _h5c  # noqa: F401
         from h5coro import s3driver  # noqa: F401
         sample = granules[0] if granules else {"s3url": "s3://bucket/key.h5"}
@@ -213,12 +232,11 @@ def run_h5coro(granules, bbox, reps):
     counter, restore = _instrument_s3driver(s3driver)
 
     def one_pass():
-        n_pts = 0
-        lat_all, h_all = [], []
+        req0, byt0 = counter["requests"], counter["bytes"]
+        n_pts, lat_all, h_all = 0, [], []
         for g in granules:
             resource = g["s3url"].replace("s3://", "")   # h5coro wants bucket/key, no scheme
             h5 = h5c.H5Coro(resource, s3driver.S3Driver, credentials=cred)
-            # h5coro has no pre-built index: it reads sc_orient from the file, like any SlideRule-style client would.
             try:
                 p = h5.readDatasets(datasets=["orbit_info/sc_orient"], block=True)
                 sc = int(_h5coro_get(p, "orbit_info/sc_orient")[0])
@@ -230,7 +248,7 @@ def run_h5coro(granules, bbox, reps):
                     pr = h5.readDatasets(datasets=paths, block=True)
                     lat = _h5coro_get(pr, paths[0]); lon = _h5coro_get(pr, paths[1])
                     h = _h5coro_get(pr, paths[2]).astype("f8"); q = _h5coro_get(pr, paths[4])
-                except Exception:  # noqa: BLE001  (missing/empty beam in this granule -- h5coro yields None, _h5coro_get raises)
+                except Exception:  # noqa: BLE001  (missing/empty beam -- h5coro yields None, _h5coro_get raises)
                     continue
                 if not (len(lat) == len(lon) == len(h) == len(q)):
                     continue
@@ -239,30 +257,15 @@ def run_h5coro(granules, bbox, reps):
                     n_pts += int(m.sum()); lat_all.append(lat[m]); h_all.append(h[m])
         lat_cat = np.concatenate(lat_all) if lat_all else np.array([])
         h_cat = np.concatenate(h_all) if h_all else np.array([])
-        return n_pts, lat_cat, h_cat
+        return (n_pts, lat_cat, h_cat, counter["requests"] - req0, counter["bytes"] - byt0)
 
-    try:
-        times, last = [], None
-        for i in range(reps):
-            if i == reps - 1:
-                counter["requests"] = counter["bytes"] = 0   # measure GETs/bytes on the final (steady) pass
-            t0 = time.time()
-            last = one_pass()
-            times.append(time.time() - t0)
-    finally:
-        restore()
-    n_pts, lat_cat, h_cat = last
-    return {
-        "method": "h5coro", "granules": len(granules), "opens": len(granules),
-        "requests": counter["requests"] or None, "bytes": counter["bytes"] or None,
-        "wall_med": statistics.median(times), "wall_min": min(times), "points": n_pts,
-        "checksum": checksum(lat_cat, h_cat) if n_pts else (0.0, 0.0),
-        "note": "re-reads each granule's HDF5 structure every query (no pre-build); GETs/bytes = wrapped S3Driver.read",
-    }
+    return {"method": "h5coro", "one_pass": one_pass, "opens": len(granules), "granules": len(granules),
+            "teardown": restore,
+            "note": "re-reads each granule's HDF5 structure every query (no pre-build); GETs/bytes = wrapped S3Driver.read"}
 
 
-# ----------------------------------------------------------------------------- C. h5py-over-s3fs (client-side baseline)
-def run_h5py_s3fs(granules, bbox, reps):
+# ----------------------------------------------------------------------------- C. h5py-over-s3fs (client baseline)
+def setup_h5py_s3fs(granules, bbox, window, res):
     if not (have("h5py") and have("s3fs")):
         return {"method": "h5py+s3fs", "skipped": "install h5py + s3fs"}
     if not access.in_region():
@@ -278,7 +281,11 @@ def run_h5py_s3fs(granules, bbox, reps):
         counter["bytes"] += max(0, end - start)
         return orig(self, start, end)
 
+    if orig is not None:
+        s3fs.core.S3File._fetch_range = counted
+
     def one_pass():
+        req0, byt0 = counter["requests"], counter["bytes"]
         n_pts, lat_all, h_all = 0, [], []
         for g in granules:
             with h5py.File(access.cloud_hdf5_file(g["url"], g["s3url"]), "r") as f:
@@ -296,105 +303,194 @@ def run_h5py_s3fs(granules, bbox, reps):
                         n_pts += int(m.sum()); lat_all.append(lat[m]); h_all.append(h[m])
         lat_cat = np.concatenate(lat_all) if lat_all else np.array([])
         h_cat = np.concatenate(h_all) if h_all else np.array([])
-        return n_pts, lat_cat, h_cat
+        return (n_pts, lat_cat, h_cat, counter["requests"] - req0, counter["bytes"] - byt0)
 
-    if orig is not None:
-        s3fs.core.S3File._fetch_range = counted
-    try:
-        times, last = [], None
-        for i in range(reps):
-            if i == reps - 1:
-                counter["requests"] = counter["bytes"] = 0
-            t0 = time.time()
-            last = one_pass()
-            times.append(time.time() - t0)
-    finally:
+    def teardown():
         if orig is not None:
             s3fs.core.S3File._fetch_range = orig
-    n_pts, lat_cat, h_cat = last
-    return {
-        "method": "h5py+s3fs", "granules": len(granules), "opens": len(granules),
-        "requests": counter["requests"] or None, "bytes": counter["bytes"] or None,
-        "wall_med": statistics.median(times), "wall_min": min(times), "points": n_pts,
-        "checksum": checksum(lat_cat, h_cat) if n_pts else (0.0, 0.0),
-        "note": "open + h5py slice per granule; block-cache reads counted at s3fs _fetch_range",
-    }
+
+    return {"method": "h5py+s3fs", "one_pass": one_pass, "opens": len(granules), "granules": len(granules),
+            "teardown": teardown,
+            "note": "open + h5py slice per granule; block-cache reads counted at s3fs _fetch_range"}
 
 
 # ----------------------------------------------------------------------------- D. kerchunk/zarr (optional analog)
-def run_kerchunk(granules, bbox, reps):
-    """Closest analog to us: pre-extract chunk references (a structure parse == our amortizable index build), then
-    read via zarr. Best-effort/optional: the in-region ReferenceFileSystem->s3 auth plumbing is fiddly, so this skips
-    cleanly on any failure rather than report an unfair number."""
+def setup_kerchunk(granules, bbox, window, res):
+    """Closest analog to us: pre-extract chunk references once (a structure parse == our amortizable index build),
+    then read via zarr. The reference-filesystem->s3 auth is fiddly, so this skips cleanly on any failure rather than
+    report an unfair number. kerchunk needs zarr<3; STS creds are injected via env for the reference fs."""
     for mod in ("kerchunk", "zarr", "fsspec"):
         if not have(mod):
-            return {"method": "kerchunk+zarr", "skipped": f"install {mod} (uv pip install kerchunk zarr xarray)"}
+            return {"method": "kerchunk+zarr", "skipped": f"install {mod} (uv pip install 'zarr<3' kerchunk xarray)"}
     if not access.in_region():
         return {"method": "kerchunk+zarr", "skipped": "needs the us-west-2 box (reads granules from S3)"}
+    import zarr
+    zmajor = int(str(zarr.__version__).split(".")[0])
+    if zmajor >= 3:
+        return {"method": "kerchunk+zarr", "skipped": f"needs zarr<3 (have {zarr.__version__}) -- run: uv pip install 'zarr<3'"}
     try:
         import h5py
-        import zarr
         from kerchunk.hdf import SingleHdf5ToZarr
 
         c = access.s3_credentials()
         so = {"key": c["accessKeyId"], "secret": c["secretAccessKey"], "token": c["sessionToken"]}
 
-        # --- build phase: extract references once (the amortizable structure parse, analogous to our index build)
+        # --- build phase (one-time; the amortizable structure parse, analogous to our index build) -- NOT timed here
         t_build0 = time.time()
         refs = {}
-        for g in granules:
-            with h5py.File(access.cloud_hdf5_file(g["url"], g["s3url"]), "r") as fh:
-                refs[g["s3url"]] = SingleHdf5ToZarr(fh, g["s3url"]).translate()
+        with _aws_env(c):
+            for g in granules:
+                with h5py.File(access.cloud_hdf5_file(g["url"], g["s3url"]), "r") as fh:
+                    refs[g["s3url"]] = SingleHdf5ToZarr(fh, g["s3url"]).translate()
         t_build = time.time() - t_build0
 
-        # --- read phase (the query-time cost, the axis comparable to h5coro/ours)
         def one_pass():
             import fsspec
-            n_pts, lat_all, h_all = 0, [], []
-            for s3url, ref in refs.items():
-                fs = fsspec.filesystem("reference", fo=ref, remote_protocol="s3", remote_options=so)
-                zg = zarr.open(fs.get_mapper(""), mode="r")
-                try:
-                    sc = int(np.asarray(zg["orbit_info/sc_orient"])[0])
-                except Exception:  # noqa: BLE001
-                    continue
-                for beam in strong_beams(sc):
-                    base = f"{beam}/land_ice_segments"
+            with _aws_env(c):   # belt-and-suspenders: the reference fs's s3fs resolves creds from env even if
+                n_pts, lat_all, h_all = 0, [], []   # remote_options is not threaded (the NoCredentialsError cause)
+                for s3url, ref in refs.items():
+                    fs = fsspec.filesystem("reference", fo=ref, remote_protocol="s3", remote_options=so)
+                    zg = zarr.open(fs.get_mapper(""), mode="r")
                     try:
-                        lat = np.asarray(zg[f"{base}/latitude"]); lon = np.asarray(zg[f"{base}/longitude"])
-                        h = np.asarray(zg[f"{base}/h_li"]).astype("f8"); q = np.asarray(zg[f"{base}/atl06_quality_summary"])
+                        sc = int(np.asarray(zg["orbit_info/sc_orient"])[0])
                     except Exception:  # noqa: BLE001
                         continue
-                    m = bbox_quality_mask(lat, lon, h, q, bbox)
-                    if m.any():
-                        n_pts += int(m.sum()); lat_all.append(lat[m]); h_all.append(h[m])
-            lat_cat = np.concatenate(lat_all) if lat_all else np.array([])
-            h_cat = np.concatenate(h_all) if h_all else np.array([])
-            return n_pts, lat_cat, h_cat
+                    for beam in strong_beams(sc):
+                        base = f"{beam}/land_ice_segments"
+                        try:
+                            lat = np.asarray(zg[f"{base}/latitude"]); lon = np.asarray(zg[f"{base}/longitude"])
+                            h = np.asarray(zg[f"{base}/h_li"]).astype("f8"); q = np.asarray(zg[f"{base}/atl06_quality_summary"])
+                        except Exception:  # noqa: BLE001
+                            continue
+                        m = bbox_quality_mask(lat, lon, h, q, bbox)
+                        if m.any():
+                            n_pts += int(m.sum()); lat_all.append(lat[m]); h_all.append(h[m])
+                lat_cat = np.concatenate(lat_all) if lat_all else np.array([])
+                h_cat = np.concatenate(h_all) if h_all else np.array([])
+                return (n_pts, lat_cat, h_cat, None, None)
 
-        times, last = [], None
-        for _ in range(reps):
-            t0 = time.time()
-            last = one_pass()
-            times.append(time.time() - t0)
-        n_pts, lat_cat, h_cat = last
-        return {
-            "method": "kerchunk+zarr", "granules": len(granules), "opens": 0,
-            "requests": None, "bytes": None, "wall_med": statistics.median(times), "wall_min": min(times),
-            "points": n_pts, "checksum": checksum(lat_cat, h_cat) if n_pts else (0.0, 0.0),
-            "build_s": round(t_build, 1),
-            "note": f"read-phase timing shown; refs pre-built in {t_build:.1f}s (amortizable, like our index)",
-        }
+        return {"method": "kerchunk+zarr", "one_pass": one_pass, "opens": 0, "granules": len(granules),
+                "build_s": round(t_build, 1),
+                "note": f"read-phase timing; refs pre-built in {t_build:.1f}s (amortizable, like our index)"}
     except Exception as e:  # noqa: BLE001
         return {"method": "kerchunk+zarr", "skipped": f"wiring failed ({type(e).__name__}: {e}) -- optional path"}
 
 
-RUNNERS = {"ours": run_ours, "h5coro": run_h5coro, "h5py_s3fs": run_h5py_s3fs, "kerchunk": run_kerchunk}
+SETUPS = {"ours": setup_ours, "h5coro": setup_h5coro, "h5py_s3fs": setup_h5py_s3fs, "kerchunk": setup_kerchunk}
 
 
-# ----------------------------------------------------------------------------- report
-def fmt(v, spec, na="  n/a"):
-    return na if v is None else format(v, spec)
+# ============================================================================= harness: interleaved reps per region
+def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
+    """Set up every method once, then drive reps INTERLEAVED (all methods each rep) so network variance is shared.
+    Returns a list of per-method result dicts with full timing stats + the per-rep records (for CSV)."""
+    setups = {m: SETUPS[m](granules, bbox, window, res) for m in methods}
+    recs = {m: [] for m in methods}   # per-rep: {wall, req, byt, points, checksum, warmup}
+    total = reps + warmup
+    for rep in range(total):
+        is_warm = rep < warmup
+        for m in methods:
+            s = setups[m]
+            if s.get("skipped"):
+                continue
+            t0 = time.time()
+            npts, lat, h, req, byt = s["one_pass"]()
+            dt = time.time() - t0
+            recs[m].append({"wall": dt, "req": req, "byt": byt, "points": npts,
+                            "checksum": checksum(lat, h) if npts else (0.0, 0.0), "warmup": is_warm})
+    for s in setups.values():
+        td = s.get("teardown")
+        if td:
+            try:
+                td()
+            except Exception:  # noqa: BLE001
+                pass
+
+    results = []
+    for m in methods:
+        s = setups[m]
+        if s.get("skipped"):
+            results.append({"region": label, "method": s["method"], "skipped": s["skipped"]})
+            continue
+        timed = [r for r in recs[m] if not r["warmup"]] or recs[m]   # if warmup>=reps, fall back to all
+        st = stats_of([r["wall"] for r in timed])
+        pts = timed[-1]["points"] if timed else 0
+        cs = timed[-1]["checksum"] if timed else (0.0, 0.0)
+        results.append({
+            "region": label, "method": s["method"], "granules": s.get("granules", len(granules)),
+            "opens": s.get("opens", 0), "requests": _med_int([r["req"] for r in timed]),
+            "bytes": _med_int([r["byt"] for r in timed]), "stats": st, "points": pts, "checksum": cs,
+            "build_s": s.get("build_s"), "note": s.get("note", ""), "records": recs[m],
+        })
+    return results
+
+
+# ----------------------------------------------------------------------------- report + csv
+def print_region(label, results, reg):
+    ran = [r for r in results if not r.get("skipped")]
+    print("\n" + "=" * 116)
+    print(f"REGION {label}   (reps timing = post-warmup)")
+    print(f"{'method':<18}{'gran':>5}{'opens':>6}{'reqs':>7}{'MB':>9}{'med':>9}{'p95':>9}{'std':>8}{'min':>9}"
+          f"{'points':>9}{'checksum(lat,h)':>22}")
+    print("-" * 116)
+    for r in results:
+        if r.get("skipped"):
+            reason = r["skipped"].split(".")[0][:78]
+            print(f"{r['method']:<18}  skipped -- {reason}")
+            continue
+        st = r["stats"]
+        mb = None if r.get("bytes") is None else r["bytes"] / 1e6
+        mbs = "  n/a" if mb is None else f"{mb:.1f}"
+        reqs = "  n/a" if r.get("requests") is None else f"{r['requests']:d}"
+        print(f"{r['method']:<18}{r.get('granules', ''):>5}{r.get('opens', ''):>6}{reqs:>7}{mbs:>9}"
+              f"{st['med']:>9.2f}{st['p95']:>9.2f}{st['std']:>8.2f}{st['min']:>9.2f}{r['points']:>9}"
+              f"{str(r['checksum']):>22}")
+    print("-" * 116)
+    if len(ran) >= 2:
+        ref = ran[0]
+        ok = all(r["points"] == ref["points"] and r["checksum"] == ref["checksum"] for r in ran)
+        if ok:
+            print(f"CORRECTNESS: PASS -- all {len(ran)} methods returned {ref['points']} identical points "
+                  f"(checksum {ref['checksum']}).")
+        else:
+            print("CORRECTNESS: MISMATCH -- methods disagree, timings NOT comparable:")
+            for r in ran:
+                print(f"    {r['method']:<18} points={r['points']} checksum={r['checksum']}")
+    # per-region winner (median, with spread so a close call reads as close)
+    ours = next((r for r in ran if r["method"].startswith("ours")), None)
+    h5c = next((r for r in ran if r["method"] == "h5coro"), None)
+    if ours and h5c:
+        ot, os_, ht, hs = ours["stats"]["med"], ours["stats"]["std"], h5c["stats"]["med"], h5c["stats"]["std"]
+        gap = abs(ot - ht)
+        close = gap < (os_ + hs)   # within combined stdev == a statistical tie
+        if close:
+            print(f"WINNER: tie within noise -- ours {ot:.2f}±{os_:.2f}s vs h5coro {ht:.2f}±{hs:.2f}s "
+                  f"(gap {gap:.2f}s < combined stdev {os_ + hs:.2f}s). The stable difference is bytes moved: "
+                  f"ours {(ours['bytes'] or 0)/1e6:.1f} MB vs h5coro {(h5c['bytes'] or 0)/1e6:.1f} MB.")
+        elif ot < ht:
+            print(f"WINNER: ours, {ht/max(ot,1e-9):.2f}x faster (median {ot:.2f}s vs {ht:.2f}s) -- skips the "
+                  f"per-query HDF5 structure walk (0 opens vs {h5c['opens']}).")
+        else:
+            print(f"WINNER: h5coro, {ot/max(ht,1e-9):.2f}x faster (median {ht:.2f}s vs {ot:.2f}s) on this subset "
+                  "-- reported honestly.")
+
+
+def write_csv(path, all_results, reg, bbox, window, res):
+    import csv
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["region", "method", "rep", "warmup", "wall_s", "requests", "bytes", "points", "checksum_lat", "checksum_h",
+                    "in_region", "bbox", "window", "res"])
+        bs, ws = str(list(bbox)), str(list(window))
+        for results in all_results:
+            for r in results:
+                if r.get("skipped"):
+                    w.writerow([r["region"], r["method"], "", "", "", "", "", "", "", "", reg, bs, ws, res])
+                    continue
+                for i, rec in enumerate(r["records"]):
+                    w.writerow([r["region"], r["method"], i, int(rec["warmup"]), f"{rec['wall']:.4f}",
+                                rec["req"] if rec["req"] is not None else "", rec["byt"] if rec["byt"] is not None else "",
+                                rec["points"], rec["checksum"][0], rec["checksum"][1], reg, bs, ws, res])
+    print(f"\nwrote per-rep rows -> {path}")
 
 
 def main():
@@ -403,97 +499,86 @@ def main():
     ap.add_argument("--bbox", type=float, nargs=4, default=DEFAULT_BBOX, metavar=("W", "S", "E", "N"))
     ap.add_argument("--window", nargs=2, default=list(DEFAULT_WINDOW), metavar=("START", "END"))
     ap.add_argument("--res", type=int, default=ATL06_RES)
-    ap.add_argument("--reps", type=int, default=3, help="repetitions per method (median reported)")
+    ap.add_argument("--reps", type=int, default=5, help="timed repetitions per method (median + spread reported)")
+    ap.add_argument("--warmup", type=int, default=0, help="discard the first N (cold) reps per method")
     ap.add_argument("--max-granules", type=int, default=0, help="cap the granule set (0 = all in bbox)")
+    ap.add_argument("--granule-steps", default="", help="comma list, e.g. 1,3,10,25,50: sweep the SAME box capped at "
+                    "each N to find the crossover (overrides --max-granules)")
+    ap.add_argument("--csv", default="", help="write every (region, method, rep) row to this CSV")
     a = ap.parse_args()
     bbox, window = list(a.bbox), tuple(a.window)
+    methods = [m.strip() for m in a.methods.split(",") if m.strip()]
+    for m in methods:
+        if m not in SETUPS:
+            print(f"unknown method {m!r} (choose from {list(SETUPS)})"); return
 
     auth.login()
     reg = access.in_region()
     print(f"in_region={reg}  |  " + ("S3-direct: wall-clock is the REAL perf number." if reg else
           "OUT-OF-REGION: S3 methods are skipped (they need the us-west-2 box); the API self-checks still run."))
-    print(f"ATL06 bbox={bbox} window={window} res={a.res} reps={a.reps}\n")
+    print(f"ATL06 bbox={bbox} window={window} res={a.res} reps={a.reps} warmup={a.warmup}  methods={methods}\n")
 
     try:
-        granules = granules_from_index(bbox, window, a.res)
+        full = granules_from_index(bbox, window, a.res)
     except RuntimeError as e:
         print(f"cannot select granules: {e}")
         return
-    if a.max_granules:
-        granules = granules[: a.max_granules]
-    print(f"granule set from the built index: {len(granules)} ATL06 v007 granule(s)"
-          + (f" (first: {granules[0]['granule']})" if granules else "") + "\n")
-    if not granules:
+    if not full:
         print("no granules touch this bbox/window in the index -- widen the box or build a covering index.")
         return
+    print(f"granule set from the built index: {len(full)} ATL06 v007 granule(s)"
+          f" (first: {full[0]['granule']})\n")
 
-    results = []
-    for name in [m.strip() for m in a.methods.split(",") if m.strip()]:
-        if name not in RUNNERS:
-            print(f"unknown method {name!r} (choose from {list(RUNNERS)})"); continue
-        print(f"=== {name} ===")
-        if name == "ours":
-            r = run_ours(bbox, window, a.res, a.reps)
-        else:
-            r = RUNNERS[name](granules, bbox, a.reps)
-        if r.get("skipped"):
-            print(f"    SKIP: {r['skipped']}")
-        else:
-            print(f"    {r['points']} pts, wall_med={r['wall_med']:.2f}s  ({r.get('note', '')})")
-        results.append(r)
-
-    ran = [r for r in results if not r.get("skipped")]
-    print("\n" + "=" * 104)
-    print(f"{'method':<18}{'gran':>5}{'opens':>6}{'requests':>10}{'MB':>9}{'wall_med':>10}{'wall_min':>10}"
-          f"{'points':>9}{'checksum(lat,h)':>22}")
-    print("-" * 104)
-    for r in results:
-        if r.get("skipped"):
-            reason = r["skipped"].split(".")[0][:66]   # short reason; the full text printed in the '=== method ===' block
-            print(f"{r['method']:<18}  skipped -- {reason}")
-            continue
-        mb = None if r.get("bytes") is None else r["bytes"] / 1e6
-        cs = r.get("checksum", (0.0, 0.0))
-        print(f"{r['method']:<18}{r.get('granules', ''):>5}{r.get('opens', ''):>6}"
-              f"{fmt(r.get('requests'), 'd', na='   n/a'):>10}{fmt(mb, '.1f', na='  n/a'):>9}"
-              f"{r['wall_med']:>10.2f}{r['wall_min']:>10.2f}{r['points']:>9}"
-              f"{str(cs):>22}")
-
-    # ---- correctness: every method that ran must return the same points (count + checksum) before timings mean anything
-    print("-" * 104)
-    if len(ran) >= 2:
-        ref = ran[0]
-        pts_ok = all(r["points"] == ref["points"] for r in ran)
-        cs_ok = all(r["checksum"] == ref["checksum"] for r in ran)
-        if pts_ok and cs_ok:
-            print(f"CORRECTNESS: PASS -- all {len(ran)} methods returned {ref['points']} identical points "
-                  f"(checksum {ref['checksum']}).")
-        else:
-            print("CORRECTNESS: MISMATCH -- methods disagree, timings below are NOT comparable:")
-            for r in ran:
-                print(f"    {r['method']:<18} points={r['points']} checksum={r['checksum']}")
-
-    # ---- honest summary: query-time winner + the amortization caveat
-    ours = next((r for r in ran if r["method"].startswith("ours")), None)
-    h5c = next((r for r in ran if r["method"] == "h5coro"), None)
-    print()
-    if ours and h5c:
-        ot, ht = ours["wall_med"], h5c["wall_med"]
-        if not reg:
-            print("(out-of-region wall-clock is your local link, not the system -- rerun on the box for real numbers)")
-        if ot < ht:
-            print(f"QUERY-TIME WINNER: our index, {ht / max(ot, 1e-9):.1f}x faster than h5coro "
-                  f"({ot:.2f}s vs {ht:.2f}s) -- it skips the per-query HDF5 structure walk (0 opens vs {h5c['opens']}).")
-        else:
-            print(f"QUERY-TIME WINNER: h5coro, {ot / max(ht, 1e-9):.1f}x faster than our index "
-                  f"({ht:.2f}s vs {ot:.2f}s) on this subset -- report it honestly.")
-        print("CAVEAT: our query-time win is bought with a one-time index build the others never pay "
-              "(~$6 to index the whole Earth's ATL06, per the project's measurements; amortized over all future "
-              "queries). h5coro/h5py/kerchunk have no pre-build but re-walk each granule's structure every query.")
-    elif ours:
-        print("h5coro did not run (see skip reason). Our path metrics stand alone; install h5coro on the box to compare.")
+    # regions to bench: a granule-step sweep, or a single region (optionally capped by --max-granules)
+    if a.granule_steps:
+        steps = [int(x) for x in a.granule_steps.split(",") if x.strip()]
+        regions = [(f"N={min(nn, len(full))}", full[:nn]) for nn in steps]
     else:
-        print("Our path did not run -- build the ATL06 index on the box first (scripts/build_atl06_index.py).")
+        g = full[: a.max_granules] if a.max_granules else full
+        regions = [(f"N={len(g)}", g)]
+
+    all_results = []
+    for label, granules in regions:
+        print(f"--- benching {label} ({len(granules)} granules) x {len(methods)} methods, interleaved ---")
+        results = bench_region(label, granules, bbox, window, a.res, methods, a.reps, a.warmup)
+        print_region(label, results, reg)
+        all_results.append(results)
+
+    # sweep summary: median wall per method across N (the crossover, at a glance)
+    if len(all_results) > 1:
+        disp = {"ours": "ours (H3 index)", "h5coro": "h5coro", "h5py_s3fs": "h5py+s3fs", "kerchunk": "kerchunk+zarr"}
+        labels = [label for label, _ in regions]
+        print("\n" + "=" * 116)
+        print("SWEEP (median wall seconds by granule count)")
+        print("method".ljust(18) + "".join(f"{lab:>12}" for lab in labels))
+        print("-" * 116)
+        for m in methods:
+            cells = []
+            for results in all_results:
+                r = next((x for x in results if _mkey(x.get("method", "")) == m), None)
+                cells.append("skip" if (r is None or r.get("skipped")) else f"{r['stats']['med']:.2f}")
+            print(disp.get(m, m).ljust(18) + "".join(f"{c:>12}" for c in cells))
+        print("CAVEAT: our per-query win is bought with a one-time index build the others never pay (~$6 whole-Earth "
+              "ATL06, amortized over all queries). h5coro/h5py/kerchunk re-walk each granule's structure every query.")
+
+    if a.csv:
+        write_csv(a.csv, all_results, reg, bbox, window, a.res)
+    if not reg:
+        print("\n(out-of-region wall-clock is your local link, not the system -- rerun on the box for real numbers)")
+
+
+def _mkey(method_name: str) -> str:
+    """Map a display method name back to its --methods key for sweep-table matching."""
+    n = method_name.lower()
+    if n.startswith("ours"):
+        return "ours"
+    if n.startswith("h5coro"):
+        return "h5coro"
+    if n.startswith("h5py"):
+        return "h5py_s3fs"
+    if n.startswith("kerchunk"):
+        return "kerchunk"
+    return method_name
 
 
 if __name__ == "__main__":
