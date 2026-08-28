@@ -34,11 +34,18 @@ or invalidating the first.
 
 The code must be on a branch the instance can clone, and `data/` is gitignored — **push first**.
 
+The repo is public, so the clone needs no credentials on the instance. `-b` is required until this
+branch merges: `main` has none of this workflow.
+
 ```bash
-git clone <repo-url> ~/aicesat && cd ~/aicesat
+git clone -b cryocloud-index-workflow https://github.com/eigenbeam/aicesat ~/aicesat
+cd ~/aicesat
 bash scripts/cryocloud_build_index.sh                     # SW Greenland default
 bash scripts/cryocloud_build_index.sh -51 66.9 -29 76.2   # or any W S E N [res] [workers]
 ```
+
+Confirm you have the right state — `git log --oneline -2` should show the index and dismiss commits,
+and `scripts/cryocloud_build_index.sh` should exist.
 
 The script installs `uv` to `~/.local/bin` if needed (no sudo), runs `uv sync` (which fetches its own
 Python 3.13 — do **not** reuse the notebook kernel), exports `AWS_REGION=us-west-2`, runs the in-region
