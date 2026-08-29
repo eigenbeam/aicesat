@@ -130,61 +130,6 @@ def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: i
     return out
 
 
-BATCH_WRITE_ENV = "AICESAT_LAKE_BATCH_WRITES"
-BATCH_SUFFIX = "cb"      # the accumulating per-(cell, granule, beam) file; still matches query_points' `*__c*` glob
-
-
-def batch_writes_enabled() -> bool:
-    """EXPERIMENTAL. Set AICESAT_LAKE_BATCH_WRITES=1 to write one Parquet file per (cell, granule, beam) instead of
-    one per (cell, chunk). Off by default until the win is measured on the box — see write_point_chunks."""
-    return os.environ.get(BATCH_WRITE_ENV, "0").lower() in ("1", "true", "yes")
-
-
-def write_point_chunks(mission: str, chunks, res: int, extras: tuple[str, ...] = ()) -> dict[int, list[int]]:
-    """Materialize a whole granule's chunks with ONE file per (cell, granule, beam) instead of one per (cell, chunk).
-
-    Motivation, measured on the box: a 4,566-chunk leg spent 115.9 write thread-seconds over ~32k files, ~3.6 ms each,
-    and more writer threads made it worse — a fixed serialized resource, so the lever is fewer files.
-
-    The file name is DETERMINISTIC, which is the whole design. A first attempt named each file by the chunk SET it
-    held, which meant discovering what already existed with `d.glob(...)` per cell per job: a directory scan whose
-    cost grows with the LAKE rather than the request — the same shape as the 145 s query_points bug — and it made a
-    batched build 36% SLOWER than per-chunk (84.9 s vs 62.5 s). A fixed name turns that into one O(1) exists().
-
-    A re-fetch therefore MERGES: read the existing file, drop the rows for the chunks being rewritten, concatenate the
-    new ones. That is strictly better than the set-naming scheme it replaces — no data loss on a partial re-fetch and
-    no duplication — and it costs one small read only when the file is already there. The write is tmp+replace, so a
-    concurrent query_points never sees a half-rewritten accumulation.
-    """
-    per_cell: dict[int, list] = {}                     # cell -> [(chunk_index, table)]
-    written: dict[int, list[int]] = {int(c.chunk_index): [] for c in chunks}
-    for cw in chunks:
-        for cell, tbl in _cell_tables(cw.granule, cw.beam, cw.chunk_index, cw.arrays, res, extras, cw.only_cells).items():
-            per_cell.setdefault(cell, []).append((int(cw.chunk_index), tbl))
-    if not per_cell:
-        return written
-    granule, beam = chunks[0].granule, (chunks[0].beam or "na")
-    gstem = _stem(granule)
-    for cell, items in per_cell.items():
-        d = cell_dir(mission, cell); d.mkdir(parents=True, exist_ok=True)
-        new = sorted({ci for ci, _ in items})
-        out = d / f"{gstem}__{beam}__{BATCH_SUFFIX}.parquet"
-        tabs = [t for _ci, t in items]
-        if out.exists():                               # O(1) — never a directory listing
-            old = pq.read_table(out)
-            m = ~np.isin(np.asarray(old.column("source_chunk_index")), np.asarray(new, "i4"))
-            if bool(m.any()):
-                tabs.insert(0, old.filter(pa.array(m)))
-        tmp = d / f".{out.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-        pq.write_table(pa.concat_tables(tabs) if len(tabs) > 1 else tabs[0], tmp,
-                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
-        os.replace(tmp, out)                           # atomic: a reader sees the old file or the new one, never both
-        for ci in new:                                 # supersede any per-chunk file for exactly these chunks (O(1))
-            (d / f"{gstem}__{beam}__c{ci}.parquet").unlink(missing_ok=True)
-            written[ci].append(cell)
-    return {ci: sorted(cs) for ci, cs in written.items()}
-
-
 STREAM_BATCHES = 6   # cell groups per streamed read: enough to look continuous, few enough not to add query overhead
 
 
@@ -559,33 +504,16 @@ class _Writer:
     def _run_job(self, job) -> None:
         mission, res, chunks, cells, extras = job
         per_gb: dict[tuple[str, str], dict] = {}
-        # A job carries one granule but possibly several beams; the batch path writes one file per cell per
-        # (granule, beam), so group before calling it.
-        by_gb: dict[tuple[str, str], list] = {}
         for cw in chunks:
-            by_gb.setdefault((cw.granule, cw.beam), []).append(cw)
-        for (granule, beam), group in by_gb.items():
-            if batch_writes_enabled():
-                try:
-                    cc = write_point_chunks(mission, group, res, extras=extras)
-                except Exception:   # a failed batch loses only this (granule, beam); it stays unmarked, so re-fetched
-                    self.chunk_errors += len(group)
-                    log.exception("lake writer: %s %s/%s batch of %d chunks failed to write; it will be re-fetched",
-                                  mission, granule, beam, len(group))
-                    continue
-                for cw in group:
-                    per_gb.setdefault((granule, beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
+            try:
+                cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
+                                       extras=extras, only_cells=cw.only_cells)
+            except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
+                self.chunk_errors += 1
+                log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
+                              mission, cw.granule, cw.beam, cw.chunk_index)
                 continue
-            for cw in group:
-                try:
-                    cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
-                                           extras=extras, only_cells=cw.only_cells)
-                except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
-                    self.chunk_errors += 1
-                    log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
-                                  mission, cw.granule, cw.beam, cw.chunk_index)
-                    continue
-                per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
+            per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
         with self._lock:
             self._done.append((mission, [(g, b, cm) for (g, b), cm in per_gb.items()], cells))
             self.jobs_written += 1

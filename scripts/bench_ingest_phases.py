@@ -12,7 +12,7 @@ import time
 from aicesat import atl06, auth, cache, index_atl06, lake, regions
 from aicesat.access import RangeReader
 
-PHASES = ("fetch", "decode", "write", "write_batch", "cells", "mark_many",
+PHASES = ("fetch", "decode", "write", "cells", "mark_many",
           "index_rows", "ingested", "query_points", "evict", "cache_save")
 TOT = {k: 0.0 for k in PHASES}
 CNT = {k: 0 for k in PHASES}
@@ -51,9 +51,6 @@ def main(bbox) -> None:
     RangeReader.fetch = _timed("fetch", RangeReader.fetch)
     index_atl06._decode_chunk = _timed("decode", index_atl06._decode_chunk)
     lake.write_point_chunk = _counted(_timed("write", lake.write_point_chunk))
-    # Both write paths, or a batched run reports "write 0.0s over 0 calls" and hides ~116 thread-seconds in
-    # `unaccounted` — which is exactly what the first AICESAT_LAKE_BATCH_WRITES=1 run did.
-    lake.write_point_chunks = _counted(_timed("write_batch", lake.write_point_chunks))
     # everything else on the leg's critical path — the first run left 27.5s of 58.5s unaccounted
     index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
     lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
@@ -86,8 +83,7 @@ def main(bbox) -> None:
     # The config is part of the measurement. presigns>0 means it did NOT take the in-region S3-direct path, which a
     # login shell silently causes: EC2 does not set AWS_REGION, so in_region() is False unless AICESAT_S3_DIRECT=1.
     print(f"  config        s3_direct={in_region()}  async_write={lake.async_writes_enabled()}  "
-          f"writers={lake._writer_threads()}  fetch_workers={nw} (cap {FETCH_WORKER_CAP})  "
-          f"batch_writes={lake.batch_writes_enabled()}")
+          f"writers={lake._writer_threads()}  fetch_workers={nw} (cap {FETCH_WORKER_CAP})")
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
