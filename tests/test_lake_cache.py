@@ -412,9 +412,10 @@ def _is_subset(sub, full):
     return all(cf[k] >= v for k, v in cs.items())
 
 
-def test_atl06_on_granule_streams_subset_per_granule_and_is_silent_on_a_cache_hit():
+def test_atl06_on_granule_streams_per_granule_on_miss_and_from_the_lake_on_hit():
     """A cache-MISS fetch emits each pass's display points ONCE, as a strict subset of the authoritative arrays; a
-    later cache HIT (nothing to fetch) emits nothing and returns byte-identical arrays."""
+    later cache HIT streams the lake read in cell batches (so a warm build still shows progress) and returns
+    byte-identical arrays. The two paths never both fire for the same points."""
     lat = np.linspace(69.6, 71.4, 30); lon = np.full(30, -45.0); q = np.zeros(30, "i1")
     _build_atl06(lat, lon, np.linspace(2500.0, 2530.0, 30).astype("f4"), q,
                  granule="ATL06_20200115000000_11760601_007_01.h5", url="https://x/atl06A.h5")
@@ -434,11 +435,18 @@ def test_atl06_on_granule_streams_subset_per_granule_and_is_silent_on_a_cache_hi
 
     fires2 = []
     got2, st2 = index_atl06.fetch_bbox(bbox, on_granule=fires2.append)
-    assert st2["chunks_from_nasa"] == 0 and fires2 == []                 # pure cache hit: nothing streamed
+    # A cache HIT now streams too: the lake read is emitted in cell batches so a warm build shows progress instead of
+    # sitting still and then painting everything at finalize. The batches must cover exactly the returned points.
+    assert st2["chunks_from_nasa"] == 0                                  # still no network
+    assert fires2, "a cache hit must stream the lake read, not sit silent"
+    assert {f["granule"] for f in fires2} == {"lake"}                    # labelled as lake-served, not a granule fetch
+    lake_streamed = {k: np.concatenate([f[k] for f in fires2]) for k in ("lon", "lat", "h", "t")}
+    assert lake_streamed["lon"].size == got2["lon"].size                 # covers the whole result, no double-emission
+    assert _is_subset(lake_streamed, got2)
     _same(got, got2)                                                     # authoritative arrays unchanged
 
 
-def test_glas_on_granule_streams_subset_on_miss_and_silent_on_hit():
+def test_glas_on_granule_streams_on_miss_and_from_the_lake_on_hit():
     n = 24
     _build_glas(np.linspace(69.6, 71.4, n), np.full(n, -45.0), np.linspace(2600.0, 2620.0, n))
     bbox = (-45.5, 69.5, -44.5, 71.5)
@@ -450,11 +458,18 @@ def test_glas_on_granule_streams_subset_on_miss_and_silent_on_hit():
     assert _is_subset(streamed, got) and streamed["lon"].size == got["lon"].size
     fires2 = []
     got2, st2 = index_glas.fetch_bbox(bbox, on_granule=fires2.append)
-    assert st2["chunks_from_nasa"] == 0 and fires2 == []
+    # A cache HIT now streams too: the lake read is emitted in cell batches so a warm build shows progress instead of
+    # sitting still and then painting everything at finalize. The batches must cover exactly the returned points.
+    assert st2["chunks_from_nasa"] == 0                                  # still no network
+    assert fires2, "a cache hit must stream the lake read, not sit silent"
+    assert {f["granule"] for f in fires2} == {"lake"}                    # labelled as lake-served, not a granule fetch
+    lake_streamed = {k: np.concatenate([f[k] for f in fires2]) for k in ("lon", "lat", "h", "t")}
+    assert lake_streamed["lon"].size == got2["lon"].size                 # covers the whole result, no double-emission
+    assert _is_subset(lake_streamed, got2)
     _same(got, got2)
 
 
-def test_icessn_on_granule_streams_subset_on_miss_and_silent_on_hit():
+def test_icessn_on_granule_streams_on_miss_and_from_the_lake_on_hit():
     n = 20
     lat = np.linspace(69.6, 71.4, n); lon = np.full(n, -45.0); elev = np.linspace(2400.0, 2420.0, n)
     rms = np.full(n, 4.5); rms[7] = 80.0                    # one platelet fails the RMS cut (dropped both paths)
@@ -468,7 +483,14 @@ def test_icessn_on_granule_streams_subset_on_miss_and_silent_on_hit():
     assert _is_subset(streamed, got) and streamed["lon"].size == got["lon"].size
     fires2 = []
     got2, st2 = index_icessn.fetch_bbox(bbox, on_granule=fires2.append)
-    assert st2["chunks_from_nasa"] == 0 and fires2 == []
+    # A cache HIT now streams too: the lake read is emitted in cell batches so a warm build shows progress instead of
+    # sitting still and then painting everything at finalize. The batches must cover exactly the returned points.
+    assert st2["chunks_from_nasa"] == 0                                  # still no network
+    assert fires2, "a cache hit must stream the lake read, not sit silent"
+    assert {f["granule"] for f in fires2} == {"lake"}                    # labelled as lake-served, not a granule fetch
+    lake_streamed = {k: np.concatenate([f[k] for f in fires2]) for k in ("lon", "lat", "h", "t")}
+    assert lake_streamed["lon"].size == got2["lon"].size                 # covers the whole result, no double-emission
+    assert _is_subset(lake_streamed, got2)
     _same(got, got2)
 
 

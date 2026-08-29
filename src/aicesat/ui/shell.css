@@ -171,7 +171,15 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 /* Scene loading overlay + spinner (feedback: canvas is blank while sceneDoc streams) */
 .scene-loading[hidden] { display:none; }
 .scene-loading { position:absolute; inset:0; z-index:15; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--muted); font-size:13px; background:rgba(20,20,26,.35); backdrop-filter:blur(1px); pointer-events:none; }
-.scene-loading .spinner { width:20px; height:20px; border-radius:50%; border:2px solid var(--hair); border-top-color:var(--blue); animation:spin .8s linear infinite; }
+.scene-loading .spinner { width:20px; height:20px; border-radius:50%; border:2px solid var(--hair); border-top-color:var(--blue); animation:spin .8s linear infinite; flex:0 0 auto; }
+/* Build progress: the real per-leg log, so a long build shows what it is doing instead of an opaque spinner. */
+.sl-box { min-width:300px; max-width:min(520px, 70%); background:rgba(18,18,24,.86); border:1px solid var(--hair); border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+.sl-head { display:flex; align-items:center; gap:9px; font-size:13px; color:var(--fg); }
+.sl-elapsed { margin-left:auto; font-variant-numeric:tabular-nums; color:var(--muted); font-size:11.5px; }
+.sl-log { margin-top:8px; display:flex; flex-direction:column; gap:2px; font-size:11.5px; line-height:1.45; color:var(--muted); }
+.sl-log .sl-line { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sl-log .sl-line.sl-now { color:var(--fg); }
+.scene-loading.sl-done .spinner { animation:none; border-color:var(--ok, #4caf7d); border-top-color:var(--ok, #4caf7d); }
 @keyframes spin { to { transform:rotate(360deg); } }
 /* Coverage count caveat (GLAS/ATM CMR footprints over-report; the scene point-filters) */
 .cov-caveat { font-size:10.5px; font-style:italic; color:var(--amber); white-space:nowrap; cursor:help; }

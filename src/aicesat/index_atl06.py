@@ -321,7 +321,12 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             lake.mark_ingested(MISSION, g, b, cm)
 
     beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero, clip_cells=clip_cells)
+    # Stream the lake read too: without this, cache-served points appear only at finalize, so a warm build showed no
+    # progress and then the whole cloud at once. Emits through the same on_granule channel the fetch path uses.
+    # Stream the lake read ONLY when nothing was fetched. On a cache MISS the per-granule callbacks above already
+    # provide progress during the (slow) fetch, and emitting the lake read too would send every point twice.
+    _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ATL06 fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),

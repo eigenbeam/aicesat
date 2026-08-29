@@ -118,9 +118,39 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
     return {int(chunk_index): sorted(written)}
 
 
+STREAM_BATCHES = 6   # cell groups per streamed read: enough to look continuous, few enough not to add query overhead
+
+
 def query_points(bbox, cells: list[int], mission: str, granules: list[str] | None = None,
                  beams: list[str] | None = None, extra_cols: tuple[str, ...] = (), quality_zero: bool = False,
-                 clip_cells: bool = False) -> dict:
+                 clip_cells: bool = False, on_batch=None) -> dict:
+    """Read materialized index-mission points back, optionally emitting them progressively.
+
+    `on_batch` (opt-in): read the cells in groups and hand each group's points to the callback as they land, then
+    return the same concatenated result. Data served from the LAKE otherwise arrives in one blocking call at the end
+    of a leg, so a build with a warm lake showed no progress at all and then the whole cloud appeared at once. Cells
+    partition the points (every point lives in exactly one cell's files), so the concatenation is the same set the
+    single-query path returns. Default (None) is byte-for-byte the previous behaviour.
+    """
+    if on_batch is not None and len(cells) > 1:
+        groups, per = [], max(1, -(-len(cells) // STREAM_BATCHES))
+        for i in range(0, len(cells), per):
+            groups.append(cells[i:i + per])
+        parts = []
+        for g in groups:
+            r = query_points(bbox, g, mission, granules=granules, beams=beams, extra_cols=extra_cols,
+                             quality_zero=quality_zero, clip_cells=clip_cells)
+            if r["lon"].size:
+                on_batch(r)
+            parts.append(r)
+        keys = parts[0].keys() if parts else ("lon", "lat", "h", "t")
+        return {k: (np.concatenate([p[k] for p in parts]) if parts else np.array([])) for k in keys}
+    return _query_points(bbox, cells, mission, granules, beams, extra_cols, quality_zero, clip_cells)
+
+
+def _query_points(bbox, cells: list[int], mission: str, granules: list[str] | None = None,
+                  beams: list[str] | None = None, extra_cols: tuple[str, ...] = (), quality_zero: bool = False,
+                  clip_cells: bool = False) -> dict:
     """Read materialized index-mission points back (the analogue of query_photons): DuckDB over the mission's cell
     files with cell + bbox (+ granule, + beam, + optional quality) predicate pushdown. Returns the SAME dict shape the
     mission's fetch_bbox returns: {'lon','lat','h','t'} plus each name in `extra_cols`.

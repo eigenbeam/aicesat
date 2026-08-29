@@ -291,8 +291,10 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         for pr in parts:
             lake.mark_ingested(MISSION, pr["granule"], BEAM, {CHUNK: pr["cells"]})
 
+    _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
     arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,
-                               extra_cols=("sn_slope", "we_slope"))   # slopes present for chunks ingested since this feature
+                               extra_cols=("sn_slope", "we_slope"),   # slopes present for chunks ingested since this feature
+                               on_batch=_stream)
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ICESSN fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": n_nasa, "chunks_fetched": n_nasa,
