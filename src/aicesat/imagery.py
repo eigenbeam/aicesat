@@ -61,13 +61,28 @@ def _merc(lon, lat, z):
 SOURCES = ("eox", "s2")   # user-facing imagery sources (see build())
 
 
+def _default_source() -> str:
+    """Default imagery source: env AICESAT_IMAGERY if set, else region-aware. In-region (us-west-2) prefer "s2" — the
+    Sentinel-2 COGs live in the sentinel-cogs bucket there, so imagery is a few windowed reads; "eox" is EOX's WMTS
+    server in the EU, which from the box is hundreds of tile GETs over a slow cross-Atlantic hop (minutes). Off the box
+    (local dev, other regions) keep "eox": no AWS creds needed and the whole globe is covered."""
+    env = os.environ.get("AICESAT_IMAGERY")
+    if env:
+        return env.strip().lower()
+    try:
+        from .access import in_region
+        return "s2" if in_region() else "eox"
+    except Exception:
+        return "eox"
+
+
 def build(frame: dict, extent: tuple[float, float, float, float], width_px: int = 2048, layer: str = LAYER,
           source: str | None = None) -> dict:
     """Base-layer imagery for the scene. Source precedence: explicit `source` arg (per-scene, from the UI selector) >
-    env AICESAT_IMAGERY > default "eox". "s2" -> in-region Sentinel-2 L2A COGs (us-west-2); "eox" -> EOX Sentinel-2
-    cloudless WMTS. Both return the same meta contract:
+    env AICESAT_IMAGERY > region-aware default (in-region "s2", else "eox"; see _default_source). "s2" -> in-region
+    Sentinel-2 L2A COGs (us-west-2); "eox" -> EOX Sentinel-2 cloudless WMTS. Both return the same meta contract:
     {path, x0, y0, x1, y1, zoom, m_per_px, width, height, attribution, source}."""
-    src = (source or os.environ.get("AICESAT_IMAGERY", "eox")).strip().lower()
+    src = (source or _default_source()).strip().lower()
     if src == "s2":
         return _build_s2(frame, extent, width_px)
     return _build_eox(frame, extent, width_px, layer)
@@ -105,7 +120,7 @@ def _build_eox(frame: dict, extent: tuple[float, float, float, float], width_px:
     session = requests.Session()
 
     def fetch(t):
-        r = session.get(TILE_URL.format(layer=layer, z=z, x=t[0], y=t[1]), timeout=60)
+        r = session.get(TILE_URL.format(layer=layer, z=z, x=t[0], y=t[1]), timeout=15)   # a stalled EU tile shouldn't hang 60 s
         r.raise_for_status()
         return t, np.asarray(Image.open(io.BytesIO(r.content)).convert("RGB"))
 
