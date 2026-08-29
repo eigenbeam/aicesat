@@ -12,6 +12,14 @@ let SHOW_IMAGERY = false;
 let SHOW_SURFACE = true;   // DEM base surface on/off (scene controls)
 let IMG_VER = 0;           // bumps on an imagery re-fetch so the draped texture URL changes and reloads
 
+// ICESSN dots<->platelets level-of-detail scalars (declared before the Deck so its onViewStateChange closure is safe).
+// curZoom tracks the OrbitView zoom (2^zoom ≈ pixels/metre); a facet spans PLATELET_M · PT_SCALE · 2^zoom screen px.
+let PT_SCALE = 1;          // user "Points ×" multiplier (scales both dots and platelet facets)
+const PLATELET_M = 42;     // drawn facet side (m); ICESSN nadir platelets are ~tens of m along/across track
+const PX_PLATELET = 6;     // switch dots -> platelets once a facet spans at least this many screen px
+let curZoom = -6;
+const plateletsNear = () => PLATELET_M * PT_SCALE * Math.pow(2, curZoom) >= PX_PLATELET;
+
 let scene = null, coreg = null, bounds = null, meshOk = true;
 const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
 const $ = id => root.querySelector('#' + id);
@@ -47,6 +55,10 @@ const deckgl = new Deck({
                                 sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [-1, 1, -0.6]})})],
   initialViewState: {target: [0, 0, 0], rotationX: 35, rotationOrbit: -25, zoom: -6, minZoom: -12, maxZoom: 6},
   controller: true,
+  // track zoom for the ICESSN dots<->platelets level-of-detail; re-render only when the threshold flips (not every tick)
+  onViewStateChange: ({viewState}) => {
+    if (typeof viewState.zoom === 'number') { const was = plateletsNear(); curZoom = viewState.zoom; if (plateletsNear() !== was) render(); }
+  },
   layers: [],
 });
 
@@ -66,7 +78,39 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
 const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
-let PT_SCALE = 1;   // user "Points ×" multiplier for tuning
+
+// --- ICESSN platelets: the ILATM2 nadir product IS a plane fit per short along-track segment, so each measurement
+// carries its own surface slope. We draw it as the geometric primitive it is — a small facet tilted to its fitted
+// plane — but only when it's near enough to read as a tilted quad (plateletsNear, above); at overview zoom a facet is
+// sub-pixel, so we fall back to the same clamped dots every other mission uses.
+const LIGHT = (() => { const v = [-1, 1, 2], l = Math.hypot(...v); return v.map(c => c / l); })();  // NW-and-above, for facet shading
+const usePlatelets = (m, s) => m === 'ICESSN' && s.slopes && s.slopes.length && plateletsNear();
+
+function plateletLayer(m, s) {
+  const src = s.positions, sl = s.slopes, base = colorOf(m);
+  const fr = scene.frame, E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
+  const half = PLATELET_M * PT_SCALE / 2;
+  const corners = [[half, half], [half, -half], [-half, -half], [-half, half]];   // (east, north) offsets, CCW
+  return new deck.SolidPolygonLayer({
+    id: 'plat-' + m, data: indices(src.length / 3),
+    getPolygon: i => {
+      const cx = src[3 * i], cy = src[3 * i + 1], cz = src[3 * i + 2], sn = sl[2 * i], we = sl[2 * i + 1];
+      return corners.map(([de, dn]) => {
+        const dx = de * E[0] + dn * N[0], dy = de * E[1] + dn * N[1], dz = we * de + sn * dn;   // the platelet's fitted plane
+        return [cx + dx, cy + dy, (cz + dz) * Z_EXAG];
+      });
+    },
+    // manual hillshade so the tilt reads even where SolidPolygonLayer's flat faces get uniform lighting: brightness
+    // from the facet normal (-we, -sn, 1) against a fixed NW-above light.
+    getFillColor: i => {
+      const we = sl[2 * i], sn = sl[2 * i + 1], nl = Math.hypot(we, sn, 1);
+      const b = Math.max(0.4, Math.min(1, 0.62 + 0.5 * ((-we * LIGHT[0] - sn * LIGHT[1] + LIGHT[2]) / nl)));
+      return [base[0] * b, base[1] * b, base[2] * b, 235];
+    },
+    _normalize: false,   // simple convex quads
+    updateTriggers: {getPolygon: [Z_EXAG, PT_SCALE], getFillColor: base},
+  });
+}
 
 function cloudLayers() {
   const out = [];
@@ -83,6 +127,7 @@ function cloudLayers() {
         billboard: true, updateTriggers: {getPosition: Z_EXAG},
       }));
     }
+    if (usePlatelets(m, s)) { out.push(plateletLayer(m, s)); continue; }   // near enough -> tilted facets, not dots
     out.push(new deck.ScatterplotLayer({
       id: 'pc-' + m, data: indices(src.length / 3),
       getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
@@ -204,6 +249,7 @@ function fitView() {
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const zoom = Math.log2(Math.min(root.clientWidth, root.clientHeight) / (span * 1.25));
+  curZoom = zoom;   // seed the LOD zoom so the first render picks dots-vs-platelets correctly before any interaction
   deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], rotationX: 35, rotationOrbit: -25, zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
 }
 

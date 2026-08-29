@@ -79,7 +79,7 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
     stride = max(1, int(np.ceil(n / max_points)))
     sel = slice(None, None, stride)
     pos = np.column_stack([x[sel], y[sel], z[sel]]).astype("f4")
-    return {
+    out = {
         "mission": mission,
         "color": COLORS[mission],
         "n": int(pos.shape[0]),
@@ -90,6 +90,16 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
         "meta": {k: v for k, v in meta.items() if k != "granules"},
         "granules": meta.get("granules", []),
     }
+    # Platelet orientation (ICESSN): each nadir platelet is a plane fit with a South->North and West->East slope
+    # (dz/dnorth, dz/deast; metres per metre). Carry them, strided in lock-step with positions, as a flat [sn,we,...]
+    # array so the widget can render each platelet as a facet tilted to its own fitted plane. NaN (pre-slope cached
+    # cells) is passed through — the widget treats it as a flat facet. Absent for missions without a plane fit.
+    if "sn_slope" in arrays and "we_slope" in arrays:
+        sn = np.asarray(arrays["sn_slope"], "f8")[sel]
+        we = np.asarray(arrays["we_slope"], "f8")[sel]
+        slopes = np.column_stack([sn, we]).astype("f4")
+        out["slopes"] = np.where(np.isfinite(slopes), np.round(slopes, 5), 0.0).ravel().tolist()   # NaN -> 0 = flat facet
+    return out
 
 
 def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) -> dict:

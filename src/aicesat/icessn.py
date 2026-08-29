@@ -79,6 +79,8 @@ def _extract_via_index(bbox, window, polygon, k, on_granule=None) -> tuple[dict[
     if not arr["h"].size:
         raise RuntimeError(f"no usable ICESSN platelets over {bbox} in {window} (index)")
     arrays = {"lon": arr["lon"], "lat": arr["lat"], "h": arr["h"], "t": arr["t"]}
+    if "sn_slope" in arr and "we_slope" in arr:   # platelet plane-fit slopes -> tilted-facet rendering (may be NaN for pre-slope cached cells)
+        arrays["sn_slope"] = arr["sn_slope"]; arrays["we_slope"] = arr["we_slope"]
     years = np.unique(arrays["t"].astype("datetime64[Y]")).astype(str).tolist()
     meta = {"mission": "ICESSN", "product": f"ILATM2 v{coverage.ICESSN_VERSION}", "bbox": list(bbox),
             "window": list(window), "native_frame": "ITRF (campaign-dependent)", "height_ref": "WGS84 ellipsoid",

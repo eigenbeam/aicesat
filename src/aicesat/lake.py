@@ -152,19 +152,30 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
         cond.append("source_granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
     if beams is not None:
         cond.append("beam IN (" + ",".join("'" + b + "'" for b in beams) + ")")
-    if quality_zero and "quality" in extra_cols:
-        cond.append("quality = 0")
-    sel = "native_lon, native_lat, native_height, t" + "".join(f", {c}" for c in extra_cols)
+    src = f"read_parquet('{glob}', hive_partitioning = true, union_by_name = true)"
     con = duckdb.connect()
     try:
-        r = con.execute(f"SELECT {sel} FROM read_parquet('{glob}', hive_partitioning = true, union_by_name = true) "
-                        f"WHERE {' AND '.join(cond)}").fetchnumpy()
+        # Schema-tolerant extra columns: a column added to write_point_chunk's `extras` after some chunks were already
+        # ingested (e.g. ICESSN platelet slopes) is absent from those older files. union_by_name backfills a column
+        # NULL only if it exists in SOME file; if it exists in NONE, selecting it is a binder error. So select only the
+        # columns actually present and return the rest as NaN — old chunks degrade gracefully (flat platelets) until
+        # they are re-ingested, rather than crashing the whole query.
+        have = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()} if extra_cols else set()
+        present = [c for c in extra_cols if c in have]
+        absent = [c for c in extra_cols if c not in have]
+        if quality_zero and "quality" in present:
+            cond.append("quality = 0")
+        sel = "native_lon, native_lat, native_height, t" + "".join(f", {c}" for c in present)
+        r = con.execute(f"SELECT {sel} FROM {src} WHERE {' AND '.join(cond)}").fetchnumpy()
     finally:
         con.close()
     out = {"lon": np.asarray(r["native_lon"], "f8"), "lat": np.asarray(r["native_lat"], "f8"),
            "h": np.asarray(r["native_height"], "f8"), "t": np.asarray(r["t"]).astype("datetime64[ms]")}
-    for c in extra_cols:
+    n = out["lon"].size
+    for c in present:
         out[c] = np.asarray(r[c])
+    for c in absent:
+        out[c] = np.full(n, np.nan)
     return out
 
 

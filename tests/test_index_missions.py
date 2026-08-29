@@ -21,8 +21,19 @@ def test_merge_keeps_every_line_once_no_overlap():
 def test_parse_fields_nadir_line_and_lon_normalization():
     # seconds,lat,lon(0..360),elev,sn,we,rms,npt,npt_edit,dist,track
     ln = b"50000.0,70.0,315.0,2600.5,0.1,0.2,12.0,40,0,100,0"
-    lat, lon, elev, rms, track = index_icessn._parse_fields(ln)
+    lat, lon, elev, rms, track, sn, we = index_icessn._parse_fields(ln)
     assert lat == 70.0 and abs(lon - (-45.0)) < 1e-9 and elev == 2600.5 and rms == 12.0 and track == 0
+    assert sn == 0.1 and we == 0.2                           # ILATM2 platelet plane-fit slopes (S->N, W->E)
+
+
+def test_parse_span_points_carries_platelet_slopes():
+    # two nadir lines (track==0, RMS < 50 cm) with distinct S-N / W-E plane-fit slopes -> both kept, slopes preserved
+    blob = (b"50000.0,70.0,315.0,2600.5,0.10,-0.20,12.0,40,0,100,0\n"
+            b"50001.0,70.001,315.001,2601.0,0.05,0.15,10.0,40,0,100,0")
+    pts = index_icessn._parse_span_points([blob], "20120315", index_icessn.ICESSN_RES)
+    assert pts["lon"].size == 2
+    assert np.allclose(pts["sn_slope"], [0.10, 0.05])
+    assert np.allclose(pts["we_slope"], [-0.20, 0.15])
 
 
 def test_parse_fields_rejects_comment_short_and_fill():

@@ -44,18 +44,21 @@ def indexed_icessn_granules(res: int = ICESSN_RES) -> set[str]:
 
 
 def _parse_fields(ln: bytes):
-    """(lat, lon_180, elev, rms, track) for a data line, or None if it is a comment/short/unparseable line."""
+    """(lat, lon_180, elev, rms, track, sn_slope, we_slope) for a data line, or None if it is a comment/short/
+    unparseable line. sn_slope/we_slope are the ILATM2 platelet's plane-fit slopes (South->North, West->East;
+    metres per metre) — the platelet's own orientation, used to render it as a tilted facet."""
     if not ln or ln[:1] == b"#":
         return None
     f = ln.split(b",")
     if len(f) < 11:
         return None
     try:
-        lat = float(f[1]); lon = float(f[2]); elev = float(f[3]); rms = float(f[6]); track = float(f[10])
+        lat = float(f[1]); lon = float(f[2]); elev = float(f[3]); sn = float(f[4]); we = float(f[5])
+        rms = float(f[6]); track = float(f[10])
     except ValueError:
         return None
     lon = ((lon + 180.0) % 360.0) - 180.0
-    return lat, lon, elev, rms, track
+    return lat, lon, elev, rms, track, sn, we
 
 
 def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
@@ -83,7 +86,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
         p = _parse_fields(ln)
         if p is None:
             continue
-        lat, lon, _elev, _rms, track = p
+        lat, lon, _elev, _rms, track, _sn, _we = p
         if track != 0 or not (np.isfinite(lat) and np.isfinite(lon)):
             continue                                # index every nadir platelet; the rms<50 cut is re-applied at fetch
         if bbox is not None and not (bbox[1] <= lat <= bbox[3] and bbox[0] <= lon <= bbox[2]):
@@ -150,6 +153,7 @@ MISSION = "ICESSN"
 BEAM = "na"          # ILATM2 has no beam; chunk_index is fixed at 0 — the cache unit is the (granule, cell) pair
 CHUNK = 0
 _EMPTY = ("lon", "lat", "h", "t")
+_DIRECT = (*_EMPTY, "sn_slope", "we_slope")   # the direct golden also carries platelet slopes, so it stays key-for-key equal to the lake path
 
 
 def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[dict]]:
@@ -179,25 +183,28 @@ def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[d
 
 def _parse_span_points(blobs, gdate: str, res: int) -> dict:
     """Parse fetched line spans into the FULL set of usable nadir platelets (track==0, finite, RMS<50 — every filter
-    except the bbox), each tagged with its own H3 cell at `res`. Returns lon/lat/h/t + cell."""
+    except the bbox), each tagged with its own H3 cell at `res`. Returns lon/lat/h/t + cell, plus the platelet
+    plane-fit slopes sn_slope/we_slope (S->N, W->E; used to render each platelet as a tilted facet)."""
     from . import planner
 
     t0 = np.datetime64(datetime.strptime(gdate, "%Y%m%d").isoformat(), "ms")
-    lon, lat, h, t = [], [], [], []
+    lon, lat, h, t, sn, we = [], [], [], [], [], []
     for blob in blobs:
         for ln in blob.split(b"\n"):
             p = _parse_fields(ln)
             if p is None:
                 continue
-            la, lo, elev, rms, track = p
+            la, lo, elev, rms, track, sn_s, we_s = p
             if track != 0 or not (np.isfinite(elev) and np.isfinite(la) and np.isfinite(lo)) or rms >= MAX_RMS_CM:
                 continue
             sec = float(ln.split(b",")[0])
             lon.append(lo); lat.append(la); h.append(elev); t.append(t0 + np.timedelta64(int(sec * 1000), "ms"))
+            sn.append(sn_s); we.append(we_s)
     lon = np.asarray(lon, "f8"); lat = np.asarray(lat, "f8")
     cell = planner._cells_vectorized(lat, lon, res) if lon.size else np.array([], "u8")
     return {"lon": lon, "lat": lat, "h": np.asarray(h, "f8"),
-            "t": np.asarray(t, "datetime64[ms]") if t else np.array([], "datetime64[ms]"), "cell": cell}
+            "t": np.asarray(t, "datetime64[ms]") if t else np.array([], "datetime64[ms]"), "cell": cell,
+            "sn_slope": np.asarray(sn, "f8"), "we_slope": np.asarray(we, "f8")}
 
 
 def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, clip_cells: bool = False,
@@ -252,7 +259,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
             merged = _merge(u["spans"])                    # union the spans so every physical line is fetched once
             blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
             pts = _parse_span_points(blobs, u["gdate"], res)
-            lake.write_point_chunk(MISSION, u["granule"], BEAM, CHUNK, pts, res, only_cells=u["cells"])
+            lake.write_point_chunk(MISSION, u["granule"], BEAM, CHUNK, pts, res, only_cells=u["cells"],
+                                   extras=("sn_slope", "we_slope"))   # carry each platelet's plane-fit orientation
             if on_granule is not None:                     # display SUBSET: exactly the platelets written to the lake
                 lon, lat = pts["lon"], pts["lat"]          # (cells fetched for this granule) that query_points returns
                 if lon.size:
@@ -263,7 +271,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
                 else:
                     keep = np.array([], bool)
                 on_granule({"granule": u["granule"], "lon": lon[keep], "lat": lat[keep],
-                            "h": pts["h"][keep], "t": pts["t"][keep]})
+                            "h": pts["h"][keep], "t": pts["t"][keep],
+                            "sn_slope": pts["sn_slope"][keep], "we_slope": pts["we_slope"][keep]})
             # mark every fetched cell (even one whose platelets all fail RMS -> no file) so it is never re-fetched
             return {"granule": u["granule"], "cells": sorted(u["cells"])}
 
@@ -277,7 +286,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         for pr in parts:
             lake.mark_ingested(MISSION, pr["granule"], BEAM, {CHUNK: pr["cells"]})
 
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells)
+    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,
+                               extra_cols=("sn_slope", "we_slope"))   # slopes present for chunks ingested since this feature
     evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ICESSN fetch)") if reader else []  # only when the lake grew
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": n_nasa, "chunks_fetched": n_nasa,
@@ -307,7 +317,7 @@ def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]
         blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
         pts = _parse_span_points(blobs, u["gdate"], res)
         m = (pts["lat"] >= s) & (pts["lat"] <= n) & (pts["lon"] >= w) & (pts["lon"] <= e) if pts["lon"].size else np.array([], bool)
-        return {k: pts[k][m] for k in _EMPTY}
+        return {k: pts[k][m] for k in _DIRECT}
 
     urls = list(by_url)
     nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
@@ -316,7 +326,7 @@ def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]
     else:
         with ThreadPoolExecutor(nw) as ex:
             parts = list(ex.map(_fetch_granule, urls))   # ex.map preserves urls order
-    out = {k: [] for k in _EMPTY}
+    out = {k: [] for k in _DIRECT}
     for loc in parts:
         for k in out:
             out[k].append(loc[k])
