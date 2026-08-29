@@ -141,9 +141,18 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
             **{c: np.array([]) for c in extra_cols}}
     if not cells or not LAKE_DIR.exists():
         return base
-    glob = f"{LAKE_DIR}/mission={mission}/h3_cell=*/*__c*.parquet"
-    if not any(LAKE_DIR.glob(f"mission={mission}/h3_cell=*/*__c*.parquet")):
+    # Address ONLY the requested cells' directories. A single `h3_cell=*` glob makes DuckDB stat and read the schema of
+    # every chunk file in the mission (measured: ~500k files for ATL06 on the deployed box -> 145 s) before the
+    # h3_cell predicate can prune it, because union_by_name must reconcile schemas across the whole file list first.
+    # One glob per requested cell keeps that proportional to the query (~1.7k files) instead of the lake.
+    globs = []
+    for c in cells:
+        d = cell_dir(mission, int(c))
+        if next(d.glob("*__c*.parquet"), None) is not None:   # skip empty/absent cells: DuckDB errors on a glob that matches nothing
+            globs.append(f"{d}/*__c*.parquet")
+    if not globs:
         return base
+    glob = "[" + ", ".join("'" + g + "'" for g in globs) + "]"   # list-of-globs form
     w, s, e, n = bbox
     cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})"]
     if not clip_cells:
@@ -152,7 +161,7 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
         cond.append("source_granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
     if beams is not None:
         cond.append("beam IN (" + ",".join("'" + b + "'" for b in beams) + ")")
-    src = f"read_parquet('{glob}', hive_partitioning = true, union_by_name = true)"
+    src = f"read_parquet({glob}, hive_partitioning = true, union_by_name = true)"
     con = duckdb.connect()
     try:
         # Schema-tolerant extra columns: a column added to write_point_chunk's `extras` after some chunks were already
@@ -444,15 +453,24 @@ def recent_evictions(n: int = 50) -> list[dict]:
 def query_photons(bbox, cells: list[int], min_conf: int, granules: list[str] | None = None, mission: str = "ICESAT2") -> dict:
     """The query path (§8): DuckDB over the hive-partitioned lake with cell + bbox predicate pushdown."""
     w, s, e, n = bbox
-    glob = f"{LAKE_DIR}/mission={mission}/h3_cell=*/*.parquet"
     if not any(LAKE_DIR.glob(f"mission={mission}/h3_cell=*/*.parquet")):
         raise RuntimeError("lake is empty for " + mission)
+    # one glob per requested cell, not `h3_cell=*` over the whole mission — see the note in query_points
+    globs = []
+    for c in cells:
+        d = cell_dir(mission, int(c))
+        if next(d.glob("*.parquet"), None) is not None:
+            globs.append(f"{d}/*.parquet")
+    if not globs:
+        return {k: np.array([]) for k in ("lon", "lat", "h", "conf", "t", "ph_index", "granule_idx", "beam_idx",
+                                          "coreg_lon", "coreg_lat")} | {"_granules": []}
+    glob = "[" + ", ".join("'" + g + "'" for g in globs) + "]"
     con = duckdb.connect()
     cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})",
             f"native_lat BETWEEN {s} AND {n}", f"native_lon BETWEEN {w} AND {e}", f"signal_conf_landice >= {min_conf}"]
     if granules:
         cond.append("source_granule IN (" + ",".join("'" + g + "'" for g in granules) + ")")
-    src = f"read_parquet('{glob}', hive_partitioning = true)"
+    src = f"read_parquet({glob}, hive_partitioning = true)"
     where = " AND ".join(cond)
     # Integer codes are computed in SQL and the result comes back as numpy directly: string columns crossing into
     # Python cost ~1.5 s per 6M rows (measured); this path is ~0.8 s for the same rows.
