@@ -119,6 +119,13 @@ def test_eviction_runs_off_the_caller_thread_and_single_flights(lake_dir, monkey
     triggers must collapse into one walk."""
     import threading
     import time
+    # _EVICT_RUNNING is module-global and other tests trigger real evictions, so wait for any in-flight walk and
+    # start from a known state — otherwise the single-flight guard correctly skips this test's own trigger.
+    for _ in range(100):
+        if not lake._EVICT_RUNNING.is_set():
+            break
+        time.sleep(0.02)
+    lake._EVICT_RUNNING.clear()
 
     started, release = threading.Event(), threading.Event()
     calls = []
