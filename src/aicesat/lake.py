@@ -382,11 +382,23 @@ WRITE_QUEUE_MAX = 8        # granule-jobs in flight. Each holds one granule's de
                            # bounds writer memory at ~80 MB and blocks the fetch thread past it: backpressure, not growth.
 MARK_ROWS_PER_FLUSH = 4096  # coverage rows to accumulate before opening meta.duckdb (see _Writer._flush)
 ASYNC_WRITE_ENV = "AICESAT_LAKE_ASYNC_WRITE"
+WRITER_THREADS_ENV = "AICESAT_LAKE_WRITERS"
+WRITER_THREADS = 2
 
 
 def async_writes_enabled() -> bool:
     """Kill switch. Set AICESAT_LAKE_ASYNC_WRITE=0 to write inline on the calling thread (the pre-writer behaviour)."""
     return os.environ.get(ASYNC_WRITE_ENV, "1").lower() not in ("0", "false", "no")
+
+
+def _writer_threads() -> int:
+    """Writer pool size, AICESAT_LAKE_WRITERS-overridable. Read at first use, not at import, so a benchmark can sweep
+    it. Two is not obviously right: a 4,145 MB leg spent 126.3 write thread-seconds, which is ~63 s of wall on two
+    threads against ~42 s of fetch wall on four — i.e. the WRITER, not the network, was the slower stage."""
+    try:
+        return max(1, int(os.environ.get(WRITER_THREADS_ENV, "") or WRITER_THREADS))
+    except ValueError:
+        return WRITER_THREADS
 
 
 class ChunkWrite(NamedTuple):
@@ -418,7 +430,7 @@ class _Writer:
         build over the same area never reads a half-written lake or a stale ingested_chunk_cells.
     """
 
-    def __init__(self, workers: int = 2, maxsize: int = WRITE_QUEUE_MAX):
+    def __init__(self, workers: int | None = None, maxsize: int = WRITE_QUEUE_MAX):
         self._q: queue.Queue = queue.Queue(maxsize=maxsize)
         self._lock = threading.Lock()
         self._settled = threading.Condition(self._lock)
@@ -451,7 +463,8 @@ class _Writer:
             if self._started:
                 return
             self._started = True
-        for i in range(self._workers):
+            n = self._workers if self._workers is not None else _writer_threads()
+        for i in range(n):
             threading.Thread(target=self._loop, name=f"lake-writer-{i}", daemon=True).start()
 
     # -- consumer ---------------------------------------------------------------------------------------------------
