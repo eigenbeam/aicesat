@@ -251,7 +251,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     decoded shots (h3_cell in the wanted cells; + the rectangular bbox unless `clip_cells`) — are emitted ONCE as
     {'lon','lat','h','t','granule'}, a strict SUBSET of the final authoritative read (never a superset). Fires only for
     `todo` (cache-miss) granules. When None (the default) the path is byte-for-byte the pre-existing behaviour."""
-    from . import lake, planner
+    from . import index_atl06, lake, planner
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
@@ -268,6 +268,10 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     todo = [k for k, cs in chunk_cells.items() if any((k[0], BEAM, k[1], c) not in have for c in cs)]
     n_lake = len(chunk_cells) - len(todo)
 
+    # Write only the cells the request covers — see index_atl06.precache_adjacent for the measurement behind
+    # this. A fetched chunk spans far more track than a scene-sized box, and pre-caching the rest cost 2.6x
+    # the write work on every build to save a re-fetch when the user happens to pan along the same track.
+    want_only = None if index_atl06.precache_adjacent() else tuple(sorted(int(c) for c in want_cells))
     reader = None
     if todo:
         reader = RangeReader()
@@ -304,7 +308,8 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
                 dec = _decode_chunk(raws, r); v = dec["valid"]
                 mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
                         "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
-                cc = lake.write_point_chunk(MISSION, r["granule"], BEAM, r["chunk_index"], mats, res, extras=("quality",))
+                cc = lake.write_point_chunk(MISSION, r["granule"], BEAM, r["chunk_index"], mats, res,
+                                            extras=("quality",), only_cells=want_only)
                 # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
                 k = (r["granule"], r["chunk_index"])
                 local.setdefault(r["granule"], {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])

@@ -164,13 +164,21 @@ def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.nda
 
 MISSION = "ATL06"
 _EMPTY = ("lon", "lat", "h", "t", "quality")
-WANTED_CELLS_ONLY_ENV = "AICESAT_WRITE_WANTED_CELLS_ONLY"
+PRECACHE_ENV = "AICESAT_PRECACHE_ADJACENT_CELLS"
 
 
-def _wanted_cells_only() -> bool:
-    """EXPERIMENTAL: materialise only the cells the query asked for, not every cell a fetched chunk touches."""
+def precache_adjacent() -> bool:
+    """Whether a fetched chunk also materialises the cells OUTSIDE the request (default: no).
+
+    The smallest thing a byte-range fetch can read is one 10,000-segment block, which covers far more track than a
+    scene-sized box — measured at 1.02 blocks per (granule, beam) for a 33 km box, i.e. one block spans the whole
+    request. Writing the entire decoded strip pre-caches the neighbouring cells in case the user later pans along the
+    track. Measured price on the box: 114.5 -> 43.9 write thread-seconds, so 2.6x the write work on EVERY build to
+    save a re-fetch on the minority that happen to be adjacent to a previous one. With fetch wall now ~12 s a miss is
+    cheap, so the trade no longer pays. Set to 1 to restore the old behaviour (or to A/B it again).
+    """
     import os
-    return os.environ.get(WANTED_CELLS_ONLY_ENV, "0").lower() in ("1", "true", "yes")
+    return os.environ.get(PRECACHE_ENV, "0").lower() in ("1", "true", "yes")
 
 
 def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tuple[list[int], list[dict]]:
@@ -272,12 +280,9 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
     n_lake = len(chunk_cells) - len(todo)
 
-    # A 10,000-segment ATL06 chunk spans ~400 km and a res-5 hexagon is ~20 km, so one chunk materialises ~20 cells
-    # while a scene-sized bbox wants ~5 — roughly 4x the write work, spent caching neighbours nobody asked for. That
-    # speculative overlap is a real (if unquantified) benefit when the user pans, so restricting it is opt-in:
-    # AICESAT_WRITE_WANTED_CELLS_ONLY=1 writes only the requested cells, as ICESSN already does for its own reason.
-    # Coverage stays consistent either way — mark_cells is the chunk's WANTED cells, which is a subset of both.
-    want_only = tuple(sorted(int(c) for c in want_cells)) if _wanted_cells_only() else None
+    # Write only the cells the request covers, discarding the rest of the decoded strip (see precache_adjacent).
+    # Coverage stays consistent: mark_cells is the chunk's WANTED cells, so we never claim to hold what we dropped.
+    want_only = None if precache_adjacent() else tuple(sorted(int(c) for c in want_cells))
     reader, fresh_parts = None, []
     if todo:
         reader = RangeReader()

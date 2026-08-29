@@ -173,16 +173,17 @@ def _cells_written():
     return {int(p.name.split("=")[1]) for p in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*")}
 
 
-def test_wanted_cells_only_writes_less_but_returns_the_same_points(monkeypatch):
-    """A fetched chunk materialises every cell it TOUCHES, not just the cells the query wants.
+def test_the_default_does_not_pre_cache_cells_outside_the_request(monkeypatch):
+    """A fetched block covers far more track than the request, and by default we now DISCARD the rest.
 
-    An ATL06 chunk spans ~400 km and a res-5 hexagon ~20 km, so a scene-sized bbox pays to write ~4x the cells it
-    asked for — speculative caching for a later pan. AICESAT_WRITE_WANTED_CELLS_ONLY=1 turns that off. The returned
-    points must be identical either way; only the cache footprint changes.
+    The smallest readable unit is one 10,000-segment block, which spans a whole scene-sized box (measured: 1.02
+    blocks per granule-beam for a 33 km box). Writing the entire decoded strip pre-cached the neighbouring cells for
+    a later pan and cost 2.6x the write work on every build (114.5 -> 43.9 thread-seconds on the box). The points
+    returned must be identical either way — only the cache footprint changes.
     """
     narrow = (-45.5, 69.5, -44.5, 70.0)                     # a slice of a track running 66N to 75N
     _long_track_scene()
-    monkeypatch.setenv(index_atl06.WANTED_CELLS_ONLY_ENV, "0")
+    monkeypatch.setenv(index_atl06.PRECACHE_ENV, "1")       # the old behaviour, kept for A/B
     full, _ = index_atl06.fetch_bbox(narrow)
     assert lake.drain_writes(timeout=20.0)
     full_cells = _cells_written()
@@ -190,7 +191,8 @@ def test_wanted_cells_only_writes_less_but_returns_the_same_points(monkeypatch):
     import shutil
     shutil.rmtree(lake.LAKE_DIR, ignore_errors=True)
     lake.META_DB.unlink(missing_ok=True)
-    monkeypatch.setenv(index_atl06.WANTED_CELLS_ONLY_ENV, "1")
+    monkeypatch.delenv(index_atl06.PRECACHE_ENV, raising=False)   # the DEFAULT
+    assert not index_atl06.precache_adjacent()
     lean, _ = index_atl06.fetch_bbox(narrow)
     assert lake.drain_writes(timeout=20.0)
     lean_cells = _cells_written()
