@@ -84,7 +84,17 @@ def build(frame: dict, extent: tuple[float, float, float, float], width_px: int 
     {path, x0, y0, x1, y1, zoom, m_per_px, width, height, attribution, source}."""
     src = (source or _default_source()).strip().lower()
     if src == "s2":
-        return _build_s2(frame, extent, width_px)
+        try:
+            return _build_s2(frame, extent, width_px)
+        except Exception as e:
+            # "s2" is real Sentinel-2 L2A scenes, so it has genuine gaps — no low-cloud, sunlit scene covering the
+            # area in the search window, and high latitudes (ice sheets, i.e. much of what this tool looks at) are the
+            # worst case. EOX is a global cloudless MOSAIC, so it always has something. Falling back keeps in-region
+            # speed where S2 works without losing imagery where it doesn't. Only automatic when s2 was the DEFAULT;
+            # an explicit `source="s2"` from the UI is the user's choice and its failure is reported as-is.
+            if source is not None:
+                raise
+            log.info("Sentinel-2 unavailable here (%s); falling back to EOX", e)
     return _build_eox(frame, extent, width_px, layer)
 
 
