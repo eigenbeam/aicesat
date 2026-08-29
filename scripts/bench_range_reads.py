@@ -23,20 +23,28 @@ def main(match: str | None = None) -> None:
     where = f"WHERE granule LIKE '%{match}%'" if match else ""
     con = duckdb.connect()
     try:
-        row = con.execute(f"SELECT granule, url, s3url FROM read_parquet('{d}/*.parquet') {where} LIMIT 1").fetchone()
+        # the BIGGEST granule, not the first: an edge-of-orbit granule has a handful of tiny chunks that coalesce
+        # into one request and measure nothing. Pull every dataset's ranges, as a real fetch does.
+        cols = ", ".join(f"sum({ds}_size)" for ds in index_atl06.ATL06_DATASETS)
+        row = con.execute(
+            f"SELECT granule, any_value(url), any_value(s3url), ({cols}) AS total "
+            f"FROM read_parquet('{d}/*.parquet') {where} GROUP BY granule ORDER BY total DESC LIMIT 1").fetchone()
         if row is None:
             print("no indexed granule found"); return
-        gran, url, s3 = row
-        rngs = con.execute(
-            f"SELECT h_li_offset, h_li_size FROM read_parquet('{d}/*.parquet') "
-            f"WHERE granule = '{gran}' ORDER BY chunk_index LIMIT 200").fetchall()
+        gran, url, s3, _tot = row
+        sel = ", ".join(f"{ds}_offset, {ds}_size" for ds in index_atl06.ATL06_DATASETS)
+        rows = con.execute(f"SELECT {sel} FROM read_parquet('{d}/*.parquet') "
+                           f"WHERE granule = '{gran}' ORDER BY chunk_index, beam LIMIT 400").fetchall()
     finally:
         con.close()
-    ranges = [(int(o), int(s)) for o, s in rngs]
+    ranges = [(int(r[i]), int(r[i + 1])) for r in rows for i in range(0, len(r), 2) if int(r[i + 1]) > 0]
     mb = sum(s for _, s in ranges) / 1e6
     target = access_url(url, s3)
     print(f"granule: {gran}\n  {len(ranges)} ranges, {mb:.1f} MB, via {'S3-direct' if target.startswith('s3://') else 'HTTPS'}")
+    if mb < 1:
+        print("  (still tiny — the index may hold only edge granules; results will not be meaningful)")
 
+    RangeReader(threads=1).fetch(target, ranges[:1])   # warm the STS creds so run 1 isn't charged for them
     for threads in (1, 4, 16, 64):
         r = RangeReader(threads=threads)
         if not target.startswith("s3://"):
@@ -46,7 +54,7 @@ def main(match: str | None = None) -> None:
         dt = time.time() - t
         got = sum(len(b) for b in blobs) / 1e6
         st = r.stats.as_dict()
-        print(f"  threads={threads:3d}  {dt:6.2f}s  {got/dt:6.1f} MB/s  {st.get('requests', 0)/dt:6.1f} GET/s  "
+        print(f"  threads={threads:3d}  {dt:6.2f}s  {got/dt:7.1f} MB/s  {st.get('requests', 0)/dt:6.1f} GET/s  "
               f"(requests={st.get('requests')}, presigns={st.get('presigns')})")
 
 
