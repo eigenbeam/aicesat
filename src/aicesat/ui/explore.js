@@ -74,8 +74,12 @@ AICESAT.ExploreView = class {
     { const G = U.GLOSSARY;   // opt-in "?" help on the jargon
       const ch = $('exCovHint'); if (ch) ch.appendChild(U.help(G.coverage)); }
     this.loadCollections();
-    this.refresh(); this.timer = setInterval(() => this.refresh(true), 5000);
+    this.refresh(); this.startPolling();
   }
+  // Poll only while on screen — see the note in lake.js: a never-cleared interval kept refreshing in the background
+  // while a scene was building, competing with the build for server CPU.
+  startPolling() { this.stopPolling(); this.timer = setInterval(() => this.refresh(true), 5000); }
+  stopPolling() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
 
   // ---- coverage: auto-fetched when an area is defined, shown inline on each collection row
   covCaveat() {
@@ -199,6 +203,6 @@ AICESAT.ExploreView = class {
     await this.map.refreshData(this.api);
     this.renderScenes();
   }
-  show() { this.root.classList.add('on'); this.refresh(); }
-  hide() { this.root.classList.remove('on'); }
+  show() { this.root.classList.add('on'); this.startPolling(); this.refresh(); }
+  hide() { this.root.classList.remove('on'); this.stopPolling(); }
 };

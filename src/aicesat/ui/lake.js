@@ -53,9 +53,21 @@ AICESAT.LakeView = class {
     AICESAT.util.drawer(root, null);
     this.loadCollections();
     this.logSeq = 0;
+    this.startPolling();
+    this.pollLog();
+  }
+  // Poll ONLY while this view is on screen. These timers used to be started in the constructor and never cleared, so
+  // one visit to the Data Lake left index_status (4 collections, each reading every index parquet) firing every 8 s
+  // for the rest of the session — including while a scene was building, where it competed with the build thread for
+  // the GIL and made builds crawl. stopPolling() on hide is the fix; show() restarts it.
+  startPolling() {
+    this.stopPolling();
     this.timer = setInterval(() => this.refresh(true), 8000);      // live: index coverage grows / data updates
     this.logTimer = setInterval(() => this.pollLog(), 2000);
-    this.pollLog();
+  }
+  stopPolling() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.logTimer) { clearInterval(this.logTimer); this.logTimer = null; }
   }
   missionOf(key) { const c = this.cols.find(x => x.key === key); return c ? c.mission : key; }
   collLabel(key = this.coll) { const c = this.cols.find(x => x.key === key); return c ? c.label : key; }
@@ -157,6 +169,6 @@ AICESAT.LakeView = class {
     if (!body.childElementCount) body.innerHTML = '<div class="small">no activity yet — load or query cells to see the pipeline work</div>';
     if (atBottom) body.scrollTop = body.scrollHeight;
   }
-  show() { this.root.classList.add('on'); this.refresh(); }
-  hide() { this.root.classList.remove('on'); }
+  show() { this.root.classList.add('on'); this.startPolling(); this.refresh(); }
+  hide() { this.root.classList.remove('on'); this.stopPolling(); }
 };

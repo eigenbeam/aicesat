@@ -498,6 +498,17 @@ def coregister(scene_id: str, common_epoch: float | None = None, colocation_radi
 
 
 _INDEX_CACHE: dict = {}   # collection -> {"seen": {name: mtime}, "cells": set()} incremental cache for the live view
+# One scan per collection at a time. The Lake view polls all 4 collections concurrently every 8 s, and the first scan
+# after a restart reads EVERY index parquet (thousands for ATL06) — far longer than the poll interval, so requests used
+# to stack up, each redoing the same scan and holding the GIL against whatever else the server is doing (a scene build,
+# notably). Serialising per collection means concurrent callers wait for one scan instead of multiplying it.
+_INDEX_LOCKS: dict = {}
+_INDEX_LOCKS_GUARD = threading.Lock()
+
+
+def _index_lock(collection: str) -> threading.Lock:
+    with _INDEX_LOCKS_GUARD:
+        return _INDEX_LOCKS.setdefault(collection, threading.Lock())
 
 
 def _index_source(collection: str):
@@ -518,11 +529,17 @@ def _index_source(collection: str):
 def index_status(collection: str = "ATL06") -> dict:
     """Indexed H3 cells + granule count for a collection's sub-granule index (drives the Data Lake index view).
     Incremental: only newly-written parquets are read each call, so it stays cheap as the index grows."""
-    import pyarrow.parquet as pq
-    import h3
     d, res = _index_source(collection)
     if d is None:
         return {"collection": collection, "indexed": False, "res": None, "granules": 0, "cells": []}
+    with _index_lock(collection):   # one scan per collection; concurrent pollers wait rather than duplicating it
+        return _index_status_locked(collection, d, res)
+
+
+def _index_status_locked(collection: str, d, res) -> dict:
+    import pyarrow.parquet as pq
+    import h3
+
     c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "info": {}})   # info: cell -> [n_granules, {cycles}, yr_min, yr_max]
     for pth in (d.glob("*.parquet") if d.exists() else []):
         try:
