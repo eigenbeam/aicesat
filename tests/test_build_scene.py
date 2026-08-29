@@ -361,3 +361,51 @@ def test_per_granule_stream_buffers_before_z0_then_finalize_reconciles(monkeypat
     assert doc["series"]["ATL06"]["n"] == ATL06_A["h"].size
     assert doc["series"]["ATL06"]["meta"].get("partial") is not True
     assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))   # z0 from the DEM, as always
+
+
+def test_progress_reports_a_denominator_per_collection(monkeypatch, tmp_path):
+    from aicesat import atl06, glas, icessn
+    """The build-progress panel needs (done, total) per collection, and nothing else on this path knows one.
+
+    The point cloud is a poor proxy — lake-served data lands all at once — and the job log is prose, so `on_plan`
+    exists purely to publish the leg's planned work before any network. A bar without a denominator is theatre.
+    """
+    seen = {}
+
+    def mk_planned(name, arrays, granules):
+        def _extract(*a, on_granule=None, on_plan=None, **k):
+            seen[name] = {"plan": on_plan is not None, "granule": on_granule is not None}
+            if on_plan:
+                on_plan({"granules": granules, "chunks": granules * 4, "cached": 7})
+            for i in range(granules):        # each streamed granule is one unit of progress
+                if on_granule:   # the fixture arrays carry no 't'; append_partial only needs lon/lat/h
+                    on_granule({"granule": f"{name}_{i}.h5", **{kk: arrays[kk][:1] for kk in ("lon", "lat", "h")},
+                                "t": np.zeros(1, "datetime64[ms]")})
+            return dict(arrays), {"cache_key": f"{name}-key", "n": int(arrays["h"].size), "campaigns": [], "years": []}
+        return _extract
+
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(glas, "extract", mk_planned("GLAS", GLAS_A, 3))
+    monkeypatch.setattr(icessn, "extract", mk_planned("ICESSN", ICESSN_A, 5))
+    monkeypatch.setattr(atl06, "extract", mk_planned("ATL06", ATL06_A, 2))
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=False)
+
+    assert all(v["plan"] for v in seen.values()), f"on_plan was not threaded through: {seen}"
+    pr = doc.get("progress") or {}
+    assert set(pr) == {"GLAS", "ICESSN", "ATL06"}, pr
+    for m in pr:
+        assert pr[m]["phase"] == "done", pr[m]
+        assert pr[m]["total"] and pr[m]["done"] == pr[m]["total"], pr[m]   # the bar lands exactly on 100%
+        assert pr[m]["points"] > 0
+        assert pr[m]["cached_chunks"] == 7
+        # the granule NAME set must not ride along in the doc: it is re-shipped to the browser on every poll
+        assert not any(k.startswith("_") for k in pr[m]), pr[m]
+
+
+def test_progress_marks_a_failed_collection_unavailable(monkeypatch, tmp_path):
+    """A leg that never lands must stop showing as in flight, or its bar sits at 'fetching' forever."""
+    _install(monkeypatch, tmp_path, fail={"ICESSN"})
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=False)
+    pr = doc.get("progress") or {}
+    assert pr.get("ICESSN", {}).get("phase") == "unavailable", pr.get("ICESSN")
+    assert pr.get("GLAS", {}).get("phase") == "done"

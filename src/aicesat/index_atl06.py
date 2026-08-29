@@ -227,7 +227,7 @@ def _decode_chunk(raws: dict, r: dict) -> dict:
 
 
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
-               force: bool = False, clip_cells: bool = False, polygon=None, on_granule=None) -> tuple[dict, dict]:
+               force: bool = False, clip_cells: bool = False, polygon=None, on_granule=None, on_plan=None) -> tuple[dict, dict]:
     """Lake-first index-driven ATL06 fetch (mirrors the ATL03 planner). Only the chunks whose wanted cells are NOT yet
     materialized are byte-range fetched from NASA — the missing granules fetched concurrently (integration's per-granule
     pool + in-region S3-direct / presigned CloudFront via access_url). Each fetched chunk's FULL pre-mask points are
@@ -290,6 +290,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         for k in todo:
             r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
+        if on_plan is not None:   # the denominator the progress UI needs, known before any network
+            on_plan({"granules": len(by_url), "chunks": len(todo), "cached": n_lake})
 
         def _keep(mats: dict, dup_cells) -> np.ndarray:
             """The query_points predicate, applied in memory to one chunk's valid points: cell-membership in the wanted
@@ -357,6 +359,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             # baseline. No-op when the writer is on — its own threads flush.
             lake.drain_writes(MISSION, want_cells)
 
+    elif on_plan is not None:
+        on_plan({"granules": 0, "chunks": 0, "cached": n_lake})   # pure cache hit: nothing to fetch
     arrays = lake.concat_arrays([cached, *fresh_parts], _EMPTY)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (ATL06 fetch)")

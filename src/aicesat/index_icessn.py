@@ -213,7 +213,7 @@ def _parse_span_points(blobs, gdate: str, res: int) -> dict:
 
 
 def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, clip_cells: bool = False,
-               polygon=None, on_granule=None) -> tuple[dict, dict]:
+               polygon=None, on_granule=None, on_plan=None) -> tuple[dict, dict]:
     """Lake-first index-driven ILATM2 fetch. The cache unit is the (granule, cell) line span; only the spans for cells
     not yet materialized are byte-range fetched — missing granules fetched concurrently (per-granule pool + in-region
     S3-direct / presigned via access_url). Each fetched granule's spans are parsed to their FULL usable platelets (every
@@ -266,6 +266,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
     if by_url:
         reader = RangeReader()
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
+        if on_plan is not None:   # ICESSN's unit of work is the (granule, cell) span, not the chunk
+            on_plan({"granules": len(by_url), "chunks": n_nasa, "cached": n_lake})
 
         def _ingest_granule(url) -> dict:
             """Fetch the granule's missing spans, parse, and return the platelets the query wants. The write is queued
@@ -306,6 +308,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         if not lake.async_writes_enabled():
             lake.drain_writes(MISSION, want_cells)   # kill switch: one batched mark on this thread (see index_atl06)
 
+    elif on_plan is not None:
+        on_plan({"granules": 0, "chunks": 0, "cached": n_lake})   # pure cache hit: nothing to fetch
     arrays = lake.concat_arrays([cached, *fresh_parts], _DIRECT)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (ICESSN fetch)")

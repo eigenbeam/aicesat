@@ -164,11 +164,22 @@ class RangeReader:
 
     def __init__(self, threads: int | None = None, max_gap: int | None = None):
         reg = in_region()
-        # In-region the round trip is ~10-30 ms and egress is free, so a SMALL coalescing gap wins (less over-fetch);
-        # from a remote laptop the ~150 ms TTFB makes a large gap (fewer round trips) win. Override: AICESAT_COALESCE_GAP.
+        # In-region the cost curve has TWO regimes and the old 256 KB default sat on the wrong side of the knee.
+        # Measured (scripts/bench_coalesce.py, 921 granules / 22,830 ranges / 591 MB wanted / 16 workers, best of 3):
+        #
+        #     gap    spans   best s   ms/GET        gap   spans   best s   ms/GET
+        #    0.25    5,741     13.6     38.0       1.00   3,969      9.9     39.8
+        #    0.50    4,337     10.0     36.8       1.50   3,562      9.9     44.3
+        #    0.75    4,126      9.6     37.2       2.00   2,812     11.2     63.5
+        #                                          3.00   2,167     12.6     93.0
+        #
+        # A GET costs a flat ~37 ms up to ~1.5 MB (latency-bound: removing a round trip is nearly free, and in-region
+        # egress is free so the extra bytes are only transfer time), then scales with size. 0.5-1.5 MB is one flat
+        # plateau — the 4% spread across it is run-to-run noise — so take the middle with margin to both edges rather
+        # than the nominal minimum. Override: AICESAT_COALESCE_GAP (bytes).
         self.max_gap = (max_gap if max_gap is not None else
                         int(os.environ["AICESAT_COALESCE_GAP"]) if os.environ.get("AICESAT_COALESCE_GAP")
-                        else (256 << 10 if reg else 2 << 20))
+                        else (1 << 20 if reg else 2 << 20))
         auth.login()
         self.token = os.environ["EARTHDATA_TOKEN"]
         self.session = requests.Session()

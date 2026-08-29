@@ -203,6 +203,16 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
 
     lake_grew = {"v": False}   # set when any leg actually fetched+materialized new chunks -> eviction worth running
+    granules_seen: dict[str, set] = {}   # mission -> streamed granule names, for the progress denominator (not in doc)
+
+    def _mark_done(mission, meta):
+        """A collection is finished when its authoritative series is in the doc — regardless of how many granules
+        streamed, since a cache hit streams none. Pin done==total so the bar lands exactly on 100%."""
+        pr = doc.setdefault("progress", {}).setdefault(mission, {})
+        pr["total"] = pr.get("total") or 1
+        pr["done"] = pr["total"]
+        pr["phase"] = "done"
+        pr["points"] = int(meta.get("n") or 0)
 
     def _log_cache(mission, meta):
         """Surface the lake-cache effect for an index mission (fetch_bbox threads it through meta['access'])."""
@@ -220,17 +230,17 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     #     streams each satellite pass as it lands; ATL03 has no per-granule stream. --------------------------------
     def _ex_glas():
         from . import glas
-        a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly, on_granule=_on_granule("GLAS"))
+        a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly, on_granule=_on_granule("GLAS"), on_plan=_on_plan("GLAS"))
         return a, m, m["cache_key"]
 
     def _ex_icessn():
         from . import icessn
-        a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly, on_granule=_on_granule("ICESSN"))
+        a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly, on_granule=_on_granule("ICESSN"), on_plan=_on_plan("ICESSN"))
         return a, m, m["cache_key"]
 
     def _ex_atl06():
         from . import atl06
-        a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly, on_granule=_on_granule("ATL06"))
+        a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly, on_granule=_on_granule("ATL06"), on_plan=_on_plan("ATL06"))
         return a, m, m["cache_key"]
 
     def _ex_atl03():
@@ -241,16 +251,19 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
     #     series-insertion order are byte-for-byte what the old serial loop produced. -------------------------------
     def _int_glas(a, m, ck):
         scene.add_series(doc, "GLAS", a, m, ck)
+        _mark_done("GLAS", m)
         log_fn(f"GLAS: {m['n']:,} shots across {len(m['campaigns'])} campaigns")
         _log_cache("GLAS", m)
 
     def _int_icessn(a, m, ck):
         scene.add_series(doc, "ICESSN", a, m, ck)
+        _mark_done("ICESSN", m)
         log_fn(f"ICESSN: {m['n']:,} nadir platelets across {len(m['years'])} campaign years")
         _log_cache("ICESSN", m)
 
     def _int_atl06(a, m, ck):
         scene.add_series(doc, "ATL06", a, m, ck)
+        _mark_done("ATL06", m)
         log_fn(f"ATL06: {m['n']:,} land-ice segments")
         _log_cache("ATL06", m)
 
@@ -304,6 +317,38 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                         scene.append_partial(doc, mission, pts)
                     batches.clear()
 
+            def _count_granule_locked(mission, granule):
+                """One streamed granule -> one unit of progress. Caller holds stream_lock.
+
+                Counts DISTINCT granule names: a granule can emit more than once (the lake read streams in cell
+                groups all labelled "lake"), and a bar that runs past its own total is worse than no bar. The name
+                set is kept OUT of the doc — the doc is re-shipped to the browser on every poll, and 900-odd granule
+                names is a lot of bytes to send to render one integer.
+                """
+                seen = granules_seen.setdefault(mission, set())
+                if granule:
+                    seen.add(granule)
+                pr = doc.setdefault("progress", {}).setdefault(mission, {})
+                pr["done"] = min(len(seen), pr.get("total") or len(seen))
+                pr["points"] = int((doc.get("series", {}).get(mission, {}) or {}).get("n") or 0)
+
+            def _on_plan(mission):
+                """Record the leg's planned work once, before any network, so the UI has a denominator.
+
+                A progress bar needs one and nothing else on this path knows it: the point cloud is a poor proxy
+                (lake-served data lands all at once) and the job log is prose. `granules` is the unit the fetch
+                actually streams, so it is what the bar counts.
+                """
+                def cb(plan):
+                    with stream_lock:
+                        pr = doc.setdefault("progress", {}).setdefault(mission, {})
+                        pr.update({"total": int(plan.get("granules") or 0), "done": 0,
+                                   "cached_chunks": int(plan.get("cached") or 0),
+                                   "fetch_chunks": int(plan.get("chunks") or 0),
+                                   "phase": "reading cache" if not plan.get("granules") else "fetching"})
+                        cache.save_scene(sid, doc)
+                return cb
+
             def _on_granule(mission):
                 def cb(pts):
                     if poly is not None and pts["lon"].size:   # trim to the exact drawn shape, like the final read does
@@ -314,9 +359,11 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                         if mission in finalized:               # authoritative series already in place: drop the preview
                             return
                         if doc.get("z0") is None:              # no z0 yet: buffer; the DEM/first collection flushes it
-                            stream_pending.setdefault(mission, []).append(pts); return
+                            stream_pending.setdefault(mission, []).append(pts)
+                            _count_granule_locked(mission, pts.get("granule")); return
                         _flush_pending_locked()                # drain anything buffered before z0, then this granule
                         scene.append_partial(doc, mission, pts)
+                        _count_granule_locked(mission, pts.get("granule"))
                         now = time.time()                      # coalesce saves: re-dumping the whole doc every granule is O(N^2)
                         if now - last_stream_save[0] >= STREAM_SAVE_MIN_S:
                             cache.save_scene(sid, doc); last_stream_save[0] = now
@@ -402,6 +449,9 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                             cache.save_scene(sid, doc)    # progressive persistence: this series is now paintable
                     except Exception as e:
                         log.warning("%s unavailable: %s", disp, e); log_fn(f"{disp} unavailable: {e}")
+                        with stream_lock:   # a leg that never lands must stop showing as in-flight
+                            doc.setdefault("progress", {}).setdefault(mkey, {}).update(
+                                {"phase": "unavailable", "note": str(e)[:120]})
                         continue
 
                 if not doc["series"]:

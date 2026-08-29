@@ -168,22 +168,28 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lakelog .logline.warn { color:var(--amber); }
 .lakelog .logline.err { color:var(--red); }
 
-/* Scene loading overlay + spinner (feedback: canvas is blank while sceneDoc streams) */
-.scene-loading[hidden] { display:none; }
-/* No scrim and NO backdrop-filter here: this overlay is inset:0, so `blur(1px)` blurred the entire scene — at
-   devicePixelRatio 2 that is a 2-device-pixel blur over the DEM, the tracks and the axis labels, which reads as the
-   viewer being out of focus. It also fought the progressive streaming it exists to announce: the point of streaming
-   is to watch points land. .sl-box carries its own background and blur, so it stays legible unaided. */
-.scene-loading { position:absolute; inset:0; z-index:15; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--muted); font-size:13px; pointer-events:none; }
-.scene-loading .spinner { width:20px; height:20px; border-radius:50%; border:2px solid var(--hair); border-top-color:var(--blue); animation:spin .8s linear infinite; flex:0 0 auto; }
-/* Build progress: the real per-leg log, so a long build shows what it is doing instead of an opaque spinner. */
-.sl-box { min-width:300px; max-width:min(520px, 70%); background:rgba(18,18,24,.86); border:1px solid var(--hair); border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+/* Build progress — a drawer panel beside Controls and Time Series, one row per collection.
+   It was a centred canvas overlay with a backdrop blur; see the note in scene.js renderProgress. */
 .sl-head { display:flex; align-items:center; gap:9px; font-size:13px; color:var(--fg); }
 .sl-elapsed { margin-left:auto; font-variant-numeric:tabular-nums; color:var(--muted); font-size:11.5px; }
-.sl-log { margin-top:8px; display:flex; flex-direction:column; gap:2px; font-size:11.5px; line-height:1.45; color:var(--muted); }
-.sl-log .sl-line { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sl-log .sl-line.sl-now { color:var(--fg); }
-.scene-loading.sl-done .spinner { animation:none; border-color:var(--ok, #4caf7d); border-top-color:var(--ok, #4caf7d); }
+.spinner { width:14px; height:14px; border-radius:50%; border:2px solid var(--hair); border-top-color:var(--blue); animation:spin .8s linear infinite; flex:0 0 auto; }
+.spinner.sl-idle { animation:none; border-color:var(--ok, #4caf7d); border-top-color:var(--ok, #4caf7d); }
+.prog-rows { margin-top:8px; display:flex; flex-direction:column; gap:9px; }
+.prog-row { display:flex; flex-direction:column; gap:3px; }
+.prog-name { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink); }
+.prog-name .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.prog-phase { margin-left:auto; font-size:10.5px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+.prog-phase.prog-done { color:var(--ok, #4caf7d); }
+.prog-phase.prog-unavailable { color:var(--amber, #e0a030); }
+.prog-barwrap { height:6px; border-radius:3px; background:var(--hair); overflow:hidden; }
+.prog-bar { height:100%; border-radius:3px; transition:width .3s ease; }
+/* No denominator yet: a SHORT stripe sliding along the track. A full-width dim bar reads as 100% complete at a
+   glance, which is the opposite of what "queued" means. */
+.prog-bar.prog-indet { opacity:.5; animation:progslide 1.5s ease-in-out infinite alternate; }
+@keyframes progslide { from { transform:translateX(-4%); } to { transform:translateX(320%); } }
+.prog-meta { display:flex; gap:8px; font-size:11px; color:var(--muted); }
+.prog-pct { font-variant-numeric:tabular-nums; min-width:34px; }
+.prog-now { margin-top:8px; font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @keyframes spin { to { transform:rotate(360deg); } }
 /* Coverage count caveat (GLAS/ATM CMR footprints over-report; the scene point-filters) */
 .cov-caveat { font-size:10.5px; font-style:italic; color:var(--amber); white-space:nowrap; cursor:help; }

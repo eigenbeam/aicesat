@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="sceneLoading" class="scene-loading" hidden><div class="sl-box"><div class="sl-head"><span class="spinner"></span><span id="slTitle">Loading scene…</span><span id="slElapsed" class="sl-elapsed"></span></div><div id="slLog" class="sl-log"></div></div></div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -373,17 +373,43 @@ function applyDoc(doc) {
 // reasons (a cold NASA fetch), and the point cloud is a poor progress bar — data served from the lake arrives all at
 // once at finalize, so the map can sit still while real work is happening.
 let buildStart = 0, lastLog = [];
+
+// Build progress lives in the drawer beside Controls and Time Series, not over the canvas. It used to be a centred
+// overlay with a backdrop blur, which fought the progressive streaming it exists to announce — the point of streaming
+// points is to watch them land.
 function renderProgress(loading, log) {
-  const ld = $('sceneLoading'); if (!ld) return;
-  ld.hidden = false;
-  ld.classList.toggle('sl-done', !loading);
+  const box = $('progress'); if (!box) return;
+  box.hidden = false;
+  const spin = $('slSpin'); if (spin) spin.classList.toggle('sl-idle', !loading);
   $('slTitle').textContent = loading ? 'Building scene…' : 'Scene ready';
   const el = $('slElapsed');
   if (el) el.textContent = buildStart ? ((Date.now() - buildStart) / 1000).toFixed(0) + 's' : '';
-  const lines = (log || []).slice(-5);
-  $('slLog').innerHTML = lines.map((l, i) =>
-    `<div class="sl-line${loading && i === lines.length - 1 ? ' sl-now' : ''}">${l.replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c]))}</div>`).join('');
+  const now = $('slNow');
+  if (now) now.textContent = loading ? ((log && log.length) ? log[log.length - 1] : '') : '';
+  const prog = (scene && scene.progress) || {};
+  const rows = MISSION_ORDER.filter(m => prog[m] || (scene && scene.series && scene.series[m]));
+  $('progRows').innerHTML = rows.map(m => {
+    const p = prog[m] || {}, name = (MISSIONS[m] || {}).name || m;
+    const total = p.total || 0, done = p.done || 0;
+    // No denominator yet (the leg has not reported its plan) => an indeterminate bar, not a fake 0%.
+    const known = total > 0;
+    const pct = known ? Math.max(0, Math.min(100, Math.round(done / total * 100))) : 0;
+    const phase = p.phase || 'queued';
+    const bits = [];
+    if (p.points) bits.push(p.points.toLocaleString() + ' pts');
+    if (known && phase === 'fetching') bits.push(`${done}/${total} granules`);
+    if (p.cached_chunks) bits.push(`${p.cached_chunks.toLocaleString()} chunks cached`);
+    const rgb = colorOf(m).join(',');
+    return `<div class="prog-row">
+      <div class="prog-name"><span class="dot" style="background:rgb(${rgb})"></span>${esc(name)}
+        <span class="prog-phase prog-${esc(phase).replace(/[^a-z]/g, '')}">${esc(phase)}</span></div>
+      <div class="prog-barwrap"><div class="prog-bar${known ? '' : ' prog-indet'}" style="width:${known ? pct : 24}%;background:rgb(${rgb})"></div></div>
+      <div class="prog-meta"><span class="prog-pct">${known ? pct + '%' : '—'}</span><span>${esc(bits.join(' · '))}</span></div>
+    </div>`;
+  }).join('') || '<div class="prog-now">waiting for the first collection…</div>';
 }
+
+function esc(v) { return String(v == null ? '' : v).replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c])); }
 
 async function pollUntilReady() {
   const myId = sceneId;
@@ -402,7 +428,7 @@ async function pollUntilReady() {
   try { const up = await api.sceneUpdate(scene, myId); doc = up.doc; } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
   if (sceneId !== myId) return;
   if (doc) applyDoc(doc);
-  const ld = $('sceneLoading');
+  const ld = $('progress');
   if (status === 'loading') {
     if (!buildStart) buildStart = Date.now();
     renderProgress(true, lastLog);
@@ -595,7 +621,7 @@ this.open = async (id, query) => {
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
-    const ld = $('sceneLoading'); if (ld) ld.hidden = false;
+    const ld = $('progress'); if (ld) ld.hidden = false;
     await pollUntilReady();   // paints the shell + whatever is ready now; keeps polling if the build is still running
     loadBench();
   } else if (!sceneReady && !pollTimer) {
