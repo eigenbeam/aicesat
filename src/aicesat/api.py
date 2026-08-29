@@ -610,6 +610,17 @@ def _index_status_locked(collection: str, d, res) -> dict:
     import h3
 
     c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "info": {}})   # info: cell -> [n_granules, {cycles}, yr_min, yr_max]
+    # Gate the whole scan on ONE stat of the directory. Reading is already incremental (per-file mtime), but working
+    # out WHAT to read globbed and stat()ed every file every call — ~32,060 index parquets for ATL06 on the deployed
+    # box, every 8 s, for each of four collections. Work proportional to the store, not the request, again.
+    # A directory's mtime changes whenever an entry is added or replaced, and index files are written tmp-then-rename
+    # (see build_atl06_index), so a rename into the directory always trips it.
+    try:
+        dir_mt = d.stat().st_mtime_ns if d.exists() else None
+    except OSError:
+        dir_mt = None
+    if dir_mt is not None and c.get("dir_mt") == dir_mt and c.get("out") is not None:
+        return c["out"]
     for pth in (d.glob("*.parquet") if d.exists() else []):
         try:
             mt = pth.stat().st_mtime
@@ -647,8 +658,10 @@ def _index_status_locked(collection: str, d, res) -> dict:
         except Exception:
             target = None
     pct = (min(100, round(100 * granules / target)) if target else None)
-    return {"collection": collection, "indexed": True, "res": res, "granules": granules,
-            "target": target, "pct": pct, "cells": cells}
+    out = {"collection": collection, "indexed": True, "res": res, "granules": granules,
+           "target": target, "pct": pct, "cells": cells}
+    c["dir_mt"], c["out"] = dir_mt, out
+    return out
 
 
 def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
