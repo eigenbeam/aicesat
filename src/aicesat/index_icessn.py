@@ -240,7 +240,17 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
+
+    # Settle background writes, then READ THE LAKE FIRST — see index_atl06.fetch_bbox. ICESSN needs no duplicate
+    # guard: its cache unit IS the (granule, cell) pair, and only MISSING cells are fetched, so the fresh points and
+    # the lake read are disjoint by construction rather than by an exclusion.
+    lake.drain_writes(MISSION, want_cells)
     have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+    _stream = (lambda r: on_granule({"granule": "lake", **r})) if on_granule is not None else None
+    cached = None if force else lake.query_points(
+        bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,
+        extra_cols=("sn_slope", "we_slope"), on_batch=_stream)
+
     # group the MISSING (granule, cell) spans by granule URL; a cached cell contributes no span (no re-fetch)
     by_url: dict[str, dict] = {}
     n_lake = 0
@@ -251,35 +261,35 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
                               {"granule": r["granule"], "gdate": r["gdate"], "cells": set(), "spans": []})
         u["cells"].add(int(r["h3_cell"])); u["spans"].append((int(r["byte_start"]), int(r["byte_end"])))
 
-    reader = None
+    reader, fresh_parts = None, []
     n_nasa = sum(len(u["cells"]) for u in by_url.values())
     if by_url:
         reader = RangeReader()
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
         def _ingest_granule(url) -> dict:
-            """Fetch the granule's missing spans, parse, materialise ONLY the fetched cells (only_cells guards the
-            partial-cell bug); return {chunk: fetched cells} to mark. Parquet writes hit distinct files (pool-safe)."""
+            """Fetch the granule's missing spans, parse, and return the platelets the query wants. The write is queued
+            to the background writer with only_cells=the fetched cells, which is what guards the partial-cell bug: a
+            span overlapping a neighbour must not materialise it from partial bytes."""
             u = by_url[url]
             merged = _merge(u["spans"])                    # union the spans so every physical line is fetched once
             blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
             pts = _parse_span_points(blobs, u["gdate"], res)
-            lake.write_point_chunk(MISSION, u["granule"], BEAM, CHUNK, pts, res, only_cells=u["cells"],
-                                   extras=("sn_slope", "we_slope"))   # carry each platelet's plane-fit orientation
-            if on_granule is not None:                     # display SUBSET: exactly the platelets written to the lake
-                lon, lat = pts["lon"], pts["lat"]          # (cells fetched for this granule) that query_points returns
-                if lon.size:
-                    keep = np.isin(pts["cell"], np.asarray(sorted(u["cells"]), dtype="u8"))
-                    if not clip_cells:
-                        w, s, e, n = bbox
-                        keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
-                else:
-                    keep = np.array([], bool)
-                on_granule({"granule": u["granule"], "lon": lon[keep], "lat": lat[keep],
-                            "h": pts["h"][keep], "t": pts["t"][keep],
-                            "sn_slope": pts["sn_slope"][keep], "we_slope": pts["we_slope"][keep]})
             # mark every fetched cell (even one whose platelets all fail RMS -> no file) so it is never re-fetched
-            return {"granule": u["granule"], "cells": sorted(u["cells"])}
+            lake.submit_writes(MISSION, res,
+                               [lake.ChunkWrite(u["granule"], BEAM, CHUNK, pts, only_cells=tuple(sorted(u["cells"])),
+                                                mark_cells=tuple(sorted(u["cells"])))],
+                               want_cells, extras=("sn_slope", "we_slope"))   # platelet plane-fit orientation
+            lon, lat = pts["lon"], pts["lat"]
+            if lon.size:                                   # exactly the platelets query_points would return for the
+                keep = np.isin(pts["cell"], np.asarray(sorted(u["cells"]), dtype="u8"))   # cells fetched here
+                if not clip_cells:
+                    w, s, e, n = bbox
+                    keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
+            else:
+                keep = np.array([], bool)
+            return {"granule": u["granule"],
+                    **{k: pts[k][keep] for k in _DIRECT}}
 
         urls = list(by_url)
         nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
@@ -289,12 +299,14 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         else:
             with ThreadPoolExecutor(nw) as ex:
                 parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        lake.mark_ingested_many(MISSION, [(pr["granule"], BEAM, {CHUNK: pr["cells"]}) for pr in parts])   # see index_atl06
+        for pr in parts:
+            fresh_parts.append(pr)
+            if on_granule is not None:
+                on_granule({k: pr[k] for k in ("granule", "lon", "lat", "h", "t", "sn_slope", "we_slope")})
+        if not lake.async_writes_enabled():
+            lake.drain_writes(MISSION, want_cells)   # kill switch: one batched mark on this thread (see index_atl06)
 
-    _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,
-                               extra_cols=("sn_slope", "we_slope"),   # slopes present for chunks ingested since this feature
-                               on_batch=_stream)
+    arrays = lake.concat_arrays([cached, *fresh_parts], _DIRECT)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (ICESSN fetch)")
     evicted = []

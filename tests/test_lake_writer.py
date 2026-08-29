@@ -267,3 +267,71 @@ def test_the_fetch_pool_is_not_clamped_to_cpu_count():
                      cpu_bound=True) == min(FETCH_WORKER_CAP, ncpu)
     # never more workers than there is work
     assert pool_size(3, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV, cpu_bound=False) == 3
+
+
+# --------------------------------------------------------------------------------- the same contract for GLAS/ICESSN
+def _glas_scene():
+    from test_lake_cache import _build_glas
+    n = 24
+    _build_glas(np.linspace(69.6, 71.4, n), np.full(n, -45.0), np.linspace(2400.0, 2430.0, n))
+
+
+def _icessn_scene():
+    from test_lake_cache import _build_icessn
+    n = 24
+    _build_icessn(np.linspace(69.6, 71.4, n), np.full(n, -45.0), np.linspace(2400.0, 2430.0, n),
+                  np.full(n, 4.5), np.zeros(n))
+
+
+@pytest.mark.parametrize("mission", ["GLAS", "ICESSN"])
+def test_every_mission_returns_before_its_lake_write(mission):
+    """GLAS and ICESSN were still writing inline long after ATL06 stopped; this is the property they now share.
+
+    Each returns its points from memory while a Parquet write is parked inside the writer thread. Without it the
+    request waits on the filesystem for data it is already holding.
+    """
+    from aicesat import index_glas, index_icessn
+    mod, scene, bbox = ((index_glas, _glas_scene, (-45.5, 69.5, -44.5, 71.5)) if mission == "GLAS"
+                        else (index_icessn, _icessn_scene, (-45.5, 69.5, -44.5, 71.5)))
+    scene()
+    entered, release = threading.Event(), threading.Event()
+    real = lake.write_point_chunk
+
+    def _blocked(*a, **kw):
+        entered.set()
+        assert release.wait(10.0), "writer was never released"
+        return real(*a, **kw)
+
+    orig, lake.write_point_chunk = lake.write_point_chunk, _blocked
+    try:
+        got, st = mod.fetch_bbox(bbox)
+        assert entered.wait(10.0), "no write was ever queued"
+        assert got["lon"].size, "the fetch returned nothing"
+        assert not list((lake.LAKE_DIR / f"mission={mission}").glob("h3_cell=*/*.parquet")), "the write was inline"
+        release.set()
+        assert lake.drain_writes(timeout=20.0)
+    finally:
+        release.set()
+        lake.write_point_chunk = orig
+        lake.drain_writes(timeout=20.0)
+    golden, _ = mod._fetch_direct(bbox)
+    _same(golden, got)
+    rows = _rows(got)
+    assert len(rows) == len(set(rows)), "points came back twice"
+    assert list((lake.LAKE_DIR / f"mission={mission}").glob("h3_cell=*/*.parquet")), "the write never landed"
+
+
+@pytest.mark.parametrize("mission", ["GLAS", "ICESSN"])
+def test_every_mission_serves_a_repeat_from_the_lake_with_no_duplicates(mission):
+    """The cache hit must go through the reordered read, and the second call must not double anything."""
+    from aicesat import index_glas, index_icessn
+    mod, scene = (index_glas, _glas_scene) if mission == "GLAS" else (index_icessn, _icessn_scene)
+    bbox = (-45.5, 69.5, -44.5, 71.5)
+    scene()
+    first, st1 = mod.fetch_bbox(bbox)
+    assert st1["chunks_from_nasa"] > 0
+    second, st2 = mod.fetch_bbox(bbox)
+    assert st2["chunks_from_nasa"] == 0 and st2.get("requests", 0) == 0, "the repeat hit the network"
+    _same(first, second)
+    rows = _rows(second)
+    assert len(rows) == len(set(rows)), "the lake read doubled the cached points"

@@ -259,8 +259,17 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
-    want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8") if on_granule is not None else None
+    want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8")
+
+    # Settle any background write over these cells, then READ THE LAKE FIRST so freshly fetched points can be returned
+    # from memory and the Parquet write can go to lake's background writer. See index_atl06.fetch_bbox.
+    lake.drain_writes(MISSION, want_cells)
     have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+    _stream = (lambda r: on_granule({"granule": "lake", **r})) if on_granule is not None else None
+    cached = None if force else lake.query_points(
+        bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",),
+        clip_cells=clip_cells, on_batch=_stream)
+
     chunk_cells, chunk_row = {}, {}
     for r in rows:
         k = (r["granule"], r["chunk_index"])
@@ -272,7 +281,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     # this. A fetched chunk spans far more track than a scene-sized box, and pre-caching the rest cost 2.6x
     # the write work on every build to save a re-fetch when the user happens to pan along the same track.
     want_only = None if index_atl06.precache_adjacent() else tuple(sorted(int(c) for c in want_cells))
-    reader = None
+    reader, fresh_parts = None, []
     if todo:
         reader = RangeReader()
         by_url: dict[str, list] = {}
@@ -280,47 +289,46 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
             r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
-        def _display(mats: dict) -> dict:
-            """The query_points-predicate SUBSET of one chunk's valid shots, for on_granule streaming: cell-membership
-            in the wanted set, + the rectangular bbox unless clip_cells (GLAS query_points applies no quality cut) — so
-            the emitted preview is never a superset of the final authoritative read."""
+        def _keep(mats: dict, dup_cells) -> np.ndarray:
+            """The query_points predicate applied in memory to one chunk's valid shots: cell-membership in the wanted
+            set, + the rectangular bbox unless clip_cells (GLAS query_points applies no quality cut). `dup_cells` are
+            the chunk's cells the lake read already returned — see index_atl06._keep."""
             lon, lat = mats["lon"], mats["lat"]
             if lon.size == 0:
-                return {"lon": lon, "lat": lat, "h": mats["h"], "t": mats["t"]}
-            keep = np.isin(planner._cells_vectorized(lat, lon, res), want_arr)
+                return np.zeros(0, bool)
+            pcell = planner._cells_vectorized(lat, lon, res)
+            keep = np.isin(pcell, want_arr)
+            if dup_cells:
+                keep &= ~np.isin(pcell, np.asarray(sorted(dup_cells), dtype="u8"))
             if not clip_cells:
                 w, s, e, n = bbox
                 keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
-            return {"lon": lon[keep], "lat": lat[keep], "h": mats["h"][keep], "t": mats["t"][keep]}
+            return keep
 
         def _ingest_granule(url) -> dict:
-            """Fetch + decode + materialise one granule's missing chunks; return its {granule: {chunk: cells}} map.
-            Parquet writes hit distinct files (pool-safe); the DuckDB mark runs serially after the pool drains."""
+            """Fetch + decode one granule's missing chunks; return its fresh display points. The Parquet write is
+            queued to the background writer, not done here — the caller gets the points from memory."""
             rs = by_url[url]
             ranges, keys = [], []
             for r in rs:
                 for key in GLAS_KEYS:
                     ranges.append((r[f"{key}_offset"], r[f"{key}_size"])); keys.append((r["chunk_index"], key))
             raws = dict(zip(keys, reader.fetch(url, ranges)))
-            local: dict[str, dict] = {}
-            stream: dict[str, dict] = {}                  # granule -> accumulated display points (streaming only)
+            writes, out = [], {}
             for r in rs:
                 dec = _decode_chunk(raws, r); v = dec["valid"]
                 mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
                         "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
-                cc = lake.write_point_chunk(MISSION, r["granule"], BEAM, r["chunk_index"], mats, res,
-                                            extras=("quality",), only_cells=want_only)
-                # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
                 k = (r["granule"], r["chunk_index"])
-                local.setdefault(r["granule"], {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])
-                if on_granule is not None:
-                    d = _display(mats)
-                    g = stream.setdefault(r["granule"], {"lon": [], "lat": [], "h": [], "t": []})
-                    for kk in g:
-                        g[kk].append(d[kk])
-            for g, dd in stream.items():                  # emit each granule's accumulated display points ONCE
-                on_granule({"granule": g, **{kk: np.concatenate(v) for kk, v in dd.items()}})
-            return local
+                # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
+                writes.append(lake.ChunkWrite(r["granule"], BEAM, r["chunk_index"], mats,
+                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k]))))
+                keep = _keep(mats, {c for c in chunk_cells[k] if (k[0], BEAM, k[1], c) in have})
+                g = out.setdefault(r["granule"], {kk: [] for kk in _EMPTY})
+                for kk in _EMPTY:
+                    g[kk].append(mats[kk][keep])
+            lake.submit_writes(MISSION, res, writes, want_cells, extras=("quality",))
+            return {g: {kk: np.concatenate(v) for kk, v in dd.items()} for g, dd in out.items()}
 
         urls = list(by_url)
         nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
@@ -330,14 +338,15 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
         else:
             with ThreadPoolExecutor(nw) as ex:
                 parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        ingest: dict[str, dict] = {}
         for loc in parts:
-            for g, cm in loc.items():
-                ingest.setdefault(g, {}).update(cm)
-        lake.mark_ingested_many(MISSION, [(g, BEAM, cm) for g, cm in ingest.items()])   # see index_atl06
+            for g, dd in loc.items():
+                fresh_parts.append(dd)
+                if on_granule is not None:
+                    on_granule({"granule": g, **{kk: dd[kk] for kk in ("lon", "lat", "h", "t")}})
+        if not lake.async_writes_enabled():
+            lake.drain_writes(MISSION, want_cells)   # kill switch: one batched mark on this thread (see index_atl06)
 
-    _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",), clip_cells=clip_cells, on_batch=_stream)
+    arrays = lake.concat_arrays([cached, *fresh_parts], _EMPTY)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (GLAS fetch)")
     evicted = []
