@@ -335,13 +335,27 @@ def mark_ingested_many(mission: str, items) -> None:
     whole batch makes it negligible.
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    rows = [(mission, granule, beam, int(k), int(c), now)
-            for granule, beam, chunk_cells in items
-            for k, cells in (chunk_cells or {}).items() for c in cells]
-    if not rows:
+    gran, beams, chunks, cells_, = [], [], [], []
+    for granule, beam, chunk_cells in items:
+        for k, cells in (chunk_cells or {}).items():
+            for c in cells:
+                gran.append(granule); beams.append(beam); chunks.append(int(k)); cells_.append(int(c))
+    if not gran:
         return
+    # Bulk-insert from Arrow, NOT executemany. DuckDB is columnar: a parameterised executemany walks row by row and
+    # every row probes the 5-column composite PRIMARY KEY, which measured 31.7 s for one batch on the deployed lake
+    # (and 44.5 s when it was additionally called per granule). Registering the batch and inserting with one statement
+    # is vectorised and does the constraint work in bulk.
+    batch = pa.table({"mission": pa.array([mission] * len(gran)), "granule": pa.array(gran),
+                      "beam": pa.array(beams), "chunk_index": pa.array(chunks, type=pa.int32()),
+                      "h3_cell": pa.array(cells_, type=pa.uint64()),
+                      "ingested_at": pa.array([now] * len(gran), type=pa.timestamp("us"))})
     with meta_db() as con:
-        con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)", rows)
+        con.register("_ingest_batch", batch)
+        try:
+            con.execute("INSERT OR REPLACE INTO coverage_cells SELECT * FROM _ingest_batch")
+        finally:
+            con.unregister("_ingest_batch")
 
 
 def ingested_chunk_cells(mission: str, granules: list[str]) -> set[tuple[str, str, int, int]]:
