@@ -62,12 +62,17 @@ def main(bbox) -> None:
     lake.drain_writes()
     tail = time.time() - t2
     st = meta["access"]
-    from aicesat.access import FETCH_WORKER_CAP, in_region
+    from aicesat.access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, in_region, pool_size)
+    # The EFFECTIVE pool, not the constant: AICESAT_FETCH_WORKERS overrides the cap, so printing FETCH_WORKER_CAP
+    # left a run ambiguous about whether the override took effect at all.
+    nw = pool_size(st.get("granules_touched") or 921, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES,
+                   env=FETCH_WORKER_ENV)
     print(f"\nbbox {bbox}")
     # The config is part of the measurement. presigns>0 means it did NOT take the in-region S3-direct path, which a
     # login shell silently causes: EC2 does not set AWS_REGION, so in_region() is False unless AICESAT_S3_DIRECT=1.
     print(f"  config        s3_direct={in_region()}  async_write={lake.async_writes_enabled()}  "
-          f"writers={lake._writer_threads()}  fetch_cap={FETCH_WORKER_CAP}")
+          f"writers={lake._writer_threads()}  fetch_workers={nw} (cap {FETCH_WORKER_CAP})  "
+          f"batch_writes={lake.batch_writes_enabled()}")
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
