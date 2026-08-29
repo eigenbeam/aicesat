@@ -9516,6 +9516,7 @@ window.AICESAT = window.AICESAT || {};
     indexStatus: collection => j('/api/index_status?collection=' + (collection || 'ATL06')),
     sceneDoc: id => j(`/api/scene/${id}`),
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
+    sceneMeta: id => j(`/api/scene/${id}/part?part=meta`),
     imageryUrl: (id, v) => `/api/scene/${id}/imagery.jpg` + (v ? `?v=${v}` : ''),   // v busts the texture cache after a re-fetch
     sceneImagery: (id, source) => post(`/api/scene/${id}/imagery`, {source}),       // re-fetch imagery with a new source
     deleteScene: id => post(`/api/scene/${id}/delete`, {}),                          // remove a scene (registry + doc); never touches the lake/cache
@@ -9535,10 +9536,84 @@ window.AICESAT = window.AICESAT || {};
     bench: () => j('/api/bench').catch(() => null),
     openLink: url => window.open(url, '_blank'),
   };
+  // incremental poll: small `meta` + only the new position/slope chunks (see loadSceneInto)
+  fetchApi.sceneUpdate = (prev, id) => loadSceneInto(prev, id, fetchApi.sceneMeta,
+                                                     (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk));
 
   // ---- base64 helpers
   const b64ToF32 = b64 => { const bin = atob(b64); const buf = new ArrayBuffer(bin.length); const u8 = new Uint8Array(buf); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return new Float32Array(buf); };
   const concatF32 = parts => { const n = parts.reduce((a, p) => a + p.length, 0); const out = new Float32Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
+
+  // ---- incremental scene loading -------------------------------------------------------------------------------
+  // A build streams: the scene grows granule by granule. Re-fetching the WHOLE doc on every poll re-ships millions of
+  // floats each tick (the doc is tens of MB) — quadratic in wall-clock and the dominant cost of a large build. Instead
+  // poll the small `meta` part (no positions/slopes/surface-z) and fetch only the bulk arrays that actually changed,
+  // appending onto client-side buffers. Shared by both transports; each supplies its own chunk fetcher.
+  //
+  // Identity/versioning: a mission's preview (meta.partial, cache_key null) is REPLACED wholesale at finalize by the
+  // authoritative strided series. `seriesVersion` captures that transition (plus any stride change), so we append while
+  // the version holds and refetch once when it flips. Never trust n alone: finalize can shrink n (stride kicks in).
+  const seriesVersion = s => `${s.cache_key || 'partial'}|${s.stride || 1}|${!!(s.meta && s.meta.partial)}`;
+
+  // Fetch float32 values [fromValue, ...) of a chunked part. chunk_bytes is fixed server-side (96000 = 24000 floats),
+  // so we can start at the chunk containing fromValue and trim the remainder — only NEW data crosses the wire.
+  const CHUNK_FLOATS = 24000;
+  async function fetchValuesFrom(getChunk, part, fromValue) {
+    const startChunk = Math.floor(fromValue / CHUNK_FLOATS);
+    const parts = []; let n = startChunk + 1;
+    for (let c = startChunk; c < n; c++) {
+      const d = await getChunk(part, c);
+      n = d.n_chunks;
+      if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
+      parts.push(b64ToF32(d.b64));
+    }
+    const got = concatF32(parts);
+    const skip = fromValue - startChunk * CHUNK_FLOATS;   // trim the head of the first chunk
+    return skip > 0 ? got.subarray(skip) : got;
+  }
+
+  // Build/refresh a scene doc incrementally against `prev` (the last doc this view rendered, or null).
+  // Returns {doc, changed:Set<mission>} — `changed` lets the caller rebuild only the layers whose data moved.
+  async function loadSceneInto(prev, id, getMeta, getChunk) {
+    const meta = await getMeta(id);
+    const doc = {...meta, series: {}, coreg: prev ? prev.coreg : null, surface: prev ? prev.surface : null};
+    const changed = new Set();
+    for (const [m, s] of Object.entries(meta.series || {})) {
+      const old = prev && prev.series && prev.series[m];
+      const sameVersion = old && old._ver === seriesVersion(s);
+      const haveVals = sameVersion ? (old._pos ? old._pos.length : 0) : 0;
+      const wantVals = (s.n || 0) * 3;
+      let pos = sameVersion ? old._pos : null;
+      if (wantVals > haveVals) {                                   // grew (or first sight): fetch ONLY the new tail
+        const add = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, haveVals);
+        pos = haveVals ? concatF32([pos, add]) : add;
+        changed.add(m);
+      } else if (!sameVersion) {
+        pos = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, 0);
+        changed.add(m);
+      }
+      let slopes = sameVersion ? old._slopes : null;
+      if (s.has_slopes) {
+        const haveS = sameVersion && slopes ? slopes.length : 0, wantS = (s.n || 0) * 2;
+        if (wantS > haveS) {
+          const add = await fetchValuesFrom(p => getChunk(id, p), 'slopes:' + m, haveS);
+          slopes = haveS ? concatF32([slopes, add]) : add;
+          changed.add(m);
+        }
+      } else slopes = null;
+      doc.series[m] = {...s, positions: pos || new Float32Array(0), slopes: slopes || null,
+                       _pos: pos || new Float32Array(0), _slopes: slopes, _ver: seriesVersion(s)};
+    }
+    // surface z: static once it lands — fetch exactly once
+    if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
+      const z = await fetchValuesFrom(p => getChunk(id, p), 'surface', 0);
+      doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)};
+      changed.add('_surface');
+    } else if (meta.surface && prev && prev.surface) {
+      doc.surface = {...meta.surface, z: prev.surface.z};
+    } else if (!meta.surface) doc.surface = null;
+    return {doc, changed, meta};
+  }
 
   function appApi(app) {
     const imagery = new Map();
@@ -9581,6 +9656,23 @@ window.AICESAT = window.AICESAT || {};
         return doc;
       },
       scenePart: (id, part, chunk = 0) => call('ui_scene_part', {scene_id: id, part, chunk}),
+      sceneMeta: id => call('ui_scene_part', {scene_id: id, part: 'meta'}),
+      // incremental poll (same contract as the fetch adapter): small meta + only the new chunks, plus the coreg/imagery
+      // legs this transport needs (imagery arrives as base64 bytes rather than a URL).
+      sceneUpdate: async function (prev, id) {
+        const r = await loadSceneInto(prev, id, this.sceneMeta, (sid, part, chunk) => this.scenePart(sid, part, chunk));
+        const meta = r.meta;
+        if (meta.has_coreg && !(prev && prev.coreg)) {
+          const c = await call('ui_scene_part', {scene_id: id, part: 'coreg'});
+          const dh = await call('ui_scene_part', {scene_id: id, part: 'dh'});
+          r.doc.coreg = {...c, ...dh};
+        }
+        if (meta.imagery && !imagery.has(id)) {
+          const b64 = await chunkedBytes(id, 'imagery');
+          if (b64) imagery.set(id, 'data:image/jpeg;base64,' + b64);
+        }
+        return r;
+      },
       imageryUrl: id => imagery.get(id) || null,   // returns the (re-fetched) data URL; the string changes when bytes change
       sceneImagery: async (id, source) => {        // re-fetch imagery server-side, then refresh the cached data URL
         const meta = await call('ui_scene_imagery', {scene_id: id, source});
@@ -10316,6 +10408,9 @@ const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
 // sub-pixel, so we fall back to the same clamped dots every other mission uses.
 const LIGHT = (() => { const v = [-1, 1, 2], l = Math.hypot(...v); return v.map(c => c / l); })();  // NW-and-above, for facet shading
 const usePlatelets = (m, s) => m === 'ICESSN' && s.slopes && s.slopes.length && plateletsNear();
+// Vertical exaggeration as a GPU model matrix (column-major): scales z only, so changing it never re-walks or
+// re-uploads a multi-million-point position buffer.
+const zExagMatrix = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, Z_EXAG, 0, 0, 0, 0, 1];
 
 function plateletLayer(m, s) {
   const src = s.positions, sl = s.slopes, base = colorOf(m);
@@ -10324,11 +10419,12 @@ function plateletLayer(m, s) {
   const corners = [[half, half], [half, -half], [-half, -half], [-half, half]];   // (east, north) offsets, CCW
   return new deck.SolidPolygonLayer({
     id: 'plat-' + m, data: indices(src.length / 3),
+    modelMatrix: zExagMatrix(),   // z scaling on the GPU (matches the point layers); vertices stay in true metres
     getPolygon: i => {
       const cx = src[3 * i], cy = src[3 * i + 1], cz = src[3 * i + 2], sn = sl[2 * i], we = sl[2 * i + 1];
       return corners.map(([de, dn]) => {
         const dx = de * E[0] + dn * N[0], dy = de * E[1] + dn * N[1], dz = we * de + sn * dn;   // the platelet's fitted plane
-        return [cx + dx, cy + dy, (cz + dz) * Z_EXAG];
+        return [cx + dx, cy + dy, cz + dz];
       });
     },
     // manual hillshade so the tilt reads even where SolidPolygonLayer's flat faces get uniform lighting: brightness
@@ -10339,7 +10435,7 @@ function plateletLayer(m, s) {
       return [base[0] * b, base[1] * b, base[2] * b, 235];
     },
     _normalize: false,   // simple convex quads
-    updateTriggers: {getPolygon: [Z_EXAG, PT_SCALE], getFillColor: base},
+    updateTriggers: {getPolygon: PT_SCALE, getFillColor: base},   // Z_EXAG now rides the model matrix, no re-tessellation
   });
 }
 
@@ -10359,12 +10455,17 @@ function cloudLayers() {
       }));
     }
     if (usePlatelets(m, s)) { out.push(plateletLayer(m, s)); continue; }   // near enough -> tilted facets, not dots
+    // Binary attribute path: hand deck.gl the Float32Array directly instead of {data: indices(n), getPosition: fn}.
+    // The accessor form allocated an n-element index array AND called a JS closure per point on every render — for a
+    // ~2M-point mission that dominated the frame. Vertical exaggeration is applied on the GPU via a model matrix, so
+    // changing it costs no re-upload and no re-walk of the buffer.
     out.push(new deck.ScatterplotLayer({
-      id: 'pc-' + m, data: indices(src.length / 3),
-      getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
+      id: 'pc-' + m,
+      data: {length: src.length / 3, attributes: {getPosition: {value: src, size: 3}}},
+      modelMatrix: zExagMatrix(),
       getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
       radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
-      updateTriggers: {getPosition: Z_EXAG, getRadius: PT_SCALE},
+      updateTriggers: {getRadius: PT_SCALE},
     }));
   }
   return out;
@@ -10483,10 +10584,15 @@ function render() {
 }
 
 function fitView() {
-  const all = Object.values(scene.series).flatMap(s => s.positions);
-  if (!all.length) return;
-  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9;
-  for (let i = 0; i < all.length; i += 3) { minx = Math.min(minx, all[i]); maxx = Math.max(maxx, all[i]); miny = Math.min(miny, all[i + 1]); maxy = Math.max(maxy, all[i + 1]); minz = Math.min(minz, all[i + 2]); maxz = Math.max(maxz, all[i + 2]); }
+  // Scan each mission's buffer in place — positions are Float32Arrays (incremental transport), and flat-mapping them
+  // into one JS array would copy millions of floats per call.
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9, n = 0;
+  for (const s of Object.values(scene.series)) {
+    const p = s.positions; if (!p || !p.length) continue;
+    n += p.length;
+    for (let i = 0; i < p.length; i += 3) { minx = Math.min(minx, p[i]); maxx = Math.max(maxx, p[i]); miny = Math.min(miny, p[i + 1]); maxy = Math.max(maxy, p[i + 1]); minz = Math.min(minz, p[i + 2]); maxz = Math.max(maxz, p[i + 2]); }
+  }
+  if (!n) return;
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const zoom = Math.log2(Math.min(root.clientWidth, root.clientHeight) / (span * 1.25));
@@ -10590,7 +10696,9 @@ async function pollUntilReady() {
   catch (e) {}
   if (sceneId !== myId) return;   // navigated to another scene while awaiting
   let doc = null;
-  try { doc = await api.sceneDoc(myId); } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
+  // Incremental: fetch the small `meta` part and only the position/slope chunks that actually grew, appending onto the
+  // buffers we already hold. Re-fetching the whole doc each tick re-shipped millions of floats per poll.
+  try { const up = await api.sceneUpdate(scene, myId); doc = up.doc; } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
   if (sceneId !== myId) return;
   if (doc) applyDoc(doc);
   const ld = $('sceneLoading');

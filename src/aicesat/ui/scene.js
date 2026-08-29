@@ -85,6 +85,9 @@ const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
 // sub-pixel, so we fall back to the same clamped dots every other mission uses.
 const LIGHT = (() => { const v = [-1, 1, 2], l = Math.hypot(...v); return v.map(c => c / l); })();  // NW-and-above, for facet shading
 const usePlatelets = (m, s) => m === 'ICESSN' && s.slopes && s.slopes.length && plateletsNear();
+// Vertical exaggeration as a GPU model matrix (column-major): scales z only, so changing it never re-walks or
+// re-uploads a multi-million-point position buffer.
+const zExagMatrix = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, Z_EXAG, 0, 0, 0, 0, 1];
 
 function plateletLayer(m, s) {
   const src = s.positions, sl = s.slopes, base = colorOf(m);
@@ -93,11 +96,12 @@ function plateletLayer(m, s) {
   const corners = [[half, half], [half, -half], [-half, -half], [-half, half]];   // (east, north) offsets, CCW
   return new deck.SolidPolygonLayer({
     id: 'plat-' + m, data: indices(src.length / 3),
+    modelMatrix: zExagMatrix(),   // z scaling on the GPU (matches the point layers); vertices stay in true metres
     getPolygon: i => {
       const cx = src[3 * i], cy = src[3 * i + 1], cz = src[3 * i + 2], sn = sl[2 * i], we = sl[2 * i + 1];
       return corners.map(([de, dn]) => {
         const dx = de * E[0] + dn * N[0], dy = de * E[1] + dn * N[1], dz = we * de + sn * dn;   // the platelet's fitted plane
-        return [cx + dx, cy + dy, (cz + dz) * Z_EXAG];
+        return [cx + dx, cy + dy, cz + dz];
       });
     },
     // manual hillshade so the tilt reads even where SolidPolygonLayer's flat faces get uniform lighting: brightness
@@ -108,7 +112,7 @@ function plateletLayer(m, s) {
       return [base[0] * b, base[1] * b, base[2] * b, 235];
     },
     _normalize: false,   // simple convex quads
-    updateTriggers: {getPolygon: [Z_EXAG, PT_SCALE], getFillColor: base},
+    updateTriggers: {getPolygon: PT_SCALE, getFillColor: base},   // Z_EXAG now rides the model matrix, no re-tessellation
   });
 }
 
@@ -128,12 +132,17 @@ function cloudLayers() {
       }));
     }
     if (usePlatelets(m, s)) { out.push(plateletLayer(m, s)); continue; }   // near enough -> tilted facets, not dots
+    // Binary attribute path: hand deck.gl the Float32Array directly instead of {data: indices(n), getPosition: fn}.
+    // The accessor form allocated an n-element index array AND called a JS closure per point on every render — for a
+    // ~2M-point mission that dominated the frame. Vertical exaggeration is applied on the GPU via a model matrix, so
+    // changing it costs no re-upload and no re-walk of the buffer.
     out.push(new deck.ScatterplotLayer({
-      id: 'pc-' + m, data: indices(src.length / 3),
-      getPosition: i => [src[3 * i], src[3 * i + 1], src[3 * i + 2] * Z_EXAG],
+      id: 'pc-' + m,
+      data: {length: src.length / 3, attributes: {getPosition: {value: src, size: 3}}},
+      modelMatrix: zExagMatrix(),
       getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
       radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
-      updateTriggers: {getPosition: Z_EXAG, getRadius: PT_SCALE},
+      updateTriggers: {getRadius: PT_SCALE},
     }));
   }
   return out;
@@ -252,10 +261,15 @@ function render() {
 }
 
 function fitView() {
-  const all = Object.values(scene.series).flatMap(s => s.positions);
-  if (!all.length) return;
-  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9;
-  for (let i = 0; i < all.length; i += 3) { minx = Math.min(minx, all[i]); maxx = Math.max(maxx, all[i]); miny = Math.min(miny, all[i + 1]); maxy = Math.max(maxy, all[i + 1]); minz = Math.min(minz, all[i + 2]); maxz = Math.max(maxz, all[i + 2]); }
+  // Scan each mission's buffer in place — positions are Float32Arrays (incremental transport), and flat-mapping them
+  // into one JS array would copy millions of floats per call.
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9, n = 0;
+  for (const s of Object.values(scene.series)) {
+    const p = s.positions; if (!p || !p.length) continue;
+    n += p.length;
+    for (let i = 0; i < p.length; i += 3) { minx = Math.min(minx, p[i]); maxx = Math.max(maxx, p[i]); miny = Math.min(miny, p[i + 1]); maxy = Math.max(maxy, p[i + 1]); minz = Math.min(minz, p[i + 2]); maxz = Math.max(maxz, p[i + 2]); }
+  }
+  if (!n) return;
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const zoom = Math.log2(Math.min(root.clientWidth, root.clientHeight) / (span * 1.25));
@@ -359,7 +373,9 @@ async function pollUntilReady() {
   catch (e) {}
   if (sceneId !== myId) return;   // navigated to another scene while awaiting
   let doc = null;
-  try { doc = await api.sceneDoc(myId); } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
+  // Incremental: fetch the small `meta` part and only the position/slope chunks that actually grew, appending onto the
+  // buffers we already hold. Re-fetching the whole doc each tick re-shipped millions of floats per poll.
+  try { const up = await api.sceneUpdate(scene, myId); doc = up.doc; } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
   if (sceneId !== myId) return;
   if (doc) applyDoc(doc);
   const ld = $('sceneLoading');

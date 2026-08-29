@@ -120,9 +120,16 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
     if doc is None:
         raise KeyError(scene_id)
     if part == "meta":
+        # Everything EXCEPT the bulk arrays (positions, slopes) and surface z — those are fetched via their own chunked
+        # parts and appended incrementally, so this stays small and is safe to poll repeatedly during a build. `has_slopes`
+        # tells the client whether to fetch a slopes:<mission> part (ICESSN platelets).
+        def _series_meta(s):
+            m = {k: v for k, v in s.items() if k not in ("positions", "slopes")}
+            m["has_slopes"] = "slopes" in s
+            return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
                 "z0": doc["z0"], "labels": doc.get("labels"), "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
-                "series": {m: {k: v for k, v in s.items() if k != "positions"} for m, s in doc["series"].items()},
+                "series": {m: _series_meta(s) for m, s in doc["series"].items()},
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
     if part == "surface":
         return _chunked(np.asarray([np.nan if v is None else v for v in doc["surface"]["z"]], dtype="f4"), chunk, chunk_bytes, "z")
@@ -130,6 +137,11 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         m = part.split(":", 1)[1]
         arr = np.asarray(doc["series"][m]["positions"], dtype="f4").reshape(-1, 3)[:: max(1, int(stride))]
         return _chunked(arr.ravel(), chunk, chunk_bytes, "xyz")
+    if part.startswith("slopes:"):
+        m = part.split(":", 1)[1]
+        # ICESSN platelet slopes [sn, we, ...] — 2 per point; strided in lock-step with positions so they stay aligned.
+        arr = np.asarray(doc["series"][m].get("slopes", []), dtype="f4").reshape(-1, 2)[:: max(1, int(stride))]
+        return _chunked(arr.ravel(), chunk, chunk_bytes, "sw")
     if part == "coreg":
         c = doc.get("coreg") or {}
         return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact")}

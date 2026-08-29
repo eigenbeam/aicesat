@@ -108,12 +108,16 @@ def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) ->
             "labels": {"note": "Native coordinates as delivered; no co-registration applied."}}
 
 
-# Per-mission cap on the streamed preview point count. append_partial accumulates the un-strided display points of
-# every granule as it lands; without a cap a dense mission (e.g. ATL06 over a big area, ~2M points across ~200
-# granules) grows the doc to tens of MB, and since cache.save_scene json.dumps the WHOLE doc on every granule that is
-# O(N^2) serialisation — the dominant cost of a large build. The preview only needs enough points to read as "the
-# cloud is raining in"; the finalize (add_series over the authoritative arrays) replaces it with the full strided
-# series regardless. So once a mission's preview reaches this many points, further partials are dropped.
+# Per-mission cap on the streamed preview point count. append_partial accumulates the UN-STRIDED display points of
+# every granule as it lands, so a dense mission (ATL06 over a big area: ~2M points across ~200 granules) would grow
+# the in-memory/on-disk doc to tens of MB mid-build — and cache.save_scene json.dumps the WHOLE doc, so each save
+# scales with everything accumulated so far.
+#
+# NOTE this is a bound on the SERVER-side doc, not on what the client transfers: the widget fetches the small `meta`
+# part and appends only the new position chunks (api.scene_part / adapter.loadSceneInto), so transport is already
+# incremental. The preview only needs enough points to read as "the cloud is raining in" — the finalize (add_series
+# over the authoritative arrays) replaces it with the full strided series regardless — so once a mission's preview
+# reaches this many points, further partials are dropped.
 PARTIAL_PREVIEW_CAP = 200_000
 
 

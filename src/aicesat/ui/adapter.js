@@ -14,6 +14,7 @@ window.AICESAT = window.AICESAT || {};
     indexStatus: collection => j('/api/index_status?collection=' + (collection || 'ATL06')),
     sceneDoc: id => j(`/api/scene/${id}`),
     scenePart: (id, part, chunk = 0) => j(`/api/scene/${id}/part?part=${encodeURIComponent(part)}&chunk=${chunk}`),
+    sceneMeta: id => j(`/api/scene/${id}/part?part=meta`),
     imageryUrl: (id, v) => `/api/scene/${id}/imagery.jpg` + (v ? `?v=${v}` : ''),   // v busts the texture cache after a re-fetch
     sceneImagery: (id, source) => post(`/api/scene/${id}/imagery`, {source}),       // re-fetch imagery with a new source
     deleteScene: id => post(`/api/scene/${id}/delete`, {}),                          // remove a scene (registry + doc); never touches the lake/cache
@@ -33,10 +34,84 @@ window.AICESAT = window.AICESAT || {};
     bench: () => j('/api/bench').catch(() => null),
     openLink: url => window.open(url, '_blank'),
   };
+  // incremental poll: small `meta` + only the new position/slope chunks (see loadSceneInto)
+  fetchApi.sceneUpdate = (prev, id) => loadSceneInto(prev, id, fetchApi.sceneMeta,
+                                                     (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk));
 
   // ---- base64 helpers
   const b64ToF32 = b64 => { const bin = atob(b64); const buf = new ArrayBuffer(bin.length); const u8 = new Uint8Array(buf); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return new Float32Array(buf); };
   const concatF32 = parts => { const n = parts.reduce((a, p) => a + p.length, 0); const out = new Float32Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
+
+  // ---- incremental scene loading -------------------------------------------------------------------------------
+  // A build streams: the scene grows granule by granule. Re-fetching the WHOLE doc on every poll re-ships millions of
+  // floats each tick (the doc is tens of MB) — quadratic in wall-clock and the dominant cost of a large build. Instead
+  // poll the small `meta` part (no positions/slopes/surface-z) and fetch only the bulk arrays that actually changed,
+  // appending onto client-side buffers. Shared by both transports; each supplies its own chunk fetcher.
+  //
+  // Identity/versioning: a mission's preview (meta.partial, cache_key null) is REPLACED wholesale at finalize by the
+  // authoritative strided series. `seriesVersion` captures that transition (plus any stride change), so we append while
+  // the version holds and refetch once when it flips. Never trust n alone: finalize can shrink n (stride kicks in).
+  const seriesVersion = s => `${s.cache_key || 'partial'}|${s.stride || 1}|${!!(s.meta && s.meta.partial)}`;
+
+  // Fetch float32 values [fromValue, ...) of a chunked part. chunk_bytes is fixed server-side (96000 = 24000 floats),
+  // so we can start at the chunk containing fromValue and trim the remainder — only NEW data crosses the wire.
+  const CHUNK_FLOATS = 24000;
+  async function fetchValuesFrom(getChunk, part, fromValue) {
+    const startChunk = Math.floor(fromValue / CHUNK_FLOATS);
+    const parts = []; let n = startChunk + 1;
+    for (let c = startChunk; c < n; c++) {
+      const d = await getChunk(part, c);
+      n = d.n_chunks;
+      if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
+      parts.push(b64ToF32(d.b64));
+    }
+    const got = concatF32(parts);
+    const skip = fromValue - startChunk * CHUNK_FLOATS;   // trim the head of the first chunk
+    return skip > 0 ? got.subarray(skip) : got;
+  }
+
+  // Build/refresh a scene doc incrementally against `prev` (the last doc this view rendered, or null).
+  // Returns {doc, changed:Set<mission>} — `changed` lets the caller rebuild only the layers whose data moved.
+  async function loadSceneInto(prev, id, getMeta, getChunk) {
+    const meta = await getMeta(id);
+    const doc = {...meta, series: {}, coreg: prev ? prev.coreg : null, surface: prev ? prev.surface : null};
+    const changed = new Set();
+    for (const [m, s] of Object.entries(meta.series || {})) {
+      const old = prev && prev.series && prev.series[m];
+      const sameVersion = old && old._ver === seriesVersion(s);
+      const haveVals = sameVersion ? (old._pos ? old._pos.length : 0) : 0;
+      const wantVals = (s.n || 0) * 3;
+      let pos = sameVersion ? old._pos : null;
+      if (wantVals > haveVals) {                                   // grew (or first sight): fetch ONLY the new tail
+        const add = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, haveVals);
+        pos = haveVals ? concatF32([pos, add]) : add;
+        changed.add(m);
+      } else if (!sameVersion) {
+        pos = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, 0);
+        changed.add(m);
+      }
+      let slopes = sameVersion ? old._slopes : null;
+      if (s.has_slopes) {
+        const haveS = sameVersion && slopes ? slopes.length : 0, wantS = (s.n || 0) * 2;
+        if (wantS > haveS) {
+          const add = await fetchValuesFrom(p => getChunk(id, p), 'slopes:' + m, haveS);
+          slopes = haveS ? concatF32([slopes, add]) : add;
+          changed.add(m);
+        }
+      } else slopes = null;
+      doc.series[m] = {...s, positions: pos || new Float32Array(0), slopes: slopes || null,
+                       _pos: pos || new Float32Array(0), _slopes: slopes, _ver: seriesVersion(s)};
+    }
+    // surface z: static once it lands — fetch exactly once
+    if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
+      const z = await fetchValuesFrom(p => getChunk(id, p), 'surface', 0);
+      doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)};
+      changed.add('_surface');
+    } else if (meta.surface && prev && prev.surface) {
+      doc.surface = {...meta.surface, z: prev.surface.z};
+    } else if (!meta.surface) doc.surface = null;
+    return {doc, changed, meta};
+  }
 
   function appApi(app) {
     const imagery = new Map();
@@ -79,6 +154,23 @@ window.AICESAT = window.AICESAT || {};
         return doc;
       },
       scenePart: (id, part, chunk = 0) => call('ui_scene_part', {scene_id: id, part, chunk}),
+      sceneMeta: id => call('ui_scene_part', {scene_id: id, part: 'meta'}),
+      // incremental poll (same contract as the fetch adapter): small meta + only the new chunks, plus the coreg/imagery
+      // legs this transport needs (imagery arrives as base64 bytes rather than a URL).
+      sceneUpdate: async function (prev, id) {
+        const r = await loadSceneInto(prev, id, this.sceneMeta, (sid, part, chunk) => this.scenePart(sid, part, chunk));
+        const meta = r.meta;
+        if (meta.has_coreg && !(prev && prev.coreg)) {
+          const c = await call('ui_scene_part', {scene_id: id, part: 'coreg'});
+          const dh = await call('ui_scene_part', {scene_id: id, part: 'dh'});
+          r.doc.coreg = {...c, ...dh};
+        }
+        if (meta.imagery && !imagery.has(id)) {
+          const b64 = await chunkedBytes(id, 'imagery');
+          if (b64) imagery.set(id, 'data:image/jpeg;base64,' + b64);
+        }
+        return r;
+      },
       imageryUrl: id => imagery.get(id) || null,   // returns the (re-fetched) data URL; the string changes when bytes change
       sceneImagery: async (id, source) => {        // re-fetch imagery server-side, then refresh the cached data URL
         const meta = await call('ui_scene_imagery', {scene_id: id, source});
