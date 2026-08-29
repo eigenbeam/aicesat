@@ -113,3 +113,54 @@ def test_check_coverage_uses_manifest(tmp_path, monkeypatch):
     assert coverage._manifest_paths(d)[1].exists()                              # the manifest was materialized (in _coverage/)
     assert coverage._manifest_paths(d)[1] not in set(d.glob("*.parquet"))       # NOT a top-level *.parquet (the index byte-span globs must not see it)
     assert all(r["indexed"] is False for r in res["collections"] if r["key"] != "GLAS")
+
+
+# ------------------------------------------------------------ the rollup belongs to the builder, not to the reader
+def _index_dir(monkeypatch, tmp_path):
+    d = tmp_path / "idx"; d.mkdir(exist_ok=True)
+    monkeypatch.setattr(coverage, "_index_for",
+                        lambda key: (d, 5, GDATE_YM) if key == "ATL06" else (None, None, None))
+    return d
+
+
+def _granule(d, name, cells):
+    _granule_parquet(d, name, [(c, "20200115") for c in cells])
+
+
+
+def test_a_fresh_manifest_costs_one_stat_not_a_directory_walk(tmp_path, monkeypatch):
+    """Checking freshness used to glob every source parquet and stat each one — ~32,060 files for ATL06 on the box,
+    paid on every coverage query just to conclude nothing had changed."""
+    d = _index_dir(monkeypatch, tmp_path)
+    _granule(d, "ATL06_20200115000000_11760601_007_01", [600000000000000000])
+    coverage.build_manifest("ATL06")
+
+    import pathlib
+    globs = []
+    real = pathlib.Path.glob
+    monkeypatch.setattr(pathlib.Path, "glob",
+                        lambda self, pat, *a, **k: (globs.append((str(self), pat)), real(self, pat, *a, **k))[1])
+    assert coverage._ensure_manifest(d, coverage._index_for("ATL06")[2]) is not None
+    assert not [g for g in globs if g[1] == "*.parquet"], f"walked the index dir: {globs}"
+
+
+def test_an_index_that_grew_after_the_rollup_is_still_caught(tmp_path, monkeypatch):
+    """The O(1) check must not trade correctness for speed: a new granule has to invalidate the manifest."""
+    d = _index_dir(monkeypatch, tmp_path)
+    _granule(d, "ATL06_20200115000000_11760601_007_01", [600000000000000000])
+    coverage.build_manifest("ATL06")
+    assert coverage._manifest_fresh(d)
+
+    _granule(d, "ATL06_20200220000000_11760601_007_01", [600000000000000002])   # someone indexed without rolling up
+    assert not coverage._manifest_fresh(d), "a new granule did not invalidate the manifest"
+    files = coverage.index_files_for_cells("ATL06", [600000000000000002])
+    assert files and any("20200220" in f for f in files), files   # and the lazy repair path found it
+
+
+def test_build_manifest_is_explicit_and_reports_what_it_rolled_up(tmp_path, monkeypatch):
+    d = _index_dir(monkeypatch, tmp_path)
+    assert coverage.build_manifest("ATL06")["built"] is False      # nothing indexed yet
+    _granule(d, "ATL06_20200115000000_11760601_007_01", [600000000000000000])
+    out = coverage.build_manifest("ATL06")
+    assert out["built"] is True and out["granule_files"] == 1
+    assert coverage._manifest_fresh(d)

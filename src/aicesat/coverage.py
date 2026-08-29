@@ -155,16 +155,27 @@ def _source_parquets(d) -> list:
     return sorted(d.glob("*.parquet"))   # granule index files only; the manifest lives one level down in _coverage/
 
 
-def _manifest_fresh(d, srcs: list) -> bool:
+def _dir_mtime_ns(d) -> int | None:
+    try:
+        return d.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _manifest_fresh(d) -> bool:
+    """Is the manifest current? ONE stat of the index directory, not a walk of it.
+
+    The old check globbed every source parquet and stat()ed each one — on the deployed box that is ~32,060 files for
+    ATL06, paid on every coverage query just to conclude that nothing had changed. A directory's mtime moves whenever
+    an entry is added, replaced or removed, and index files land by tmp-then-rename, so the directory answers the
+    question by itself. (Writes inside `_coverage/` do not touch the parent, so the manifest cannot invalidate itself.)
+    """
     import json
     _md, manifest, meta = _manifest_paths(d)
-    if not manifest.exists() or not srcs:
+    if not manifest.exists():
         return False
-    mmt = manifest.stat().st_mtime
-    if any(p.stat().st_mtime > mmt for p in srcs):       # a granule was (re)indexed after the manifest was built
-        return False
-    try:                                                 # source-count change catches deletions the mtime check can't
-        return json.loads(meta.read_text()).get("n_source_files") == len(srcs)
+    try:
+        return json.loads(meta.read_text()).get("dir_mtime_ns") == _dir_mtime_ns(d)
     except Exception:
         return False
 
@@ -180,6 +191,9 @@ def _build_manifest(d, ym: str, srcs: list) -> None:
 
     md, manifest, meta = _manifest_paths(d)
     md.mkdir(parents=True, exist_ok=True)
+    # Stamp the directory mtime BEFORE reading the sources. A granule landing mid-build then leaves the recorded
+    # mtime older than the directory's, so the next read rebuilds — stale-and-corrected rather than silently missing.
+    stamp = _dir_mtime_ns(d)
     files = "[" + ",".join("'" + str(p) + "'" for p in srcs) + "]"   # explicit list, never a glob
     tmp = md / f".manifest.{uuid.uuid4().hex}.tmp"
     con = duckdb.connect()
@@ -189,17 +203,38 @@ def _build_manifest(d, ym: str, srcs: list) -> None:
     finally:
         con.close()
     os.replace(tmp, manifest)
-    meta.write_text(json.dumps({"n_source_files": len(srcs),
+    meta.write_text(json.dumps({"n_source_files": len(srcs), "dir_mtime_ns": stamp,
                                 "built_at": datetime.now().isoformat(timespec="seconds")}))
 
 
+def build_manifest(collection: str) -> dict:
+    """Roll up a collection's index NOW. Call this when an index build finishes.
+
+    The rollup is what makes coverage queries cheap, and it belongs to whoever wrote the index — not to whichever
+    user request happens to arrive first afterwards and gets billed for a full re-read of every granule file.
+    _ensure_manifest still rebuilds lazily if something wrote an index without calling this, but on the normal path
+    that fallback should never fire.
+    """
+    d, _res, ym = _index_for(collection)
+    if d is None or not d.exists():
+        return {"collection": collection, "built": False, "reason": "no index directory"}
+    srcs = _source_parquets(d)
+    if not srcs:
+        return {"collection": collection, "built": False, "reason": "no granule files"}
+    _build_manifest(d, ym, srcs)
+    return {"collection": collection, "built": True, "granule_files": len(srcs),
+            "manifest": str(_manifest_paths(d)[1])}
+
+
 def _ensure_manifest(d, ym: str):
-    """Fresh coverage manifest path for index dir `d` (built/rebuilt lazily), or None if the index has no granules."""
+    """Fresh coverage manifest path for index dir `d`, or None if the index has no granules. Normally a single stat:
+    the builder calls build_manifest() when it finishes, so the rebuild below is a repair path, not the usual one."""
+    if _manifest_fresh(d):
+        return _manifest_paths(d)[1]
     srcs = _source_parquets(d)
     if not srcs:
         return None
-    if not _manifest_fresh(d, srcs):
-        _build_manifest(d, ym, srcs)
+    _build_manifest(d, ym, srcs)
     return _manifest_paths(d)[1]
 
 

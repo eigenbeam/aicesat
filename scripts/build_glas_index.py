@@ -46,7 +46,9 @@ def main():
     md = index_glas._index_dir(res); md.mkdir(parents=True, exist_ok=True)
     (md / "_build.json").write_text(json.dumps({"bbox": bbox, "res": res, "target": len(names), "started": time.time()}))
     if not todo:
-        log.info("nothing to do — index complete"); return
+        log.info("nothing to do — index complete")
+        log.info("coverage rollup: %s", coverage.build_manifest("GLAS"))
+        return
 
     t0 = time.time(); ok = err = rows = 0
     with cf.ProcessPoolExecutor(max_workers=workers) as ex:
@@ -61,6 +63,9 @@ def main():
                          i, len(todo), ok, err, rows, rate, el / 60, (len(todo) - i) / rate / 60 if rate else 0)
     log.info("DONE res %d: %d ok, %d err, %d rows in %.1fm -> %s",
              res, ok, err, rows, (time.time() - t0) / 60, index_glas._index_dir(res))
+    # The rollup belongs to whoever wrote the index. Doing it here means coverage queries and index_status
+    # read one small manifest instead of every granule parquet, and no user request is billed for the re-read.
+    log.info("coverage rollup: %s", coverage.build_manifest("GLAS"))
 
 
 if __name__ == "__main__":
