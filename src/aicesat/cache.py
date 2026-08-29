@@ -26,9 +26,28 @@ def load(k: str) -> tuple[dict[str, np.ndarray], dict] | None:
     return arrays, json.loads(meta.read_text())
 
 
+NPZ_COMPRESSLEVEL = 1   # see save(): level 1 is ~all of the compression at ~a third of the CPU
+
+
 def save(k: str, arrays: dict[str, np.ndarray], meta: dict) -> None:
+    """Write an extract to the content-addressed cache as a standard .npz.
+
+    Hand-rolled instead of np.savez_compressed only to set the deflate level, which numpy does not expose. On a 1.7M
+    point extract (the ATL06 case on the deployed box) the default level 6 costs 2.6 s; level 1 costs 1.0 s and
+    produces a file the same size (35.5 vs 35.2 MB) — the coordinates are floats and barely compress past level 1.
+    Storing uncompressed would be 0.03 s but 54 MB, and this cache has no eviction, so the disk is not free.
+    The format is exactly numpy's, so np.load (and any already-cached level-6 file) still reads it."""
+    import io
+    import zipfile
+
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(CACHE_DIR / f"{k}.npz", **arrays)
+    tmp = CACHE_DIR / f".{k}.npz.tmp"
+    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=NPZ_COMPRESSLEVEL) as zf:
+        for name, arr in arrays.items():
+            buf = io.BytesIO()
+            np.lib.format.write_array(buf, np.asanyarray(arr), allow_pickle=False)
+            zf.writestr(name + ".npy", buf.getvalue())
+    tmp.replace(CACHE_DIR / f"{k}.npz")     # atomic: a reader never sees a half-written cache entry
     (CACHE_DIR / f"{k}.json").write_text(json.dumps(meta, indent=1, default=str))
 
 
