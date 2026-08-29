@@ -123,8 +123,8 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         # Everything EXCEPT the bulk arrays (positions, slopes) and surface z — those are fetched via their own chunked
         # parts and appended incrementally, so this stays small and is safe to poll repeatedly during a build. `has_slopes`
         # tells the client whether to fetch a slopes:<mission> part (ICESSN platelets).
-        def _series_meta(s):
-            m = {k: v for k, v in s.items() if k not in ("positions", "slopes")}
+        def _series_meta(s):   # drop bulk arrays and internal bookkeeping (keys starting with "_")
+            m = {k: v for k, v in s.items() if k not in ("positions", "slopes") and not k.startswith("_")}
             m["has_slopes"] = "slopes" in s
             return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),

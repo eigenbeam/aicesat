@@ -192,11 +192,21 @@ def append_partial(doc: dict, mission: str, arrays: dict) -> dict:
         s = {"mission": mission, "color": COLORS[mission], "n": 0, "n_extracted": 0, "stride": 1,
              "cache_key": None, "positions": [], "meta": {"partial": True}, "granules": []}
         doc["series"][mission] = s
-    if lon.size and (len(s["positions"]) // 3) < PARTIAL_PREVIEW_CAP:   # cap the preview so the doc can't balloon (O(N^2) saves)
-        x, y = to_local(doc["frame"], lon, np.asarray(arrays["lat"], dtype="f8"))
-        z = np.asarray(arrays["h"], dtype="f8") - doc["z0"]
+    if lon.size:
+        stride = s.get("_pv_stride", 1)
+        sel = slice(None, None, stride) if stride > 1 else slice(None)
+        x, y = to_local(doc["frame"], lon[sel], np.asarray(arrays["lat"], dtype="f8")[sel])
+        z = np.asarray(arrays["h"], dtype="f8")[sel] - doc["z0"]
         pos = np.round(np.column_stack([x, y, z]).astype("f4"), 3).ravel().tolist()
         s["positions"].extend(pos)
+        # Stay under the cap by THINNING, never by truncating. Dropping late granules (the first design) made the
+        # preview stop growing partway through a build: it showed only the granules that arrived first, so the scene
+        # looked like it was missing data and progress appeared to stall. Halving the buffer and doubling the stride
+        # keeps the preview bounded AND spatially representative of every granule seen so far.
+        while len(s["positions"]) // 3 > PARTIAL_PREVIEW_CAP:
+            kept = np.asarray(s["positions"], dtype="f4").reshape(-1, 3)[::2]
+            s["positions"] = kept.ravel().tolist()
+            stride = s["_pv_stride"] = stride * 2
         s["n"] = len(s["positions"]) // 3
         s["n_extracted"] = s["n"]
     return doc
