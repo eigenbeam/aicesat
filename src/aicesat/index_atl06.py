@@ -226,13 +226,15 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     the rectangular predicate); a `polygon` further narrows the touched-cell set to the drawn shape. Default (False,
     polygon=None) is byte-for-byte the pre-existing rectangular-bbox behaviour.
 
-    `on_granule` (opt-in): a callback for per-granule progressive streaming on a cache MISS. As each fetched granule's
-    chunks are decoded, its DISPLAY points — the exact `query_points` predicate applied to that granule's freshly
-    decoded points (h3_cell in the wanted cells; + the rectangular bbox unless `clip_cells`; + quality==0 when
-    `quality_zero`) — are emitted ONCE as {'lon','lat','h','t','granule'}. The predicate match makes each emission a
-    strict SUBSET of the final authoritative read, never a superset, so the streamed preview never shrinks at finalize.
-    Fires only for `todo` (cache-miss) granules. When None (the default) NOTHING extra is computed and the path is
-    byte-for-byte the pre-existing behaviour."""
+    `on_granule` (opt-in): a callback for progressive streaming. The lake's cached points are emitted first, in cell
+    groups, then each fetched granule's freshly decoded points as they land — the same arrays this call returns, so the
+    stream is exactly the result, never a superset.
+
+    Ordering: the lake is READ BEFORE anything new is written, and the freshly fetched points are returned from memory
+    rather than round-tripped through disk. That is what lets the Parquet write move to lake's background writer (39%
+    of a cold leg's thread-time). Duplication is impossible by construction — the read precedes every new write, and
+    any cell of a re-fetched chunk that was ALREADY materialized is excluded from the fresh points, because the lake
+    read has already returned it."""
     from . import lake, planner
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
@@ -241,8 +243,20 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
     names = sorted({r["granule"] for r in rows})
-    want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8") if on_granule is not None else None
+    beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
+    want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8")
+
+    # Settle any background write over these cells before reading them, so `have` and the files agree.
+    lake.drain_writes(MISSION, want_cells)
     have = set() if force else lake.ingested_chunk_cells(MISSION, names)
+
+    # READ FIRST. On `force` skip it: every chunk is re-fetched below, so the fresh points already cover the whole
+    # request and reading the pre-existing rows too would double them.
+    _stream = (lambda r: on_granule({"granule": "lake", **r})) if on_granule is not None else None
+    cached = None if force else lake.query_points(
+        bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",),
+        quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
+
     chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
     for r in rows:
         k = (r["granule"], r["beam"], r["chunk_index"])
@@ -251,7 +265,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
     n_lake = len(chunk_cells) - len(todo)
 
-    reader = None
+    reader, fresh_parts = None, []
     if todo:
         reader = RangeReader()
         by_url: dict[str, list] = {}
@@ -259,52 +273,52 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
 
-        def _display(mats: dict) -> dict:
-            """The query_points-predicate SUBSET of one chunk's valid points, for on_granule streaming: cell-membership
-            in the wanted set (query_points always applies it), + the rectangular bbox unless clip_cells, + quality==0
-            when quality_zero — so the emitted preview is never a superset of the final authoritative read."""
+        def _keep(mats: dict, dup_cells) -> np.ndarray:
+            """The query_points predicate, applied in memory to one chunk's valid points: cell-membership in the wanted
+            set (query_points always applies it), + the rectangular bbox unless clip_cells, + quality==0 when
+            quality_zero. `dup_cells` are the chunk's cells the lake read already returned — dropping them is what
+            keeps a partially cached chunk from contributing its cached cells twice."""
             lon, lat = mats["lon"], mats["lat"]
             if lon.size == 0:
-                return {"lon": lon, "lat": lat, "h": mats["h"], "t": mats["t"]}
-            keep = np.isin(planner._cells_vectorized(lat, lon, res), want_arr)
+                return np.zeros(0, bool)
+            pcell = planner._cells_vectorized(lat, lon, res)
+            keep = np.isin(pcell, want_arr)
+            if dup_cells:
+                keep &= ~np.isin(pcell, np.asarray(sorted(dup_cells), dtype="u8"))
             if not clip_cells:
                 w, s, e, n = bbox
                 keep &= (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
             if quality_zero:
                 keep &= (mats["quality"] == 0)
-            return {"lon": lon[keep], "lat": lat[keep], "h": mats["h"][keep], "t": mats["t"][keep]}
+            return keep
 
         def _ingest_granule(url) -> dict:
-            """Fetch + decode + materialise one granule's missing chunks to the lake; return its (granule,beam)->{chunk:
-            cells} map. Independent per granule; Parquet writes go to distinct files, so the pool is write-safe. The
-            DuckDB coverage mark is done once, serially, on the calling thread after the pool drains."""
+            """Fetch + decode one granule's missing chunks; return its display points. The Parquet write is queued to
+            the background writer, not done here — the caller gets the points from memory."""
             rs = by_url[url]
             ranges, keys = [], []
             for r in rs:
                 for ds in ATL06_DATASETS:
                     ranges.append((r[f"{ds}_offset"], r[f"{ds}_size"])); keys.append((r["beam"], r["chunk_index"], ds))
             raws = dict(zip(keys, reader.fetch(url, ranges)))
-            local: dict[tuple[str, str], dict] = {}
-            stream: dict[str, dict] = {}                  # granule -> accumulated display points (streaming only)
+            writes, out = [], {}                          # queued chunks / granule -> its fresh display points
             for r in rs:
                 dec = _decode_chunk(raws, r)
                 lat, lon, h, dt, q = dec["latitude"], dec["longitude"], dec["h_li"], dec["delta_time"], dec["atl06_quality_summary"]
                 valid = np.isfinite(h) & (h < 3.0e38) & np.isfinite(lat) & np.isfinite(lon)   # data-validity (bbox-independent)
                 mats = {"lon": lon[valid].astype("f8"), "lat": lat[valid].astype("f8"), "h": h[valid].astype("f8"),
                         "t": _atlas_epoch_years(dt[valid], r["sdp_epoch"]), "quality": q[valid]}
-                cc = lake.write_point_chunk(MISSION, r["granule"], r["beam"], r["chunk_index"], mats, res, extras=("quality",))
-                # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is not
-                # re-fetched forever; plus any extra cell the chunk's valid points materialised (overlap benefit).
                 k = (r["granule"], r["beam"], r["chunk_index"])
-                local.setdefault((r["granule"], r["beam"]), {})[r["chunk_index"]] = sorted(set(cc[r["chunk_index"]]) | chunk_cells[k])
-                if on_granule is not None:
-                    d = _display(mats)
-                    g = stream.setdefault(r["granule"], {"lon": [], "lat": [], "h": [], "t": []})
-                    for kk in g:
-                        g[kk].append(d[kk])
-            for g, dd in stream.items():                  # emit each granule's accumulated display points ONCE
-                on_granule({"granule": g, **{kk: np.concatenate(v) for kk, v in dd.items()}})
-            return local
+                # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is
+                # not re-fetched forever; write_point_chunk adds any extra cell its points materialise.
+                writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["chunk_index"], mats,
+                                              mark_cells=tuple(sorted(chunk_cells[k]))))
+                keep = _keep(mats, {c for c in chunk_cells[k] if (k[0], k[1], k[2], c) in have})
+                g = out.setdefault(r["granule"], {kk: [] for kk in _EMPTY})
+                for kk in _EMPTY:
+                    g[kk].append(mats[kk][keep])
+            lake.submit_writes(MISSION, res, writes, want_cells, extras=("quality",))
+            return {g: {kk: np.concatenate(v) for kk, v in dd.items()} for g, dd in out.items()}
 
         urls = list(by_url)
         nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
@@ -313,20 +327,13 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         else:
             with ThreadPoolExecutor(nw) as ex:
                 parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        ingest: dict[tuple[str, str], dict] = {}
         for loc in parts:
-            for gb, cm in loc.items():
-                ingest.setdefault(gb, {}).update(cm)
-        # ONE meta.duckdb transaction for the whole batch — per-granule opens were the largest cost of a cold build
-        lake.mark_ingested_many(MISSION, [(g, b, cm) for (g, b), cm in ingest.items()])
+            for g, dd in loc.items():
+                fresh_parts.append(dd)
+                if on_granule is not None:
+                    on_granule({"granule": g, **{kk: dd[kk] for kk in ("lon", "lat", "h", "t")}})
 
-    beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
-    # Stream the lake read too: without this, cache-served points appear only at finalize, so a warm build showed no
-    # progress and then the whole cloud at once. Emits through the same on_granule channel the fetch path uses.
-    # Stream the lake read ONLY when nothing was fetched. On a cache MISS the per-granule callbacks above already
-    # provide progress during the (slow) fetch, and emitting the lake read too would send every point twice.
-    _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None
-    arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
+    arrays = lake.concat_arrays([cached, *fresh_parts], _EMPTY)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (ATL06 fetch)")
     evicted = []

@@ -52,12 +52,19 @@ def main(bbox) -> None:
     t = time.time()
     arrays, meta = atl06.extract(bbox, regions.DEFAULT_ATL06_WINDOW)
     wall = time.time() - t
+    # The lake write is now queued to a background writer, so WALL is what the user waits for and this tail is what is
+    # still outstanding when they get their answer. Report both: the point of the change is to move the write, not to
+    # make it disappear, and a growing tail would mean the writer cannot keep up with the fetch.
+    t2 = time.time()
+    lake.drain_writes()
+    tail = time.time() - t2
     st = meta["access"]
     print(f"\nbbox {bbox}")
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
-    print(f"\n  WALL          {wall:7.1f}s")
+    print(f"\n  WALL          {wall:7.1f}s   (what the request waits for)")
+    print(f"  writer tail   {tail:7.1f}s   (background lake writes still outstanding at that point)")
     for k in PHASES:
         print(f"  {k:13s} {TOT[k]:7.1f}s  (thread-seconds over {CNT[k]} calls)")
     print(f"  unaccounted   {wall - sum(TOT.values()):7.1f}s  (negative = phases ran concurrently)")

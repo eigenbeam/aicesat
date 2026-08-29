@@ -66,12 +66,20 @@ def _decoys(root, n_files, rows, rng, comp):
         pq.write_table(_table(rng, rows), d / f"d{i:06d}.parquet", compression=comp, row_group_size=65536)
 
 
+_DROPPED = {"ok": 0, "failed": 0}
+
+
 def _drop_caches():
+    """Needs passwordless sudo AND Linux. Failure is counted, not swallowed: an earlier box run printed
+    'cold reads: yes' from the FLAG while every read was served from page cache, which makes cold-read cost look ~50x
+    cheaper than it is. The summary reports what actually happened."""
     try:
         subprocess.run(["sudo", "-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"],
                        check=True, capture_output=True, timeout=30)
+        _DROPPED["ok"] += 1
         return True
     except Exception:
+        _DROPPED["failed"] += 1
         return False
 
 
@@ -120,20 +128,26 @@ def main() -> None:
 
     print(f"{args.cells} cells x {rows_per_cell:,} rows = {args.total_rows:,} rows"
           f"{f' + {args.decoys} decoy files' if args.decoys else ''}")
-    print(f"cold reads: {'yes' if args.drop_caches else 'NO (warm cache — understates cold cost)'}\n")
+    print(f"cold reads: {'requested' if args.drop_caches else 'NO (warm cache — understates cold cost)'}\n")
 
     # --- 1. file size sweep ---------------------------------------------------------------------------------
+    # rows/file above rows_per_cell is a NO-OP: a cell cannot be split into fewer than one file, so those settings all
+    # produce the same layout. The sweep is capped and de-duplicated so every printed row is a distinct data point.
+    sizes = sorted({min(r, rows_per_cell) for r in (2_800, 11_200, 45_000, 180_000, 720_000)})
     print("=== file size (rows/file), zstd, row_group=65536 ===")
-    print(f"{'rows/file':>10}{'files':>8}{'MB':>8}{'KB/file':>9}{'write s':>9}{'read7 s':>9}{'±rng':>8}{'read20 s':>10}")
-    for rpf in (2_800, 11_200, 45_000, 180_000, 720_000):
+    print("(MB/KB-per-file count the QUERIED cells only — decoys are ~76 KB each and would otherwise dominate)")
+    print(f"{'rows/file':>10}{'f/cell':>8}{'MB':>8}{'KB/file':>9}{'write s':>9}{'read7 s':>9}{'±rng':>8}{'read20 s':>10}")
+    for rpf in sizes:
         root = base / f"rpf{rpf}" / "mission=ATL06"
         t = time.time(); _build(root, args.cells, rows_per_cell, rpf, 65536, "zstd", rng); wt = time.time() - t
+        real = list(root.glob("h3_cell=*/*.parquet"))          # before the decoys land: exactly the varied files
+        mb = sum(f.stat().st_size for f in real) / 1e6
         if args.decoys:
             _decoys(root, args.decoys, 2800, rng, "zstd")
-        files = list(root.glob("h3_cell=*/*.parquet")); mb = sum(f.stat().st_size for f in files) / 1e6
         r7, s7, _ = _read(root, q7, args.drop_caches, args.reps)
         r20, _s20, _ = _read(root, q20, args.drop_caches, args.reps)
-        print(f"{rpf:>10,}{len(files):>8}{mb:>8.1f}{mb*1000/max(len(files),1):>9.1f}{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
+        print(f"{rpf:>10,}{len(real)/args.cells:>8.1f}{mb:>8.1f}{mb*1000/max(len(real),1):>9.1f}"
+              f"{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
 
     # --- 2. row group sweep at a mid file size --------------------------------------------------------------
     print("\n=== row_group_size (rows/file = 180,000, zstd) ===")
@@ -156,6 +170,14 @@ def main() -> None:
         r7, s7, _ = _read(root, q7, args.drop_caches, args.reps)
         r20, _s20, _ = _read(root, q20, args.drop_caches, args.reps)
         print(f"{str(comp):>10}{mb:>8.1f}{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
+
+    if args.drop_caches:
+        n = _DROPPED["ok"] + _DROPPED["failed"]
+        if _DROPPED["failed"]:
+            print(f"\n!! COLD READS DID NOT HAPPEN: {_DROPPED['failed']}/{n} drop_caches calls failed (needs "
+                  f"passwordless sudo on Linux). Every number above is a WARM-cache read.")
+        else:
+            print(f"\ncaches dropped before all {n} timed reads")
 
 
 if __name__ == "__main__":

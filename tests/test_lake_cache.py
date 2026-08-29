@@ -55,6 +55,9 @@ def _lake_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AICESAT_S3_DIRECT", "0")
     BLOBS.clear()
     yield
+    # The lake writer is a process-wide singleton with daemon threads. Settle it BEFORE monkeypatch restores LAKE_DIR,
+    # or a still-queued job would write into the real data directory. (monkeypatch is torn down after this fixture.)
+    lake.drain_writes()
     BLOBS.clear()
 
 
@@ -157,6 +160,7 @@ def test_atl06_writes_cells_at_mission_resolution_not_res6():
     _atl06_scene()
     bbox = (-45.5, 69.5, -44.5, 71.5)
     _, st = index_atl06.fetch_bbox(bbox)
+    lake.drain_writes()          # materialization is asynchronous now; this test asserts on the files themselves
     written = {int(p.name.split("=")[1]) for p in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*")}
     assert written, "no ATL06 cells materialized"
     assert all(h3.get_resolution(h3.int_to_str(c)) == index_atl06.ATL06_RES for c in written)
@@ -176,6 +180,7 @@ def test_global_eviction_spans_missions_and_protects_scene_cells():
     _atl06_scene()
     bbox = (-45.5, 69.5, -44.5, 71.5)
     _, _ = index_atl06.fetch_bbox(bbox)
+    lake.drain_writes()          # eviction sizes the lake from the files, so they must have landed
     atl06_cells = set(lake.cell_stats("ATL06"))
     assert atl06_cells
     # add an unrelated ATL03 (ICESAT2) collection to the same lake

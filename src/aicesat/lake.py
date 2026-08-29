@@ -8,8 +8,11 @@ lat/lon, so a chunk straddling cells never double-counts. Co-registered coordina
 from __future__ import annotations
 
 import logging
+import os
+import queue
 import zlib
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import threading
 import time
@@ -371,6 +374,198 @@ def ingested_chunk_cells(mission: str, granules: list[str]) -> set[tuple[str, st
 def ingested_chunks(mission: str, granules: list[str]) -> set[tuple[str, str, int]]:
     """Chunks with at least one materialized cell (kept for callers that only need chunk identity)."""
     return {(g, b, k) for g, b, k, _ in ingested_chunk_cells(mission, granules)}
+
+
+# ------------------------------------------------------------------------ background writer (ingest off the response)
+
+WRITE_QUEUE_MAX = 8        # granule-jobs in flight. Each holds one granule's decoded arrays (~10 MB for ATL06), so this
+                           # bounds writer memory at ~80 MB and blocks the fetch thread past it: backpressure, not growth.
+MARK_ROWS_PER_FLUSH = 4096  # coverage rows to accumulate before opening meta.duckdb (see _Writer._flush)
+ASYNC_WRITE_ENV = "AICESAT_LAKE_ASYNC_WRITE"
+
+
+def async_writes_enabled() -> bool:
+    """Kill switch. Set AICESAT_LAKE_ASYNC_WRITE=0 to write inline on the calling thread (the pre-writer behaviour)."""
+    return os.environ.get(ASYNC_WRITE_ENV, "1").lower() not in ("0", "false", "no")
+
+
+class ChunkWrite(NamedTuple):
+    """One decoded chunk queued for materialization.
+
+    `only_cells` restricts which cells are written (ICESSN's byte spans overlap, so a fetched span must materialize
+    ONLY the cells it was fetched for). `mark_cells` are cells to record as ingested even if they carried no valid
+    points, so an all-fill cell is not re-fetched forever.
+    """
+    granule: str
+    beam: str
+    chunk_index: int
+    arrays: dict
+    only_cells: tuple | None = None
+    mark_cells: tuple = ()
+
+
+class _Writer:
+    """Drains lake Parquet writes off the request thread.
+
+    Measured motivation: a cold ATL06 leg spent 34.8 of 88.6 pool thread-seconds (39%) inside write_point_chunk. The
+    request does not need those files — it needs the POINTS, and the fetch already holds them in memory. The lake is a
+    cache for LATER requests, so filling it is housekeeping, like eviction (enforce_global_limit_async).
+
+    Two ordering guarantees the callers' correctness rests on:
+      * coverage is marked only AFTER the file is on disk, so a crash or a failed write loses cache, never truth — an
+        unmarked chunk is simply re-fetched next time;
+      * `drain(mission, cells)` blocks until every queued job touching those cells is written AND marked, so a second
+        build over the same area never reads a half-written lake or a stale ingested_chunk_cells.
+    """
+
+    def __init__(self, workers: int = 2, maxsize: int = WRITE_QUEUE_MAX):
+        self._q: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._lock = threading.Lock()
+        self._settled = threading.Condition(self._lock)
+        self._pending: dict[tuple[str, int], int] = {}   # (mission, cell) -> unsettled jobs touching it
+        self._done: list[tuple] = []                     # finished jobs awaiting one batched coverage mark
+        self._flushing = threading.Lock()
+        self._workers, self._started = workers, False
+        self.jobs_written = 0
+        self.chunk_errors = 0
+
+    # -- producer ---------------------------------------------------------------------------------------------------
+    def submit(self, mission: str, res: int, chunks, cells, extras: tuple[str, ...] = ()) -> None:
+        """Queue one granule's chunks. `cells` are the cells this job settles — what a concurrent drain() waits for."""
+        chunks = [c for c in chunks if c.arrays["lon"].size or c.mark_cells]
+        if not chunks:
+            return
+        cells = tuple(int(c) for c in cells)
+        with self._lock:
+            for c in cells:
+                self._pending[(mission, c)] = self._pending.get((mission, c), 0) + 1
+        job = (mission, res, chunks, cells, tuple(extras))
+        if not async_writes_enabled():
+            self._run_job(job)
+            return
+        self._ensure_workers()
+        self._q.put(job)          # blocks past WRITE_QUEUE_MAX — the fetch pool throttles to the writer's rate
+
+    def _ensure_workers(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+        for i in range(self._workers):
+            threading.Thread(target=self._loop, name=f"lake-writer-{i}", daemon=True).start()
+
+    # -- consumer ---------------------------------------------------------------------------------------------------
+    def _loop(self) -> None:
+        while True:
+            job = self._q.get()
+            try:
+                self._run_job(job)
+            finally:
+                self._q.task_done()
+
+    def _run_job(self, job) -> None:
+        mission, res, chunks, cells, extras = job
+        per_gb: dict[tuple[str, str], dict] = {}
+        for cw in chunks:
+            try:
+                cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
+                                       extras=extras, only_cells=cw.only_cells)
+            except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
+                self.chunk_errors += 1
+                log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
+                              mission, cw.granule, cw.beam, cw.chunk_index)
+                continue
+            per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
+        with self._lock:
+            self._done.append((mission, [(g, b, cm) for (g, b), cm in per_gb.items()], cells))
+            self.jobs_written += 1
+        self._flush(force=self._q.empty())
+
+    def _flush(self, force: bool = False) -> None:
+        """Mark every completed job's coverage in ONE meta.duckdb transaction, then release the cells it pinned.
+
+        Opening meta.duckdb costs ~150 ms and is serialised process-wide by _META_LOCK, so marking per job would put
+        back exactly the cost mark_ingested_many removed — on a background thread, but still holding a lock the next
+        foreground ingested_chunk_cells needs.
+        """
+        if not self._flushing.acquire(blocking=False):
+            return                      # another worker is flushing; it takes whatever is in _done, and drain() re-tries
+        try:
+            with self._lock:
+                rows = sum(len(cm) for _m, items, _c in self._done for _g, _b, cm in items)
+                if not self._done or not (force or rows >= MARK_ROWS_PER_FLUSH):
+                    return
+                batch, self._done = self._done, []
+            by_mission: dict[str, list] = {}
+            for mission, items, _cells in batch:
+                by_mission.setdefault(mission, []).extend(items)
+            try:
+                for mission, items in by_mission.items():
+                    mark_ingested_many(mission, items)
+            finally:
+                self._release(batch)    # release the cells even if the mark failed: the files are on disk either way
+        finally:
+            self._flushing.release()
+
+    def _release(self, batch) -> None:
+        with self._lock:
+            for mission, _items, cells in batch:
+                for c in cells:
+                    k = (mission, c)
+                    n = self._pending.get(k, 0) - 1
+                    if n > 0:
+                        self._pending[k] = n
+                    else:
+                        self._pending.pop(k, None)
+            self._settled.notify_all()
+
+    # -- consistency barrier ----------------------------------------------------------------------------------------
+    def drain(self, mission: str | None = None, cells=None, timeout: float = 300.0) -> bool:
+        """Block until every queued write touching `cells` is on disk and marked (all cells when `cells` is None).
+
+        Immediate when nothing is in flight, which is the common case — this only costs anything when a second build
+        overlaps the first over the same cells, and that is exactly when reading a partially written lake would be
+        wrong.
+        """
+        want = None if cells is None else {(mission, int(c)) for c in cells}
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                busy = bool(self._pending) if want is None else any(k in self._pending for k in want)
+                if not busy:
+                    return True
+                self._settled.wait(0.25)
+            self._flush(force=True)     # a finished job can sit in _done if another worker held the flush lock
+            if time.monotonic() > deadline:
+                log.warning("lake writer: drain timed out with %d cell(s) still pending", len(self._pending))
+                return False
+
+
+_WRITER = _Writer()
+
+
+def submit_writes(mission: str, res: int, chunks, cells, extras: tuple[str, ...] = ()) -> None:
+    """Hand one granule's decoded chunks to the background writer. See _Writer for the ordering contract."""
+    _WRITER.submit(mission, res, chunks, cells, extras=extras)
+
+
+def drain_writes(mission: str | None = None, cells=None, timeout: float = 300.0) -> bool:
+    """Barrier: wait until background writes over `cells` are on disk and marked. Call before reading the lake."""
+    return _WRITER.drain(mission, cells, timeout)
+
+
+def concat_arrays(parts, keys) -> dict:
+    """Concatenate result dicts over `keys`, dropping empty parts.
+
+    query_points returns a float64 empty array for EVERY key when a cell set is unmaterialized, including `t`, which
+    would silently demote a datetime64 concatenation to float. Dropping empties keeps the dtypes the fetch produced.
+    """
+    parts = [p for p in parts if p is not None and np.asarray(p["lon"]).size]
+    if not parts:
+        return {k: np.array([]) for k in keys}
+    if len(parts) == 1:
+        return {k: np.asarray(parts[0][k]) for k in keys}
+    return {k: np.concatenate([np.asarray(p[k]) for p in parts]) for k in keys}
 
 
 # ----------------------------------------------------------------------------- per-cell stats, settings, eviction
