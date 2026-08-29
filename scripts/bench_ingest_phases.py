@@ -29,16 +29,31 @@ def _timed(bucket, fn):
     return wrapper
 
 
+WROTE = {"files": 0, "cells": set()}
+
+
+def _counted(fn):
+    """Tally the files a write actually produced, from its {chunk: [cells]} return value. Globbing the lake instead
+    counted every file any previous run had left behind."""
+    def wrapper(*a, **k):
+        out = fn(*a, **k)
+        for cells in out.values():
+            WROTE["files"] += len(cells)
+            WROTE["cells"].update(cells)
+        return out
+    return wrapper
+
+
 def main(bbox) -> None:
     auth.login()
     # _decode_chunk imports access.decode_chunk at call time, so wrap the per-chunk helper itself rather than
     # trying to patch the inner import.
     RangeReader.fetch = _timed("fetch", RangeReader.fetch)
     index_atl06._decode_chunk = _timed("decode", index_atl06._decode_chunk)
-    lake.write_point_chunk = _timed("write", lake.write_point_chunk)
+    lake.write_point_chunk = _counted(_timed("write", lake.write_point_chunk))
     # Both write paths, or a batched run reports "write 0.0s over 0 calls" and hides ~116 thread-seconds in
     # `unaccounted` — which is exactly what the first AICESAT_LAKE_BATCH_WRITES=1 run did.
-    lake.write_point_chunks = _timed("write_batch", lake.write_point_chunks)
+    lake.write_point_chunks = _counted(_timed("write_batch", lake.write_point_chunks))
     # everything else on the leg's critical path — the first run left 27.5s of 58.5s unaccounted
     index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
     lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
@@ -76,14 +91,9 @@ def main(bbox) -> None:
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
-    # Files written, because the whole layout argument turns on this and we have been inferring it. cells/chunk is
-    # the multiplier that actually sets the write cost: a 10,000-segment ATL06 chunk spans ~400 km, and a res-5 hex is
-    # ~20 km, so one chunk touches far more cells than a small bbox wants.
-    nfiles = sum(1 for _ in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*/*.parquet"))
-    ncells = sum(1 for _ in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*"))
     nch = st.get("chunks_fetched") or 1
-    print(f"  lake wrote    {nfiles:,} files in {ncells:,} cells  ({nfiles/nch:.1f} files/chunk, "
-          f"{st.get('cells')} cells wanted)")
+    print(f"  lake wrote    {WROTE['files']:,} files in {len(WROTE['cells']):,} cells  "
+          f"({WROTE['files']/nch:.1f} files/chunk, {st.get('cells')} cells wanted)")
     print(f"\n  WALL          {wall:7.1f}s   (what the request waits for)")
     print(f"  writer tail   {tail:7.1f}s   (background lake writes still outstanding at that point)")
     for k in PHASES:
