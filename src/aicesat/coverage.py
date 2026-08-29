@@ -131,6 +131,78 @@ def _index_for(key: str):
     return None, None, None
 
 
+# --- coverage manifest -----------------------------------------------------------------------------------------
+# The index dirs are flat (one parquet per granule, no partitioning), so a coverage query that scans them directly
+# opens every granule's footer regardless of the selected box (ATL06 alone is ~2300 files). We roll each index down
+# to ONE small manifest of DISTINCT (h3_cell, granule, ym) rows: a coverage query then scans a single tiny file with
+# h3_cell pushdown — tens of ms instead of seconds, independent of granule count. It is built lazily on first use and
+# rebuilt whenever the index grows (a source parquet newer than the manifest, or the source file count changed), so
+# existing deployments self-heal with no re-index.
+#
+# The manifest lives in a `_coverage/` SUBDIR, never as a top-level `{d}/*.parquet`: the index modules fetch byte
+# spans with `read_parquet('{d}/*.parquet')` (non-recursive) and their empty-parquet ref pickers grab the first
+# `*.parquet` — a schema-mismatched manifest sitting alongside the granule files would break both. A subdir is invisible
+# to those non-recursive globs.
+_MANIFEST_DIR = "_coverage"
+
+
+def _manifest_paths(d):
+    md = d / _MANIFEST_DIR
+    return md, md / "manifest.parquet", md / "meta.json"
+
+
+def _source_parquets(d) -> list:
+    return sorted(d.glob("*.parquet"))   # granule index files only; the manifest lives one level down in _coverage/
+
+
+def _manifest_fresh(d, srcs: list) -> bool:
+    import json
+    _md, manifest, meta = _manifest_paths(d)
+    if not manifest.exists() or not srcs:
+        return False
+    mmt = manifest.stat().st_mtime
+    if any(p.stat().st_mtime > mmt for p in srcs):       # a granule was (re)indexed after the manifest was built
+        return False
+    try:                                                 # source-count change catches deletions the mtime check can't
+        return json.loads(meta.read_text()).get("n_source_files") == len(srcs)
+    except Exception:
+        return False
+
+
+def _build_manifest(d, ym: str, srcs: list) -> None:
+    """Roll the per-granule index parquets down to one DISTINCT (h3_cell, granule, ym) manifest. Atomic (unique tmp +
+    os.replace) so concurrent coverage requests never read a torn file; a lost build race just rebuilds next time."""
+    import json
+    import os
+    import uuid
+
+    import duckdb
+
+    md, manifest, meta = _manifest_paths(d)
+    md.mkdir(parents=True, exist_ok=True)
+    files = "[" + ",".join("'" + str(p) + "'" for p in srcs) + "]"   # explicit list, never a glob
+    tmp = md / f".manifest.{uuid.uuid4().hex}.tmp"
+    con = duckdb.connect()
+    try:
+        con.execute(f"COPY (SELECT DISTINCT h3_cell, granule, {ym} AS ym FROM read_parquet({files})) "
+                    f"TO '{tmp}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    os.replace(tmp, manifest)
+    meta.write_text(json.dumps({"n_source_files": len(srcs),
+                                "built_at": datetime.now().isoformat(timespec="seconds")}))
+
+
+def _ensure_manifest(d, ym: str):
+    """Fresh coverage manifest path for index dir `d` (built/rebuilt lazily), or None if the index has no granules."""
+    srcs = _source_parquets(d)
+    if not srcs:
+        return None
+    if not _manifest_fresh(d, srcs):
+        _build_manifest(d, ym, srcs)
+    return _manifest_paths(d)[1]
+
+
 def _index_covers_bbox(d, bbox) -> bool:
     """True if the index's build manifest (_build.json) region contains this bbox."""
     import json
@@ -158,7 +230,12 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         d, res, ym = _index_for(c["key"])
-        if d is None or not d.exists() or not any(d.glob("*.parquet")) or not _index_covers_bbox(d, bbox):
+        if d is None or not d.exists() or not _index_covers_bbox(d, bbox):
+            row.update(n_granules=None, indexed=False, cells=0, by_month={})
+            out.append(row)
+            continue
+        manifest = _ensure_manifest(d, ym)   # one tiny rolled-up file, built/refreshed lazily (see above)
+        if manifest is None:                 # index dir present but no granule parquets yet
             row.update(n_granules=None, indexed=False, cells=0, by_month={})
             out.append(row)
             continue
@@ -167,8 +244,8 @@ def check_coverage(bbox, **_ignored) -> dict:
         con = duckdb.connect()
         try:
             ng, ncells = con.execute(f"SELECT count(DISTINCT granule), count(DISTINCT h3_cell) "
-                                     f"FROM read_parquet('{d}/*.parquet') WHERE {pred}").fetchone()
-            by = con.execute(f"SELECT {ym} AS m, count(DISTINCT granule) FROM read_parquet('{d}/*.parquet') "
+                                     f"FROM read_parquet('{manifest}') WHERE {pred}").fetchone()
+            by = con.execute(f"SELECT ym AS m, count(DISTINCT granule) FROM read_parquet('{manifest}') "
                              f"WHERE {pred} GROUP BY m ORDER BY m").fetchall()
         finally:
             con.close()
