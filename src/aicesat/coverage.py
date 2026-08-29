@@ -203,6 +203,46 @@ def _ensure_manifest(d, ym: str):
     return _manifest_paths(d)[1]
 
 
+def read_parquet_src(index_dir, files: list[str] | None) -> str:
+    """DuckDB source clause for an index query: the named granule files when the manifest resolved them, else the
+    whole-directory glob (the safe fallback)."""
+    if files:
+        return "read_parquet([" + ", ".join("'" + f + "'" for f in files) + "])"
+    return f"read_parquet('{index_dir}/*.parquet')"
+
+
+def index_files_for_cells(collection: str, cells) -> list[str] | None:
+    """Paths of the per-granule index parquets whose rows touch any of `cells`, resolved through the coverage manifest.
+
+    The indexes are flat (one parquet per granule), so `_index_rows` scanning `{dir}/*.parquet` reads every granule's
+    file to answer a few-cell query — 32,060 files / 12 s for ATL06 on the deployed box. The manifest already maps
+    h3_cell -> granule, and index files are named `<granule>.parquet`, so it can name the handful of files that matter.
+
+    Returns [] when no granule touches those cells (a real, empty answer), or None when the manifest is unavailable —
+    the caller must then fall back to scanning the whole directory rather than silently returning nothing."""
+    try:
+        d, _res, ym = _index_for(collection)
+        if d is None or not d.exists():
+            return None
+        manifest = _ensure_manifest(d, ym)
+        if manifest is None:
+            return None
+        import duckdb
+        pred = ",".join(str(int(c)) for c in cells)
+        if not pred:
+            return []
+        con = duckdb.connect()
+        try:
+            names = [r[0] for r in con.execute(
+                f"SELECT DISTINCT granule FROM read_parquet('{manifest}') WHERE h3_cell IN ({pred})").fetchall()]
+        finally:
+            con.close()
+        return [str(p) for p in ((d / f"{n}.parquet") for n in names) if p.exists()]
+    except Exception as e:                       # never let this optimisation break the query path
+        log.debug("index_files_for_cells(%s) unavailable: %s", collection, e)
+        return None
+
+
 def _index_covers_bbox(d, bbox) -> bool:
     """True if the index's build manifest (_build.json) region contains this bbox."""
     import json

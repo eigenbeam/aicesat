@@ -189,9 +189,14 @@ def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tupl
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
         where += f" AND substr(granule, 7, 8) BETWEEN '{lo}' AND '{hi}'"
+    from . import coverage
+    files = coverage.index_files_for_cells("ATL06", want_cells)   # name only the granule files that touch these cells
+    if files is not None and not files:
+        return want_cells, []                                     # manifest says no granule touches them
+    src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM {src} WHERE {where}").fetchall()
     finally:
         con.close()
     return want_cells, [dict(zip(cols, r)) for r in rows]

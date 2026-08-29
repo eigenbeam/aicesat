@@ -202,9 +202,14 @@ def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[d
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
         where += f" AND gdate BETWEEN '{lo}' AND '{hi}'"
+    from . import coverage
+    files = coverage.index_files_for_cells("GLAS", want_cells)   # only the granule files touching these cells
+    if files is not None and not files:
+        return want_cells, []
+    src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM read_parquet('{d}/*.parquet') WHERE {where}").fetchall()
+        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM {src} WHERE {where}").fetchall()
     finally:
         con.close()
     return want_cells, [dict(zip(cols, r)) for r in rows]
