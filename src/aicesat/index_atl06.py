@@ -332,6 +332,11 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 fresh_parts.append(dd)
                 if on_granule is not None:
                     on_granule({"granule": g, **{kk: dd[kk] for kk in ("lon", "lat", "h", "t")}})
+        if not lake.async_writes_enabled():
+            # Kill switch: end the leg with ONE batched coverage mark on this thread, which is what the pre-writer
+            # path did. Without it the baseline would defer the mark past the measured wall time and stop being a
+            # baseline. No-op when the writer is on — its own threads flush.
+            lake.drain_writes(MISSION, want_cells)
 
     arrays = lake.concat_arrays([cached, *fresh_parts], _EMPTY)
     if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping

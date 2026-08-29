@@ -438,6 +438,7 @@ class _Writer:
         self._done: list[tuple] = []                     # finished jobs awaiting one batched coverage mark
         self._flushing = threading.Lock()
         self._workers, self._started = workers, False
+        self._inflight = 0               # jobs a worker is currently writing (see _loop's flush condition)
         self.jobs_written = 0
         self.chunk_errors = 0
 
@@ -453,7 +454,12 @@ class _Writer:
                 self._pending[(mission, c)] = self._pending.get((mission, c), 0) + 1
         job = (mission, res, chunks, cells, tuple(extras))
         if not async_writes_enabled():
+            # Inline, and WITHOUT a forced coverage flush: the queue is always empty in this mode, so forcing would
+            # open meta.duckdb once per granule — the ~150 ms/open cost mark_ingested_many exists to avoid. The caller
+            # ends the leg with drain_writes(), which flushes the accumulated marks in one transaction, matching the
+            # single batched mark the pre-writer path did.
             self._run_job(job)
+            self._flush(force=False)      # row-batched only; the leg's drain does the final one
             return
         self._ensure_workers()
         self._q.put(job)          # blocks past WRITE_QUEUE_MAX — the fetch pool throttles to the writer's rate
@@ -471,9 +477,19 @@ class _Writer:
     def _loop(self) -> None:
         while True:
             job = self._q.get()
+            with self._lock:
+                self._inflight += 1
             try:
                 self._run_job(job)
             finally:
+                with self._lock:
+                    self._inflight -= 1
+                    idle = self._inflight == 0
+                # Force a coverage flush only when the writer has genuinely nothing left, not merely because the queue
+                # momentarily drained: with N threads finishing the last N jobs, "queue is empty" is true for each of
+                # them, so that test opened meta.duckdb once per job — the ~150 ms/open cost mark_ingested_many
+                # exists to remove. A long leg keeps the queue full and never noticed; a short one paid it every time.
+                self._flush(force=idle and self._q.empty())
                 self._q.task_done()
 
     def _run_job(self, job) -> None:
@@ -492,7 +508,6 @@ class _Writer:
         with self._lock:
             self._done.append((mission, [(g, b, cm) for (g, b), cm in per_gb.items()], cells))
             self.jobs_written += 1
-        self._flush(force=self._q.empty())
 
     def _flush(self, force: bool = False) -> None:
         """Mark every completed job's coverage in ONE meta.duckdb transaction, then release the cells it pinned.

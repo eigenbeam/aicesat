@@ -19,10 +19,11 @@ from aicesat import index_atl06, lake
 
 # rootdir-prepend import mode (no tests/__init__.py): sibling test modules are top-level. _lake_env is autouse, so
 # importing it here is what redirects LAKE_DIR/META_DB to tmp and mocks the byte-range reader.
-from test_lake_cache import _atl06_scene, _lake_env, _same   # noqa: F401
+from test_lake_cache import _atl06_scene, _build_atl06, _lake_env, _same   # noqa: F401
 
 BBOX = (-45.5, 69.5, -44.5, 71.5)
 GRANULE = "ATL06_20200115000000_11760601_007_01.h5"
+GRANULE_2 = "ATL06_20200220000000_11760601_007_01.h5"
 
 
 def _rows(arr):
@@ -169,19 +170,53 @@ def test_synchronous_kill_switch_gives_the_same_result(monkeypatch):
     assert st["chunks_from_nasa"] == 3
 
 
-def test_writer_batches_the_coverage_mark():
-    """Marking per granule was 148 ms per meta.duckdb open; the writer must keep the batching mark_ingested_many won."""
-    _atl06_scene()
+def _two_granule_scene():
+    """Two granules over the same track. One granule cannot distinguish 'one mark per leg' from 'one mark per
+    granule' — the counts are equal — so the batching tests need at least two."""
+    n = 30
+    lat = np.linspace(69.6, 71.4, n); lon = np.full(n, -45.0)
+    h = np.linspace(2500.0, 2530.0, n).astype("f4")
+    q = np.zeros(n, "i1")
+    _build_atl06(lat, lon, h, q)                                     # the default granule/url
+    _build_atl06(lat, lon + 0.01, h, q, granule=GRANULE_2, url="https://x/atl06b.h5")
+
+
+def _count_marks(fn):
+    """Run fn() counting mark_ingested_many calls — meta.duckdb opens, ~150 ms each, serialised by _META_LOCK."""
     opens = []
     real = lake.mark_ingested_many
     orig, lake.mark_ingested_many = lake.mark_ingested_many, lambda m, items: (opens.append(len(items)), real(m, items))[1]
     try:
-        index_atl06.fetch_bbox(BBOX)
-        assert lake.drain_writes(timeout=20.0)
+        fn()
     finally:
         lake.mark_ingested_many = orig
+    return opens
+
+
+def test_writer_batches_the_coverage_mark():
+    """Marking per granule was ~150 ms per meta.duckdb open; the writer must keep what mark_ingested_many won."""
+    _two_granule_scene()
+    opens = _count_marks(lambda: (index_atl06.fetch_bbox(BBOX), lake.drain_writes(timeout=20.0)))
     assert opens, "coverage was never marked"
-    assert len(opens) == 1, f"one granule's chunks took {len(opens)} meta.duckdb transactions"
+    assert len(opens) == 1, f"two granules took {len(opens)} meta.duckdb transactions"
+
+
+def test_the_kill_switch_batches_the_mark_too(monkeypatch):
+    """The switch is a BASELINE, so it must reproduce the pre-writer path — including its single batched mark.
+
+    It did not: the sync path called _flush(force=self._q.empty()), and in sync mode the queue is ALWAYS empty, so it
+    opened meta.duckdb once per granule. On the box that put 44.1 s over 518 calls into the baseline alone (against
+    0.7 s over 3 with the writer on), inflating the measured win. A baseline carrying a cost the real code never had
+    is not a baseline.
+    """
+    _two_granule_scene()
+    monkeypatch.setenv(lake.ASYNC_WRITE_ENV, "0")
+    # No drain here: the mark must land INSIDE the call, like the pre-writer path, or the baseline defers its own cost
+    # past the measured wall time.
+    opens = _count_marks(lambda: index_atl06.fetch_bbox(BBOX))
+    assert opens, "the inline path deferred its coverage mark past the end of the leg"
+    assert len(opens) == 1, f"the inline path took {len(opens)} meta.duckdb transactions for two granules"
+    assert {g for g, _b, _k, _c in lake.ingested_chunk_cells("ATL06", [GRANULE, GRANULE_2])} == {GRANULE, GRANULE_2}
 
 
 @pytest.mark.parametrize("workers", [1, 3])
