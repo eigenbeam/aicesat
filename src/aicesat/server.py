@@ -64,6 +64,24 @@ lake_cells_geojson = lambda mission="ICESAT2": api.lake_cells(stats=False, missi
 
 # ----------------------------------------------------------------------------- HTTP (widget + api)
 
+# A browser that navigates away, closes a tab, or supersedes a poll drops the socket mid-response. The work already
+# succeeded; only the delivery was interrupted. socketserver's default handle_error prints a full traceback for it,
+# which buried real errors in the journal — /api/index_status (polled every 8 s by the Data Lake view, and slow
+# enough to still be in flight when the view is left) produced a steady stream of them.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], _CLIENT_GONE):
+            log.debug("client %s disconnected mid-response", client_address)
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(WIDGET_DIR), **kw)
@@ -75,13 +93,21 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def _write(self, body: bytes) -> None:
+        """Write a response body, treating a vanished client as normal. Every response goes through here."""
+        try:
+            self.wfile.write(body)
+        except _CLIENT_GONE:
+            self.close_connection = True
+            log.debug("client gone before %s could be written (%d bytes)", self.path, len(body))
+
     def _json(self, status: int, obj) -> None:
         body = json.dumps(obj, default=cache._json_default).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
 
     # -------- access-code gate (public beta). No-op when AICESAT_ACCESS_CODE is unset (owner's private process). --------
     def _authed(self) -> bool:
@@ -108,7 +134,7 @@ class Handler(SimpleHTTPRequestHandler):
         body = html.encode()
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body))); self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
 
     def _gate_guard(self) -> bool:
         """True if the request may proceed. Handles /gate itself and blocks everything else when unauthenticated."""
@@ -142,7 +168,7 @@ class Handler(SimpleHTTPRequestHandler):
             if dist.exists():
                 body = dist.read_bytes()
                 self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers()
-                return self.wfile.write(body)
+                return self._write(body)
         if self.path.startswith("/api/scene/") and self.path.endswith("/imagery.jpg"):
             sid = self.path.split("/")[3]
             doc = cache.load_scene(sid)
@@ -151,7 +177,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_error(404)
             body = img.read_bytes()
             self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(body))); self.end_headers()
-            return self.wfile.write(body)
+            return self._write(body)
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/api/regions":
             return self._json(200, api.list_regions())
@@ -204,7 +230,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            return self.wfile.write(body)
+            return self._write(body)
         return super().do_GET()
 
     def _body(self) -> dict:
@@ -278,7 +304,7 @@ def start_http() -> ThreadingHTTPServer:
     last = None
     for port in range(HTTP_PORT, HTTP_PORT + 10):
         try:
-            srv = ThreadingHTTPServer((HTTP_HOST, port), Handler)
+            srv = Server((HTTP_HOST, port), Handler)
             HTTP_PORT = port
             break
         except OSError as e:  # in use (e.g. scripts/serve.py running): try the next one, never kill the MCP server
