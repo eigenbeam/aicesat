@@ -75,24 +75,31 @@ def _drop_caches():
         return False
 
 
-def _read(root, cells, drop=False):
+def _read(root, cells, drop=False, reps=5):
+    """Median of `reps` timed reads. Single millisecond-scale samples are pure noise: an earlier pass reported 0.040 s
+    for a file size whose neighbours measured 0.008 and 0.004, which read as a trend and was not one."""
     globs = []
     for c in cells:
         d = root / f"h3_cell={c}"
         if d.is_dir() and next(d.glob("*.parquet"), None) is not None:
             globs.append(f"'{d}/*.parquet'")
     if not globs:
-        return 0.0, 0
-    if drop:
-        _drop_caches()
+        return 0.0, 0.0, 0
     src = f"read_parquet([{', '.join(globs)}], hive_partitioning=true, union_by_name=true)"
-    con = duckdb.connect()
-    t = time.time()
-    n = con.execute(f"SELECT count(*), avg(native_height) FROM {src} "
-                    f"WHERE native_height > 500 AND native_lat BETWEEN 69.2 AND 69.8").fetchone()[0]
-    dt = time.time() - t
-    con.close()
-    return dt, n
+    q = (f"SELECT count(*), avg(native_height) FROM {src} "
+         f"WHERE native_height > 500 AND native_lat BETWEEN 69.2 AND 69.8")
+    times, n = [], 0
+    for _ in range(reps):
+        if drop:
+            _drop_caches()
+        con = duckdb.connect()
+        t = time.time()
+        n = con.execute(q).fetchone()[0]
+        times.append(time.time() - t)
+        con.close()
+    times.sort()
+    med = times[len(times) // 2]
+    return med, times[-1] - times[0], n
 
 
 def main() -> None:
@@ -101,6 +108,7 @@ def main() -> None:
     ap.add_argument("--cells", type=int, default=40)
     ap.add_argument("--decoys", type=int, default=0, help="extra files in unqueried cells (lake-scale effect)")
     ap.add_argument("--drop-caches", action="store_true", help="cold reads (needs passwordless sudo)")
+    ap.add_argument("--reps", type=int, default=5, help="timed read repetitions; the table reports the median")
     args = ap.parse_args()
 
     base = Path(os.environ.get("TMPDIR", "/tmp")) / "lakeparams"
@@ -116,38 +124,38 @@ def main() -> None:
 
     # --- 1. file size sweep ---------------------------------------------------------------------------------
     print("=== file size (rows/file), zstd, row_group=65536 ===")
-    print(f"{'rows/file':>10}{'files':>8}{'MB':>8}{'KB/file':>9}{'write s':>9}{'read7 s':>9}{'read20 s':>10}")
+    print(f"{'rows/file':>10}{'files':>8}{'MB':>8}{'KB/file':>9}{'write s':>9}{'read7 s':>9}{'±rng':>8}{'read20 s':>10}")
     for rpf in (2_800, 11_200, 45_000, 180_000, 720_000):
         root = base / f"rpf{rpf}" / "mission=ATL06"
         t = time.time(); _build(root, args.cells, rows_per_cell, rpf, 65536, "zstd", rng); wt = time.time() - t
         if args.decoys:
             _decoys(root, args.decoys, 2800, rng, "zstd")
         files = list(root.glob("h3_cell=*/*.parquet")); mb = sum(f.stat().st_size for f in files) / 1e6
-        r7, _ = _read(root, q7, args.drop_caches)
-        r20, _ = _read(root, q20, args.drop_caches)
-        print(f"{rpf:>10,}{len(files):>8}{mb:>8.1f}{mb*1000/max(len(files),1):>9.1f}{wt:>9.2f}{r7:>9.3f}{r20:>10.3f}")
+        r7, s7, _ = _read(root, q7, args.drop_caches, args.reps)
+        r20, _s20, _ = _read(root, q20, args.drop_caches, args.reps)
+        print(f"{rpf:>10,}{len(files):>8}{mb:>8.1f}{mb*1000/max(len(files),1):>9.1f}{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
 
     # --- 2. row group sweep at a mid file size --------------------------------------------------------------
     print("\n=== row_group_size (rows/file = 180,000, zstd) ===")
-    print(f"{'row_group':>10}{'MB':>8}{'write s':>9}{'read7 s':>9}{'read20 s':>10}")
+    print(f"{'row_group':>10}{'MB':>8}{'write s':>9}{'read7 s':>9}{'±rng':>8}{'read20 s':>10}")
     for rg in (8_192, 65_536, 262_144, 1_000_000):
         root = base / f"rg{rg}" / "mission=ATL06"
         t = time.time(); _build(root, args.cells, rows_per_cell, 180_000, rg, "zstd", rng); wt = time.time() - t
         files = list(root.glob("h3_cell=*/*.parquet")); mb = sum(f.stat().st_size for f in files) / 1e6
-        r7, _ = _read(root, q7, args.drop_caches)
-        r20, _ = _read(root, q20, args.drop_caches)
-        print(f"{rg:>10,}{mb:>8.1f}{wt:>9.2f}{r7:>9.3f}{r20:>10.3f}")
+        r7, s7, _ = _read(root, q7, args.drop_caches, args.reps)
+        r20, _s20, _ = _read(root, q20, args.drop_caches, args.reps)
+        print(f"{rg:>10,}{mb:>8.1f}{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
 
     # --- 3. codec, through the whole pipeline ---------------------------------------------------------------
     print("\n=== compression (rows/file = 180,000, row_group=65536) ===")
-    print(f"{'codec':>10}{'MB':>8}{'write s':>9}{'read7 s':>9}{'read20 s':>10}")
+    print(f"{'codec':>10}{'MB':>8}{'write s':>9}{'read7 s':>9}{'±rng':>8}{'read20 s':>10}")
     for comp in ("zstd", "snappy", None):
         root = base / f"c{comp}" / "mission=ATL06"
         t = time.time(); _build(root, args.cells, rows_per_cell, 180_000, 65536, comp, rng); wt = time.time() - t
         files = list(root.glob("h3_cell=*/*.parquet")); mb = sum(f.stat().st_size for f in files) / 1e6
-        r7, _ = _read(root, q7, args.drop_caches)
-        r20, _ = _read(root, q20, args.drop_caches)
-        print(f"{str(comp):>10}{mb:>8.1f}{wt:>9.2f}{r7:>9.3f}{r20:>10.3f}")
+        r7, s7, _ = _read(root, q7, args.drop_caches, args.reps)
+        r20, _s20, _ = _read(root, q20, args.drop_caches, args.reps)
+        print(f"{str(comp):>10}{mb:>8.1f}{wt:>9.2f}{r7:>9.3f}{s7:>8.3f}{r20:>10.3f}")
 
 
 if __name__ == "__main__":
