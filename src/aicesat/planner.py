@@ -154,8 +154,9 @@ def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, p
     n_written_cells = 0
     agg = {"requests": reader.stats.requests, "bytes": 0, "chunks": 0, "spans": 0, "gap_bytes": 0, "presigns": reader.stats.presigns,
            "seconds": 0.0, "fetch_seconds": 0.0, "materialize_seconds": 0.0}
+    # one meta.duckdb transaction for the whole batch (per-item opens dominated cold builds — see mark_ingested_many)
+    lake.mark_ingested_many("ICESAT2", [(r["granule"], r["beam"], r["chunk_cells"]) for r in results])
     for res in results:
-        lake.mark_ingested("ICESAT2", res["granule"], res["beam"], res["chunk_cells"])
         n_written_cells += len(res["stats"]["cells_written"])
         for k in ("requests", "bytes", "chunks", "spans", "gap_bytes", "seconds", "fetch_seconds", "materialize_seconds"):
             agg[k] += res["stats"].get(k, 0) or 0

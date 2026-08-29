@@ -328,8 +328,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
         for loc in parts:
             for g, cm in loc.items():
                 ingest.setdefault(g, {}).update(cm)
-        for g, cm in ingest.items():
-            lake.mark_ingested(MISSION, g, BEAM, cm)
+        lake.mark_ingested_many(MISSION, [(g, BEAM, cm) for g, cm in ingest.items()])   # see index_atl06
 
     _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
     arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",), clip_cells=clip_cells, on_batch=_stream)

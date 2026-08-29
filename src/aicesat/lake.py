@@ -323,10 +323,25 @@ def meta_conn() -> duckdb.DuckDBPyConnection:  # legacy: unlocked open (tests/CL
 
 
 def mark_ingested(mission: str, granule: str, beam: str, chunk_cells: dict[int, list[int]]) -> None:
+    mark_ingested_many(mission, [(granule, beam, chunk_cells)])
+
+
+def mark_ingested_many(mission: str, items) -> None:
+    """Record many (granule, beam, {chunk: cells}) ingests in ONE meta.duckdb transaction.
+
+    Opening meta.duckdb is expensive (file lock + connect + close) and every open is serialised process-wide by
+    _META_LOCK, so calling this per granule made it the single largest cost of a cold build: measured 44.5 s over 301
+    calls (~148 ms each) on a leg whose whole wall time was 63.6 s — more than the network fetch. One open for the
+    whole batch makes it negligible.
+    """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = [(mission, granule, beam, int(k), int(c), now)
+            for granule, beam, chunk_cells in items
+            for k, cells in (chunk_cells or {}).items() for c in cells]
+    if not rows:
+        return
     with meta_db() as con:
-        con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)",
-                        [(mission, granule, beam, int(k), int(c), now) for k, cells in chunk_cells.items() for c in cells])
+        con.executemany("INSERT OR REPLACE INTO coverage_cells VALUES (?, ?, ?, ?, ?, ?)", rows)
 
 
 def ingested_chunk_cells(mission: str, granules: list[str]) -> set[tuple[str, str, int, int]]:
@@ -406,12 +421,16 @@ def set_settings(**kw) -> dict:
     return d
 
 
-def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual") -> list[dict]:
-    """Delete the cells' Parquet files and coverage rows (the index is untouched); returns what was evicted."""
+def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual", stats: dict | None = None) -> list[dict]:
+    """Delete the cells' Parquet files and coverage rows (the index is untouched); returns what was evicted.
+
+    `stats` lets a caller that already walked the mission pass its cell_stats in. The walk stats() every file in the
+    mission, so an enforce_*_limit that computed it and then called this re-walked the whole lake a second time."""
     import json
     import shutil
 
-    stats = cell_stats(mission, with_rows=False)   # eviction needs bytes + age, never row counts (footer reads)
+    if stats is None:
+        stats = cell_stats(mission, with_rows=False)   # eviction needs bytes + age, never row counts (footer reads)
     evicted = []
     with meta_db() as con:
         for c in cells:
@@ -445,7 +464,7 @@ def enforce_limit(protect=(), mission: str = "ICESAT2") -> list[dict]:
         if total <= limit:
             break
         chosen.append(s["cell"]); total -= s["bytes"]
-    return evict_cells(chosen, mission, reason=f"limit {limit} bytes") if chosen else []
+    return evict_cells(chosen, mission, reason=f"limit {limit} bytes", stats=stats) if chosen else []
 
 
 def _lake_missions() -> list[str]:
@@ -474,8 +493,11 @@ def enforce_global_limit(protect=(), reason: str = "limit") -> list[dict]:
             break
         chosen.setdefault(m, []).append(c); total -= st["bytes"]
     evicted = []
+    by_mission = {}
+    for m, c, st in items:            # reuse the walk we already did, per mission
+        by_mission.setdefault(m, {})[c] = st
     for m, cells in chosen.items():
-        evicted += evict_cells(cells, m, reason=f"{reason} ({limit} bytes)")
+        evicted += evict_cells(cells, m, reason=f"{reason} ({limit} bytes)", stats=by_mission.get(m))
     return evicted
 
 

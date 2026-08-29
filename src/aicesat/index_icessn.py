@@ -288,8 +288,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         else:
             with ThreadPoolExecutor(nw) as ex:
                 parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        for pr in parts:
-            lake.mark_ingested(MISSION, pr["granule"], BEAM, {CHUNK: pr["cells"]})
+        lake.mark_ingested_many(MISSION, [(pr["granule"], BEAM, {CHUNK: pr["cells"]}) for pr in parts])   # see index_atl06
 
     _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
     arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,

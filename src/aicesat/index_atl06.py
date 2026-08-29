@@ -317,8 +317,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         for loc in parts:
             for gb, cm in loc.items():
                 ingest.setdefault(gb, {}).update(cm)
-        for (g, b), cm in ingest.items():
-            lake.mark_ingested(MISSION, g, b, cm)
+        # ONE meta.duckdb transaction for the whole batch — per-granule opens were the largest cost of a cold build
+        lake.mark_ingested_many(MISSION, [(g, b, cm) for (g, b), cm in ingest.items()])
 
     beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
     # Stream the lake read too: without this, cache-served points appear only at finalize, so a warm build showed no
