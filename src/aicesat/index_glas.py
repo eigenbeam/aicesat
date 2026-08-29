@@ -332,7 +332,9 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
 
     _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None   # see index_atl06
     arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",), clip_cells=clip_cells, on_batch=_stream)
-    evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (GLAS fetch)") if reader else []  # only when the lake grew
+    if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
+        lake.enforce_global_limit_async(protect=want_cells, reason="limit (GLAS fetch)")
+    evicted = []
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
                "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})

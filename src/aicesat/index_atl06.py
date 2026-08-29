@@ -327,7 +327,9 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     # provide progress during the (slow) fetch, and emitting the lake read too would send every point twice.
     _stream = (lambda r: on_granule({"granule": "lake", **r})) if (on_granule is not None and reader is None) else None
     arrays = lake.query_points(bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",), quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
-    evicted = lake.enforce_global_limit(protect=want_cells, reason="limit (ATL06 fetch)") if reader else []  # only when the lake grew
+    if reader:   # only when the lake grew; off the critical path (single-flight) — it is housekeeping
+        lake.enforce_global_limit_async(protect=want_cells, reason="limit (ATL06 fetch)")
+    evicted = []
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
                "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})

@@ -515,6 +515,39 @@ def enforce_global_limit(protect=(), reason: str = "limit") -> list[dict]:
     return evicted
 
 
+_EVICT_RUNNING = threading.Event()
+
+
+def enforce_global_limit_async(protect=(), reason: str = "limit") -> None:
+    """Run the disk-budget eviction OFF the caller's critical path, at most one at a time.
+
+    Eviction walks every cell directory in the lake (a stat() per file) and measured 7.5 s on the deployed box — 38%
+    of a 19.5 s scene build — for pure housekeeping the request does not depend on. It is also duplicated today: each
+    index mission enforced the limit inline AND api.build_scene spawns its own background enforcement, so one build
+    could pay for it several times. The single-flight guard collapses those: a walk already in progress is enough,
+    since each run evicts until the whole lake is under budget.
+
+    Trade-off: the freed bytes are not reflected in the response's stats. That is fine — the caller reports what it
+    fetched, not what housekeeping reclaimed, and a scene already holds the points it read.
+    """
+    if _EVICT_RUNNING.is_set():
+        return
+    protect = list(protect)
+
+    def _run():
+        _EVICT_RUNNING.set()
+        try:
+            ev = enforce_global_limit(protect=protect, reason=reason)
+            if ev:
+                log.info("lake eviction freed %d cells (%.1f MB)", len(ev), sum(e["bytes"] for e in ev) / 1e6)
+        except Exception as e:
+            log.warning("lake eviction failed: %s", e)
+        finally:
+            _EVICT_RUNNING.clear()
+
+    threading.Thread(target=_run, name="lake-evict", daemon=True).start()
+
+
 def recent_evictions(n: int = 50) -> list[dict]:
     import json
     if not EVICTION_LOG.exists():

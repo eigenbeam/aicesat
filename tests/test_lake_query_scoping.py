@@ -111,3 +111,42 @@ def test_eviction_picks_the_same_victims_without_row_counts(lake_dir, monkeypatc
     evicted = lake.enforce_global_limit(protect=[111], reason="test")
     gone = {e["cell"] for e in evicted}
     assert 111 not in gone and gone == {222, 333}          # protected cell survives, the rest go
+
+
+def test_eviction_runs_off_the_caller_thread_and_single_flights(lake_dir, monkeypatch):
+    """Eviction walks every cell dir in the lake (7.5 s on the deployed box) for housekeeping the request does not
+    depend on, and it was triggered from several places per build. It must not block the caller, and concurrent
+    triggers must collapse into one walk."""
+    import threading
+    import time
+
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def _slow(protect=(), reason="limit"):
+        calls.append(reason)
+        started.set()
+        release.wait(5.0)
+        return []
+    monkeypatch.setattr(lake, "enforce_global_limit", _slow)
+
+    t0 = time.time()
+    lake.enforce_global_limit_async(reason="first")
+    assert started.wait(2.0), "eviction never started"
+    assert time.time() - t0 < 1.0, "the caller waited for eviction"
+
+    lake.enforce_global_limit_async(reason="second")   # while the first is still running
+    lake.enforce_global_limit_async(reason="third")
+    release.set()
+    time.sleep(0.2)
+    assert calls == ["first"], f"single-flight broken: {calls}"
+
+    for _ in range(50):                                # once it finishes, a later trigger runs again
+        if not lake._EVICT_RUNNING.is_set():
+            break
+        time.sleep(0.02)
+    release.clear(); started.clear()
+    lake.enforce_global_limit_async(reason="later")
+    assert started.wait(2.0)
+    release.set()
+    assert "later" in calls
