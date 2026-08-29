@@ -56,11 +56,15 @@ window.AICESAT = window.AICESAT || {};
   // Fetch float32 values [fromValue, ...) of a chunked part. chunk_bytes is fixed server-side (96000 = 24000 floats),
   // so we can start at the chunk containing fromValue and trim the remainder — only NEW data crosses the wire.
   const CHUNK_FLOATS = 24000;
+  // `getChunk` MUST accept (part, chunkIndex). Passing a one-argument function here silently drops the index, so every
+  // request returns chunk 0 and the caller concatenates n_chunks copies of it — which corrupted the surface grid into
+  // a rolling-offset repeat and duplicated the point clouds.
   async function fetchValuesFrom(getChunk, part, fromValue) {
     const startChunk = Math.floor(fromValue / CHUNK_FLOATS);
     const parts = []; let n = startChunk + 1;
     for (let c = startChunk; c < n; c++) {
       const d = await getChunk(part, c);
+      if (d.chunk != null && d.chunk !== c) throw new Error(`scene_part ${part}: asked for chunk ${c}, got ${d.chunk}`);
       n = d.n_chunks;
       if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
       parts.push(b64ToF32(d.b64));
@@ -83,18 +87,18 @@ window.AICESAT = window.AICESAT || {};
       const wantVals = (s.n || 0) * 3;
       let pos = sameVersion ? old._pos : null;
       if (wantVals > haveVals) {                                   // grew (or first sight): fetch ONLY the new tail
-        const add = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, haveVals);
+        const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, haveVals);
         pos = haveVals ? concatF32([pos, add]) : add;
         changed.add(m);
       } else if (!sameVersion) {
-        pos = await fetchValuesFrom(p => getChunk(id, p), 'positions:' + m, 0);
+        pos = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, 0);
         changed.add(m);
       }
       let slopes = sameVersion ? old._slopes : null;
       if (s.has_slopes) {
         const haveS = sameVersion && slopes ? slopes.length : 0, wantS = (s.n || 0) * 2;
         if (wantS > haveS) {
-          const add = await fetchValuesFrom(p => getChunk(id, p), 'slopes:' + m, haveS);
+          const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'slopes:' + m, haveS);
           slopes = haveS ? concatF32([slopes, add]) : add;
           changed.add(m);
         }
@@ -104,7 +108,7 @@ window.AICESAT = window.AICESAT || {};
     }
     // surface z: static once it lands — fetch exactly once
     if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
-      const z = await fetchValuesFrom(p => getChunk(id, p), 'surface', 0);
+      const z = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'surface', 0);
       doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)};
       changed.add('_surface');
     } else if (meta.surface && prev && prev.surface) {
