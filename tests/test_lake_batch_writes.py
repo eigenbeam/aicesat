@@ -4,15 +4,13 @@ Why bother: on the box a 4,566-chunk leg spent 115.9 write thread-seconds over ~
 writer threads made it WORSE (247.9 thread-seconds at 4 threads) — a fixed serialized resource, not thread starvation.
 So the lever is fewer files, not more threads.
 
-The whole risk of batching is in the FILENAME. A file must name the chunk set it holds:
-  * name it by granule+beam only, and a later partial re-fetch overwrites a file holding chunks it does not carry,
-    silently DELETING cached data;
-  * name it by the set, and every write is either an exact rewrite or a new file.
-Then a batch that strictly supersedes older files may delete them, and a PARTIAL overlap must fall back to the
-per-chunk layout rather than duplicate rows. Each of those is a test here.
+The risk is in what a re-fetch does to a file that already exists. The name is DETERMINISTIC per
+(cell, granule, beam), so a re-fetch MERGES: read the file, drop the rows for the chunks being rewritten, concatenate
+the new ones. An earlier attempt named each file by the chunk SET it held, which forced a d.glob() per cell per job
+to discover what was there — a scan whose cost grows with the LAKE, and it made a batched build 36% SLOWER on the box
+(84.9s vs 62.5s). Tests here pin: no directory listing, no loss on a partial re-fetch, no duplication against either
+a merged file or a legacy per-chunk one.
 """
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -78,17 +76,33 @@ def test_batched_write_matches_the_direct_golden_and_writes_fewer_files(batched)
     assert len(batched_files) < len(unbatched_files), (batched_files, unbatched_files)
 
 
-def test_the_filename_names_the_chunk_set(batched):
-    """Not negotiable: without the set in the name, a partial re-fetch cannot tell what it is about to overwrite."""
+def test_the_write_never_lists_a_cell_directory(batched, monkeypatch):
+    """The regression that made batching 36% SLOWER than per-chunk on the box.
+
+    Naming each file by the chunk set it held meant discovering what already existed with d.glob(...) per cell per
+    job — a directory scan whose cost grows with the LAKE, not the request. That is the same shape as the 145 s
+    query_points bug and the cell_stats footer reads, and it is why the filename is now deterministic and existence
+    is one O(1) stat.
+    """
+    import pathlib
+    globbed = []
+    real = pathlib.Path.glob
+    monkeypatch.setattr(pathlib.Path, "glob",
+                        lambda self, pat, *a, **k: (globbed.append((str(self), pat)), real(self, pat, *a, **k))[1])
+    _atl06_scene()
+    index_atl06.fetch_bbox(BBOX)
+    assert lake.drain_writes(timeout=20.0)
+    scans = [g for g in globbed if "h3_cell=" in g[0]]
+    assert not scans, f"the write path listed cell directories: {scans[:5]}"
+
+
+def test_one_file_per_cell_granule_beam(batched):
     _atl06_scene()
     index_atl06.fetch_bbox(BBOX)
     assert lake.drain_writes(timeout=20.0)
     names = _files()
     assert names, "nothing was written"
-    for n in names:
-        chunks = lake._file_chunks(Path(n))
-        assert chunks, f"{n} does not name its chunk set"
-    assert any(len(lake._file_chunks(Path(n))) > 1 for n in names), "nothing was actually batched"
+    assert all(n.endswith(f"__{lake.BATCH_SUFFIX}.parquet") for n in names), names
 
 
 def test_partial_refetch_neither_loses_nor_duplicates(batched):
@@ -124,7 +138,7 @@ def test_a_superseding_batch_removes_the_files_it_replaces(batched, monkeypatch)
     index_atl06.fetch_bbox(BBOX)                            # lay down per-chunk files first
     assert lake.drain_writes(timeout=20.0)
     before = _files()
-    assert all(len(lake._file_chunks(Path(n))) == 1 for n in before)
+    assert before and all("__c" in n and not n.endswith(f"__{lake.BATCH_SUFFIX}.parquet") for n in before)
 
     monkeypatch.setenv(lake.BATCH_WRITE_ENV, "1")
     got, _ = index_atl06.fetch_bbox(BBOX, force=True)        # re-fetch everything, now batched
@@ -138,15 +152,3 @@ def test_a_superseding_batch_removes_the_files_it_replaces(batched, monkeypatch)
     rows = _rows(again)
     assert len(rows) == len(set(rows)), "the batch did not supersede the per-chunk files it replaced"
     _same(golden, again)
-
-
-def test_a_too_long_tag_falls_back_to_per_chunk(batched, monkeypatch):
-    """Filenames are bounded; a batch that cannot name its set must use the always-safe layout, not a lossy name."""
-    monkeypatch.setattr(lake, "MAX_TAG_LEN", 3)             # any multi-chunk tag is now too long
-    _atl06_scene()
-    got, _ = index_atl06.fetch_bbox(BBOX)
-    assert lake.drain_writes(timeout=20.0)
-    names = _files()
-    assert names and all(len(lake._file_chunks(Path(n))) == 1 for n in names), names
-    golden, _ = index_atl06._fetch_direct(BBOX)
-    _same(golden, got)

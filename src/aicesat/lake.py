@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import queue
-import re
 import zlib
 from datetime import datetime, timezone
 from typing import NamedTuple
@@ -132,44 +131,30 @@ def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: i
 
 
 BATCH_WRITE_ENV = "AICESAT_LAKE_BATCH_WRITES"
-_TAG_RE = re.compile(r"__c([0-9.]+)\.parquet$")
-MAX_TAG_LEN = 120        # keep the filename well inside any filesystem limit; longer batches fall back to per-chunk
+BATCH_SUFFIX = "cb"      # the accumulating per-(cell, granule, beam) file; still matches query_points' `*__c*` glob
 
 
 def batch_writes_enabled() -> bool:
-    """EXPERIMENTAL. Set AICESAT_LAKE_BATCH_WRITES=1 to write one Parquet file per (cell, granule, beam, chunk-BATCH)
-    instead of one per chunk. Off by default until the win is measured on the box — see write_point_chunks."""
+    """EXPERIMENTAL. Set AICESAT_LAKE_BATCH_WRITES=1 to write one Parquet file per (cell, granule, beam) instead of
+    one per (cell, chunk). Off by default until the win is measured on the box — see write_point_chunks."""
     return os.environ.get(BATCH_WRITE_ENV, "0").lower() in ("1", "true", "yes")
 
 
-def _chunk_tag(chunks) -> str | None:
-    """Filename tag naming the exact chunk SET a file holds, e.g. 'c12.13.14'. None when it would be too long.
-
-    The set must be IN the name. Naming a batch file by granule+beam alone would make a later partial re-fetch
-    overwrite a file holding chunks the re-fetch does not carry, silently deleting cached data; naming it by the set
-    makes every write either an exact rewrite or a new file, both of which are safe.
-    """
-    tag = "c" + ".".join(str(int(c)) for c in sorted(set(chunks)))
-    return tag if len(tag) <= MAX_TAG_LEN else None
-
-
-def _file_chunks(path) -> set[int] | None:
-    m = _TAG_RE.search(path.name)
-    return {int(x) for x in m.group(1).split(".") if x != ""} if m else None
-
-
 def write_point_chunks(mission: str, chunks, res: int, extras: tuple[str, ...] = ()) -> dict[int, list[int]]:
-    """Materialize a whole granule's chunks with ONE file per cell instead of one per (cell, chunk).
+    """Materialize a whole granule's chunks with ONE file per (cell, granule, beam) instead of one per (cell, chunk).
 
-    Motivation, measured on the box: a 4,566-chunk leg spent 115.9 write thread-seconds over ~32k files — ~3.6 ms per
-    file, and `bench_lake_params` writing the same shape to $TMPDIR unloaded measured 0.089 ms per file. Those differ
-    by 40x, so the sweep's "bigger files buy 26%" does not describe this path; here per-FILE cost looks dominant and
-    cutting the file count ~5x should be worth much more.
+    Motivation, measured on the box: a 4,566-chunk leg spent 115.9 write thread-seconds over ~32k files, ~3.6 ms each,
+    and more writer threads made it worse — a fixed serialized resource, so the lever is fewer files.
 
-    Safety: each file is named by the chunk SET it holds. A re-fetch of the same set rewrites the same file; a batch
-    that strictly SUPERSEDES older files deletes them after writing. A PARTIAL overlap (neither equal nor a superset)
-    cannot be resolved without a read-modify-write, so this falls back to per-chunk files for that cell — today's
-    behaviour, always correct. Partial overlap needs eviction to split a chunk's cells, so it is rare.
+    The file name is DETERMINISTIC, which is the whole design. A first attempt named each file by the chunk SET it
+    held, which meant discovering what already existed with `d.glob(...)` per cell per job: a directory scan whose
+    cost grows with the LAKE rather than the request — the same shape as the 145 s query_points bug — and it made a
+    batched build 36% SLOWER than per-chunk (84.9 s vs 62.5 s). A fixed name turns that into one O(1) exists().
+
+    A re-fetch therefore MERGES: read the existing file, drop the rows for the chunks being rewritten, concatenate the
+    new ones. That is strictly better than the set-naming scheme it replaces — no data loss on a partial re-fetch and
+    no duplication — and it costs one small read only when the file is already there. The write is tmp+replace, so a
+    concurrent query_points never sees a half-rewritten accumulation.
     """
     per_cell: dict[int, list] = {}                     # cell -> [(chunk_index, table)]
     written: dict[int, list[int]] = {int(c.chunk_index): [] for c in chunks}
@@ -182,53 +167,22 @@ def write_point_chunks(mission: str, chunks, res: int, extras: tuple[str, ...] =
     gstem = _stem(granule)
     for cell, items in per_cell.items():
         d = cell_dir(mission, cell); d.mkdir(parents=True, exist_ok=True)
-        new = {ci for ci, _ in items}
-        tag = _chunk_tag(new)
-        superseded, overlapping = [], []
-        for p in d.glob(f"{gstem}__{beam}__c*.parquet"):
-            have = _file_chunks(p)
-            if have is None or not (have & new):
-                continue                               # unrelated file, or a disjoint chunk range: leave it alone
-            (superseded if have <= new else overlapping).append((p, have))
-        # A file carrying SOME of the chunks we are about to write must give them up first. Writing beside it — even
-        # under the per-chunk name — leaves its copy in place and duplicates those rows, which is exactly what a
-        # per-chunk fallback silently did: a cell holding `c1.2` plus a re-fetch of chunk 1 got `c1` alongside it.
-        for p, have in overlapping:
-            _trim_file(p, have - new, d, gstem, beam)
-        if tag is None:                                # cannot name the set: use the always-safe per-chunk layout
-            for ci, tbl in items:
-                pq.write_table(tbl, d / f"{gstem}__{beam}__c{ci}.parquet",
-                               compression="zstd", row_group_size=ROW_GROUP_ROWS)
-        else:
-            merged = items[0][1] if len(items) == 1 else pa.concat_tables([t for _ci, t in items])
-            pq.write_table(merged, d / f"{gstem}__{beam}__{tag}.parquet",
-                           compression="zstd", row_group_size=ROW_GROUP_ROWS)
-        keep = {d / f"{gstem}__{beam}__c{ci}.parquet" for ci, _ in items} if tag is None else {d / f"{gstem}__{beam}__{tag}.parquet"}
-        for p, _have in superseded:
-            if p not in keep:
-                p.unlink(missing_ok=True)              # its chunks are all in the file(s) just written
-        for ci, _tbl in items:
+        new = sorted({ci for ci, _ in items})
+        out = d / f"{gstem}__{beam}__{BATCH_SUFFIX}.parquet"
+        tabs = [t for _ci, t in items]
+        if out.exists():                               # O(1) — never a directory listing
+            old = pq.read_table(out)
+            m = ~np.isin(np.asarray(old.column("source_chunk_index")), np.asarray(new, "i4"))
+            if bool(m.any()):
+                tabs.insert(0, old.filter(pa.array(m)))
+        tmp = d / f".{out.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        pq.write_table(pa.concat_tables(tabs) if len(tabs) > 1 else tabs[0], tmp,
+                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
+        os.replace(tmp, out)                           # atomic: a reader sees the old file or the new one, never both
+        for ci in new:                                 # supersede any per-chunk file for exactly these chunks (O(1))
+            (d / f"{gstem}__{beam}__c{ci}.parquet").unlink(missing_ok=True)
             written[ci].append(cell)
     return {ci: sorted(cs) for ci, cs in written.items()}
-
-
-def _trim_file(path, keep_chunks: set[int], d, gstem: str, beam: str) -> None:
-    """Rewrite `path` holding only `keep_chunks`, renamed to match, or delete it when nothing is left.
-
-    Reachable only when a re-fetch covers PART of an existing file's chunk set, which needs eviction to split a
-    chunk's cells. Costs one read + one write of a small file on a rare path, and keeps the invariant that every
-    chunk lives in exactly one file per cell.
-    """
-    if not keep_chunks:
-        path.unlink(missing_ok=True)
-        return
-    tag = _chunk_tag(keep_chunks)
-    tbl = pq.read_table(path)
-    m = np.isin(np.asarray(tbl.column("source_chunk_index")), np.asarray(sorted(keep_chunks), "i4"))
-    out = d / (f"{gstem}__{beam}__{tag}.parquet" if tag else path.name)
-    pq.write_table(tbl.filter(pa.array(m)), out, compression="zstd", row_group_size=ROW_GROUP_ROWS)
-    if out != path:
-        path.unlink(missing_ok=True)
 
 
 STREAM_BATCHES = 6   # cell groups per streamed read: enough to look continuous, few enough not to add query overhead
