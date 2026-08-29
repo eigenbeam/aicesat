@@ -331,12 +331,16 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 must not keep the scene in 'loading' long after the points have painted."""
                 from . import imagery
                 try:
-                    imagery.build(frame, extent, 4096, source=imagery_source)   # warms the cache add_imagery then hits
+                    # ALL network happens here, OUTSIDE stream_lock. Do not call scene.add_imagery under the lock: it
+                    # re-enters imagery.build, and even on a warm cache that repeats the S2 STAC search (60 s timeout)
+                    # before falling back — while the build thread is blocked on the same lock for its final save, so
+                    # the job never reaches "ready" and the scene shows "Streaming data…" forever with data on screen.
+                    meta = imagery.build(frame, extent, 4096, source=imagery_source)
                     with stream_lock:                # doc is shared with the streaming callbacks — serialise mutation
-                        scene.add_imagery(doc, source=imagery_source)
+                        doc["imagery"] = {**meta, "url": f"/api/scene/{sid}/imagery.jpg"}   # mirrors scene.add_imagery
                         # log BEFORE publishing the status: imagery_status leaving "pending" is the signal that this
                         # leg is fully done (the widget and the tests both wait on it), so nothing may follow it.
-                        log_fn(f"imagery: {doc['imagery'].get('source','?')} · {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
+                        log_fn(f"imagery: {meta.get('source','?')} · {meta['width']}x{meta['height']} at z{meta['zoom']}")
                         doc["imagery_status"] = "ready"
                         cache.save_scene(sid, doc)
                 except Exception as e:

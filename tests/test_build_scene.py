@@ -192,6 +192,36 @@ def test_slow_imagery_does_not_delay_the_build(monkeypatch, tmp_path):
     assert doc["imagery_status"] == "pending" and doc.get("imagery") is None
 
 
+def test_slow_imagery_does_not_hold_the_doc_lock(monkeypatch, tmp_path):
+    """Regression: the imagery leg must not do network work while holding the shared doc lock. It once did (via
+    scene.add_imagery, which re-enters imagery.build), so the build thread blocked on that lock for its final save —
+    the scene painted every point and then sat in 'Streaming data…' because the job never reached ready."""
+    from aicesat import imagery
+
+    _install(monkeypatch, tmp_path)
+    release = threading.Event()
+    calls = []
+
+    def _fast_then_slow(*a, **k):
+        """Fast on the first call, slow on any re-entry. That models the real failure: the initial fetch is cheap (or
+        cached), but calling scene.add_imagery under the lock re-enters imagery.build — and THAT call is the one that
+        stalls (S2 STAC retry) while holding the doc lock the build thread needs."""
+        calls.append(1)
+        if len(calls) > 1:
+            release.wait(5.0)
+        return dict(IMAGERY)
+    monkeypatch.setattr(imagery, "build", _fast_then_slow)
+
+    t0 = time.time()
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=True)
+    elapsed = time.time() - t0
+    release.set()
+    assert elapsed < 2.0, f"build blocked on the imagery leg ({elapsed:.1f}s)"
+    assert len(doc["series"]) == 4
+    final = _await_imagery(doc["scene_id"])                 # and it still completes afterwards
+    assert final["imagery_status"] == "ready" and final["imagery"]["width"] == 256
+
+
 def test_imagery_failure_marks_status_and_never_fails_the_build(monkeypatch, tmp_path):
     from aicesat import imagery
 
