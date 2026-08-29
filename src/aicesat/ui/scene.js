@@ -334,10 +334,13 @@ function updateLabels() {
   $('missionToggles').querySelectorAll('input[data-m]').forEach(i => i.onchange = e => { visible[e.target.dataset.m] = e.target.checked; render(); updateLabels(); });
   if (scene.surface && scene.surface.attribution) $('attrib').dataset.dem = scene.surface.attribution;
   // Satellite-imagery toggle: only enabled once the area's imagery has been fetched
+  // Imagery no longer blocks the build, so it can land AFTER the scene is ready — the server reports where it is via
+  // imagery_status (pending | ready | unavailable) rather than us inferring it from the build state.
   const imgc = $('imagery'), ist = $('imageryStatus');
   if (imgc) {
+    const st = scene.imagery_status;
     if (scene.imagery) { imgc.disabled = false; if (ist) ist.textContent = ''; }
-    else if (!sceneReady) { imgc.disabled = true; if (ist) ist.textContent = 'fetching imagery…'; }
+    else if (st === 'pending' || (!sceneReady && st !== 'unavailable')) { imgc.disabled = true; if (ist) ist.textContent = 'fetching imagery…'; }
     else { imgc.disabled = true; if (ist) ist.textContent = 'imagery unavailable for this area'; }
   }
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
@@ -383,9 +386,13 @@ async function pollUntilReady() {
     if (ld) { ld.hidden = false; const tn = ld.childNodes[ld.childNodes.length - 1]; if (tn && tn.nodeType === 3) tn.nodeValue = (doc && Object.keys(doc.series || {}).length) ? 'Streaming data…' : 'Loading scene…'; }
     pollTimer = setTimeout(pollUntilReady, 400);   // fast poll while loading so the per-granule stream reads as continuous
   } else {
-    sceneReady = true; stopPoll();
+    sceneReady = true;
     if (ld) ld.hidden = true;
-    if (!doc) { AICESAT.showError(`scene ${myId}: not available`); return; }
+    if (!doc) { stopPoll(); AICESAT.showError(`scene ${myId}: not available`); return; }
+    // The build no longer waits on imagery, so it can still be in flight after the scene is ready. Keep a slow poll
+    // alive until it resolves — the meta part is small, so this is cheap, and it stops as soon as it lands or fails.
+    if (doc.imagery_status === 'pending' && !doc.imagery) pollTimer = setTimeout(pollUntilReady, 2500);
+    else stopPoll();
     finishLoad();
   }
 }

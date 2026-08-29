@@ -128,7 +128,8 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
             m["has_slopes"] = "slopes" in s
             return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
-                "z0": doc["z0"], "labels": doc.get("labels"), "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
+                "z0": doc["z0"], "labels": doc.get("labels"), "imagery_status": doc.get("imagery_status"),
+                "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
                 "series": {m: _series_meta(s) for m, s in doc["series"].items()},
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
     if part == "surface":
@@ -321,9 +322,29 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                             cache.save_scene(sid, doc); last_stream_save[0] = now
                 return cb
 
-            def _prefetch_imagery():                 # warm the imagery JPEG cache; add_imagery() below then cache-hits
+            def _imagery_worker():
+                """Fetch the imagery base layer and attach it to the doc — entirely off the build's critical path.
+
+                It runs on its own daemon thread, NOT in the collection ThreadPoolExecutor: exiting that pool's `with`
+                block waits on every future it holds, so submitting imagery there would block the build on it no matter
+                what we did afterwards. Imagery is a base layer the scene is fully usable without; a slow tile source
+                must not keep the scene in 'loading' long after the points have painted."""
                 from . import imagery
-                imagery.build(frame, extent, 4096, source=imagery_source)   # width matches scene.add_imagery's default
+                try:
+                    imagery.build(frame, extent, 4096, source=imagery_source)   # warms the cache add_imagery then hits
+                    with stream_lock:                # doc is shared with the streaming callbacks — serialise mutation
+                        scene.add_imagery(doc, source=imagery_source)
+                        # log BEFORE publishing the status: imagery_status leaving "pending" is the signal that this
+                        # leg is fully done (the widget and the tests both wait on it), so nothing may follow it.
+                        log_fn(f"imagery: {doc['imagery'].get('source','?')} · {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
+                        doc["imagery_status"] = "ready"
+                        cache.save_scene(sid, doc)
+                except Exception as e:
+                    log.warning("imagery unavailable: %s", e)
+                    with stream_lock:
+                        log_fn(f"imagery unavailable: {e}")
+                        doc["imagery_status"] = "unavailable"
+                        cache.save_scene(sid, doc)
 
             def _prefetch_dem():                     # fetch the DEM grid (z0=0 -> raw ellipsoidal heights); warms the
                 from . import dem                    # tile npz AND gives us the median for z0 (real z0 applied later)
@@ -336,7 +357,9 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                 cfuts = {leg[0]: ex.submit(leg[2]) for leg in enabled}
                 if with_atl03:
                     log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
-                img_fut = ex.submit(_prefetch_imagery) if with_imagery else None
+                if with_imagery:   # own thread, never the pool (the pool's exit would wait on it) — see _imagery_worker
+                    doc["imagery_status"] = "pending"
+                    threading.Thread(target=_imagery_worker, name=f"imagery-{sid}", daemon=True).start()
                 dem_fut = ex.submit(_prefetch_dem)
 
                 # z0 + DEM surface from the DEM, up front: terrain-centred z0 (deterministic, independent of the
@@ -399,20 +422,12 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                     except Exception as e:
                         log.info("surface unavailable: %s", e)
 
-                # imagery: independent of z0 and collections; fetched concurrently, finalised here. add_imagery() is
-                # the authoritative attempt (cache hit if the prefetch succeeded, inline fetch otherwise). Skipped
-                # entirely when imagery is toggled off; `imagery_source` (UI selector) picks EOX vs in-region S2.
-                if with_imagery:
-                    try:
-                        try:
-                            img_fut.result()
-                        except Exception as e:
-                            log.info("imagery prefetch failed; add_imagery will fetch inline: %s", e)
-                        scene.add_imagery(doc, source=imagery_source)
-                        log_fn(f"imagery: {doc['imagery'].get('source','?')} · {doc['imagery']['width']}x{doc['imagery']['height']} at z{doc['imagery']['zoom']}")
-                    except Exception as e:
-                        log.warning("imagery unavailable: %s", e); log_fn(f"imagery unavailable: {e}")
+                # Persist the finished scene: the canonical series order set above, plus any surface. This save used to
+                # be a side effect of the (now backgrounded) imagery finalize; it has to be explicit, or the doc on disk
+                # keeps the arrival order the streaming path wrote. Locked because the imagery thread shares the doc.
+                with stream_lock:
                     cache.save_scene(sid, doc)
+                # (imagery finishes on its own thread — see _imagery_worker; the build never waits on it)
         can_coreg = "ICESAT2" in doc["series"] and "GLAS" in doc["series"]
         if with_coreg and can_coreg:
             coregister(sid)

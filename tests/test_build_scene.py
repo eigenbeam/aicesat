@@ -10,6 +10,7 @@ fan-out must NOT change relative to the old serial build:
   * the doc is persisted progressively (shell first, then per leg) so it is readable mid-build;
   * the independent legs actually overlap in time.
 """
+import threading
 import time
 
 import numpy as np
@@ -87,6 +88,18 @@ def _install(monkeypatch, tmp_path, *, delay=0.0, fail=()):
     monkeypatch.setattr(imagery, "build", _imagery)
 
 
+def _await_imagery(scene_id, timeout=10.0):
+    """Imagery is fetched off the build thread (it must never block the scene), so a test that asserts on it has to
+    wait for imagery_status to leave 'pending' instead of reading the doc the instant build_scene returns."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        doc = cache.load_scene(scene_id)
+        if doc and doc.get("imagery_status") in ("ready", "unavailable"):
+            return doc
+        time.sleep(0.01)
+    raise AssertionError(f"imagery still pending after {timeout}s")
+
+
 def _z_values(series):
     """z components of a flat [x,y,z,...] positions list."""
     return np.asarray(series["positions"], dtype="f8").reshape(-1, 3)[:, 2]
@@ -107,6 +120,7 @@ def test_all_collections_final_doc(monkeypatch, tmp_path):
 
     # surface + imagery attached and z0-independent for the surface (mock ignores z0)
     assert doc["surface"] == SURFACE
+    doc = _await_imagery(doc["scene_id"])   # imagery lands off the build thread — wait for it, don't race it
     assert doc["imagery"]["width"] == 256 and doc["imagery"]["url"].endswith("/imagery.jpg")
 
     # the returned doc is exactly the final persisted doc
@@ -154,6 +168,41 @@ def test_no_data_raises_and_marks_error(monkeypatch, tmp_path):
     assert recs and all(r["status"] == "error" for r in recs)
 
 
+def test_slow_imagery_does_not_delay_the_build(monkeypatch, tmp_path):
+    """Imagery is a base layer, not a gate. A slow tile source used to hold the whole scene in 'loading' long after
+    every point had painted (it was awaited inside the build's thread pool, whose exit waits on every future)."""
+    from aicesat import imagery
+
+    _install(monkeypatch, tmp_path)
+    started = threading.Event()
+
+    def _slow(*a, **k):
+        started.set()
+        time.sleep(3.0)                                     # far longer than the whole build
+        return dict(IMAGERY)
+    monkeypatch.setattr(imagery, "build", _slow)
+
+    t0 = time.time()
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=True)
+    elapsed = time.time() - t0
+
+    assert started.is_set()                                 # the imagery fetch really did start
+    assert elapsed < 2.0, f"build waited on imagery ({elapsed:.1f}s)"
+    assert len(doc["series"]) == 4                          # data is complete and usable without imagery
+    assert doc["imagery_status"] == "pending" and doc.get("imagery") is None
+
+
+def test_imagery_failure_marks_status_and_never_fails_the_build(monkeypatch, tmp_path):
+    from aicesat import imagery
+
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(imagery, "build", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tile server down")))
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=True)
+    assert len(doc["series"]) == 4                          # the scene still built
+    final = _await_imagery(doc["scene_id"])
+    assert final["imagery_status"] == "unavailable" and final.get("imagery") is None
+
+
 def test_progressive_persistence(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path)
     snapshots = []
@@ -180,6 +229,7 @@ def test_start_job_runs_fanout_to_completion(monkeypatch, tmp_path):
         time.sleep(0.02)
     assert job["status"] == "done", job.get("error")
 
+    _await_imagery(sid)                                     # imagery finishes after the job does; don't race it
     doc = api.scene_part(sid, "meta")                       # the HTTP-facing partial reader sees the finished scene
     assert list(doc["series"]) == ["GLAS", "ICESSN", "ATL06", "ICESAT2"]
     assert doc["surface"] is not None and doc["imagery"] is not None
