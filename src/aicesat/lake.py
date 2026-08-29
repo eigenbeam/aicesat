@@ -316,9 +316,15 @@ def ingested_chunks(mission: str, granules: list[str]) -> set[tuple[str, str, in
 
 # ----------------------------------------------------------------------------- per-cell stats, settings, eviction
 
-def cell_stats(mission: str = "ICESAT2") -> dict[int, dict]:
+def cell_stats(mission: str = "ICESAT2", with_rows: bool = True) -> dict[int, dict]:
     """Per materialized cell: granules, beams, chunks, rows, bytes, first/last ingested. Files are the source of truth
-    for bytes/rows (Parquet footers), the coverage table for provenance and age."""
+    for bytes/rows (Parquet footers), the coverage table for provenance and age.
+
+    `with_rows=False` skips the per-file Parquet footer read and reports rows=0. Row counts are the ONLY thing here
+    that needs to open files at all — bytes come from stat() — and they cost a footer read per file across the whole
+    mission. On the deployed lake (864k files) that was ~300 s, and eviction, which needs only bytes and age, paid it
+    on every build that fetched anything. Callers that just size the lake must pass with_rows=False.
+    """
     out: dict[int, dict] = {}
     if not LAKE_DIR.exists():
         return out
@@ -328,11 +334,12 @@ def cell_stats(mission: str = "ICESAT2") -> dict[int, dict]:
         if not files:
             continue
         rows = 0
-        for f in files:
-            try:
-                rows += pq.read_metadata(f).num_rows
-            except Exception:
-                pass
+        if with_rows:
+            for f in files:
+                try:
+                    rows += pq.read_metadata(f).num_rows
+                except Exception:
+                    pass
         out[cell] = {"cell": cell, "files": len(files), "rows": rows, "bytes": sum(f.stat().st_size for f in files),
                      "granules": sorted({f.name.split("__")[0] for f in files}), "beams": sorted({f.stem.split("__")[1] for f in files}),
                      "chunks": 0, "first_ingested": None, "last_ingested": None}
@@ -374,7 +381,7 @@ def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual") -> list
     import json
     import shutil
 
-    stats = cell_stats(mission)
+    stats = cell_stats(mission, with_rows=False)   # eviction needs bytes + age, never row counts (footer reads)
     evicted = []
     with meta_db() as con:
         for c in cells:
@@ -397,7 +404,7 @@ def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual") -> list
 def enforce_limit(protect=(), mission: str = "ICESAT2") -> list[dict]:
     """Evict least-recently-ingested cells until the lake is under max_bytes; never touches `protect` cells."""
     limit = int(get_settings()["max_bytes"])
-    stats = cell_stats(mission)
+    stats = cell_stats(mission, with_rows=False)   # sizing only — skip the per-file footer reads
     total = sum(s["bytes"] for s in stats.values())
     if total <= limit:
         return []
@@ -424,7 +431,7 @@ def enforce_global_limit(protect=(), reason: str = "limit") -> list[dict]:
     protect = {int(c) for c in protect}
     items = []  # (mission, cell, stats)
     for m in _lake_missions():
-        for c, st in cell_stats(m).items():
+        for c, st in cell_stats(m, with_rows=False).items():   # sizing only — skip the per-file footer reads
             items.append((m, c, st))
     total = sum(st["bytes"] for _, _, st in items)
     if total <= limit:

@@ -79,3 +79,35 @@ def test_query_points_sql_does_not_glob_the_whole_mission(lake_dir, monkeypatch)
     joined = " ".join(seen["sql"])
     assert "h3_cell=*" not in joined                    # the whole-mission glob is gone
     assert "h3_cell=111" in joined                      # addressed by the requested cell instead
+
+
+def test_cell_stats_without_rows_skips_footer_reads(lake_dir, monkeypatch):
+    """Eviction only needs bytes (stat) and age (meta db) — never row counts, which cost a Parquet footer read per
+    file across the whole mission. On the deployed lake that was ~300s per build. Guard that the cheap path really
+    does not open any file."""
+    import pyarrow.parquet as pq_mod
+    _chunk("ATL06", 111, "G1", -49.5, 69.1, 400.0)
+    _chunk("ATL06", 222, "G2", -49.5, 69.1, 500.0)
+
+    opened = []
+    real = pq_mod.read_metadata
+    monkeypatch.setattr(pq_mod, "read_metadata", lambda f, *a, **k: (opened.append(f), real(f, *a, **k))[1])
+
+    cheap = lake.cell_stats("ATL06", with_rows=False)
+    assert opened == []                                    # no footer reads at all
+    assert all(s["rows"] == 0 for s in cheap.values())      # rows reported as 0, not guessed
+
+    full = lake.cell_stats("ATL06", with_rows=True)
+    assert opened                                          # the full path does read them
+    assert set(cheap) == set(full)                         # same cells either way
+    assert all(cheap[c]["bytes"] == full[c]["bytes"] for c in cheap)   # and identical sizes — what eviction uses
+
+
+def test_eviction_picks_the_same_victims_without_row_counts(lake_dir, monkeypatch):
+    """The cheap stats must not change which cells eviction chooses."""
+    for i, cell in enumerate((111, 222, 333)):
+        _chunk("ATL06", cell, f"G{i}", -49.5, 69.1, 400.0 + i)
+    monkeypatch.setattr(lake, "get_settings", lambda: {"max_bytes": 1})   # force eviction of everything unprotected
+    evicted = lake.enforce_global_limit(protect=[111], reason="test")
+    gone = {e["cell"] for e in evicted}
+    assert 111 not in gone and gone == {222, 333}          # protected cell survives, the rest go
