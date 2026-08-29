@@ -14,11 +14,18 @@ import numpy as np
 from aicesat import cache, dem, scene
 
 
-def main(sid: str) -> None:
+def main(sid: str, refetch: bool = False) -> None:
     doc = cache.load_scene(sid)
     frame, bbox = doc["frame"], doc["bbox"]
     extent = scene.bbox_extent(frame)
     print(f"scene {sid}  bbox={bbox}\nframe crs={frame['crs']}  extent={[round(v) for v in extent]}")
+    if refetch:
+        # the polar backend caches the merged grid as an npz, so tile reads are skipped on a warm run —
+        # clear it so the per-tile placement logic is actually exercised
+        n = 0
+        for p in dem.DEM_DIR.glob("*.npz"):
+            p.unlink(); n += 1
+        print(f"cleared {n} cached DEM grids (forcing a re-read of the tiles)")
 
     seen = []
     real = dem._read_tile_window
@@ -66,22 +73,39 @@ def main(sid: str) -> None:
         print("\nno surface returned"); return
     z = np.asarray([np.nan if v is None else v for v in surf["z"]], dtype="f8").reshape(surf["ny"], surf["nx"])
     print(f"\ngrid {z.shape}  cell={surf['cell']}m  finite={np.isfinite(z).sum()}")
-    # look for repeated blocks: compare each 64x64 block against every other
-    B = 64
-    blocks = {}
-    for r in range(0, z.shape[0] - B, B):
-        for c in range(0, z.shape[1] - B, B):
-            blk = z[r:r + B, c:c + B]
-            if not np.isfinite(blk).all():
+    # Duplicate ROWS / COLUMNS catch a repeat at ANY offset (block-aligned comparison misses a shift that is not a
+    # multiple of the block size). Real terrain essentially never produces two identical 272-wide rows.
+    def dup_lines(a, axis_name):
+        seen, dups = {}, []
+        for i, line in enumerate(a):
+            if not np.isfinite(line).all():
                 continue
-            key = round(float(blk.sum()), 3)
-            if key in blocks:
-                prev = blocks[key]
-                if np.allclose(blk, z[prev[0]:prev[0] + B, prev[1]:prev[1] + B]):
-                    print(f"!! REPEATED BLOCK: grid[{r}:{r+B}, {c}:{c+B}] == grid[{prev[0]}:{prev[0]+B}, {prev[1]}:{prev[1]+B}]")
+            key = (round(float(line.sum()), 4), round(float(line[0]), 4), round(float(line[-1]), 4))
+            j = seen.get(key)
+            if j is not None and np.array_equal(line, a[j]):
+                dups.append((j, i))
             else:
-                blocks[key] = (r, c)
+                seen[key] = i
+        if dups:
+            offs = sorted({b - a_ for a_, b in dups})
+            print(f"!! {len(dups)} duplicate {axis_name} pairs; offsets={offs[:10]}  e.g. {dups[:5]}")
+        else:
+            print(f"   no duplicate {axis_name}")
+    dup_lines(z, "rows")
+    dup_lines(z.T, "columns")
+
+    # Flat "shelf" regions: rows whose values are (near) constant — what a nodata fill or a bad tile read looks like
+    flat = [i for i, r in enumerate(z) if np.isfinite(r).all() and float(np.nanstd(r)) < 1e-6]
+    print(f"   near-constant rows: {len(flat)}" + (f" e.g. {flat[:10]}" if flat else ""))
+    # Big vertical steps between adjacent rows/cols = seams
+    dr = np.abs(np.diff(z, axis=0)); dc = np.abs(np.diff(z, axis=1))
+    for name, d in (("row", dr), ("col", dc)):
+        if np.isfinite(d).any():
+            big = np.nanmax(d)
+            where = np.unravel_index(int(np.nanargmax(np.nan_to_num(d, nan=-1))), d.shape)
+            print(f"   largest {name}-to-{name} step: {big:.1f} m at {where}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "2ce7444e9a")
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    main(args[0] if args else "2ce7444e9a", refetch="--refetch" in sys.argv)
