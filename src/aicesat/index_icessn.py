@@ -282,7 +282,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
             return {"granule": u["granule"], "cells": sorted(u["cells"])}
 
         urls = list(by_url)
-        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                       cpu_bound=False)
         if nw == 1:
             parts = [_ingest_granule(u) for u in urls]
         else:
@@ -328,7 +329,8 @@ def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]
         return {k: pts[k][m] for k in _DIRECT}
 
     urls = list(by_url)
-    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                       cpu_bound=False)
     if nw == 1:
         parts = [_fetch_granule(u) for u in urls]
     else:

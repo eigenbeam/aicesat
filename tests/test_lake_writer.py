@@ -243,3 +243,27 @@ def test_concurrent_builds_over_the_same_cells_agree(workers):
         rows = _rows(got)
         assert len(rows) == len(set(rows)), "concurrent builds duplicated points"
         _same(golden, got)
+
+
+def test_the_fetch_pool_is_not_clamped_to_cpu_count():
+    """Byte-range GETs wait on the network; sizing that pool by cores throws away the concurrency it needs.
+
+    Measured on an 8-vCPU box: the same 1,415 MB leg took 34.8 s of fetch wall at 4 workers and 18.0 s at 16. The
+    default path clamped to min(cap, cpu_count), so raising FETCH_WORKER_CAP alone would have silently capped it at
+    8 — only the env override got past it, which is why every measurement needed AICESAT_FETCH_WORKERS set by hand.
+    """
+    import os as _os
+
+    from aicesat.access import FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, pool_size
+
+    ncpu = _os.cpu_count() or 1
+    n = FETCH_WORKER_CAP + 8                       # plenty of granules, so n_items is not the binding term
+    got = pool_size(n, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV, cpu_bound=False)
+    assert got == FETCH_WORKER_CAP, got
+    if ncpu < FETCH_WORKER_CAP:                    # the clamp that was silently capping the fetch pool
+        assert pool_size(n, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV) == ncpu
+    # a CPU-bound pool keeps the clamp
+    assert pool_size(n, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                     cpu_bound=True) == min(FETCH_WORKER_CAP, ncpu)
+    # never more workers than there is work
+    assert pool_size(3, cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV, cpu_bound=False) == 3

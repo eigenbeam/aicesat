@@ -79,15 +79,25 @@ def _env_int(name: str) -> int | None:
         return None
 
 
-def pool_size(n_items: int, *, cap: int, min_items: int, env: str) -> int:
+def pool_size(n_items: int, *, cap: int, min_items: int, env: str, cpu_bound: bool = True) -> int:
     """Number of workers for an embarrassingly-parallel loop over `n_items` independent units.
 
     Falls back to serial (returns 1) below `min_items` so a tiny box never pays pool overhead. Otherwise
-    min(cap, cpu_count, n_items); `env` (an int) overrides the default worker count (set it to 1 to force serial)."""
+    min(cap, n_items), and min(cap, cpu_count) as well when `cpu_bound`; `env` (an int) overrides the worker count
+    (set it to 1 to force serial).
+
+    `cpu_bound=False` skips the cpu_count clamp for pools that spend their time WAITING, not computing. Byte-range
+    GETs are the case that matters: a 246 KB S3 read is ~25 ms of mostly time-to-first-byte, so useful concurrency is
+    set by latency, not cores. Measured on an 8-vCPU box, the same 1,415 MB leg took 34.8 s of fetch wall at 4
+    workers and 18.0 s at 16 — while the clamp would have silently capped it at 8 no matter how high `cap` was set.
+    """
     if n_items < max(2, min_items):
         return 1
     override = _env_int(env)
-    base = override if override is not None else min(cap, os.cpu_count() or 1)
+    if override is not None:
+        base = override
+    else:
+        base = min(cap, os.cpu_count() or 1) if cpu_bound else cap
     return max(1, min(base, n_items))
 
 
@@ -108,7 +118,7 @@ def chunk_bounds(n: int, k: int) -> list[tuple[int, int]]:
 # Per-granule fetch fan-out (fetch_bbox across granules, in index_{atl06,glas,icessn}). Each granule's own fetch
 # already uses RangeReader's internal thread pool, so the OUTER pool is kept small: outer x inner concurrency then
 # stays within the HTTPS connection pool (pool_maxsize=32). Env AICESAT_FETCH_WORKERS overrides the outer width.
-FETCH_WORKER_CAP = 4
+FETCH_WORKER_CAP = 16       # network-latency-bound, not CPU-bound — see pool_size(cpu_bound=False)
 FETCH_MIN_GRANULES = 3          # 1-2 granules: fetch serially (a pool would only add overhead)
 FETCH_WORKER_ENV = "AICESAT_FETCH_WORKERS"
 

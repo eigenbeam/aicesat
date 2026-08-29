@@ -323,7 +323,8 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
             return local
 
         urls = list(by_url)
-        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+        nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                       cpu_bound=False)
         if nw == 1:
             parts = [_ingest_granule(u) for u in urls]
         else:
@@ -383,7 +384,8 @@ def _fetch_direct(bbox, window=None, res: int = GLAS_RES) -> tuple[dict, dict]:
         return local
 
     urls = list(by_url)
-    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV)
+    nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                       cpu_bound=False)
     if nw == 1:
         parts = [_fetch_granule(u) for u in urls]
     else:
