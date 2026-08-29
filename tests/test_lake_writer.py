@@ -103,13 +103,13 @@ def test_coverage_is_marked_only_after_the_file_lands():
     """A write that fails must leave the chunk unmarked, so the next request re-fetches instead of trusting a gap."""
     _atl06_scene()
     real = lake.write_point_chunk
-    calls = {"n": 0}
+    failed = []          # _index_rows selects DISTINCT with no ORDER BY, so WHICH chunk comes first is not fixed
 
-    def _fails_once(*a, **kw):
-        calls["n"] += 1
-        if calls["n"] == 1:
+    def _fails_once(mission, granule, beam, chunk_index, *a, **kw):
+        if not failed:
+            failed.append(chunk_index)
             raise OSError("disk full")
-        return real(*a, **kw)
+        return real(mission, granule, beam, chunk_index, *a, **kw)
 
     orig, lake.write_point_chunk = lake.write_point_chunk, _fails_once
     try:
@@ -120,7 +120,7 @@ def test_coverage_is_marked_only_after_the_file_lands():
     assert got["lon"].size == 28, "the failed write must not cost the caller its points"
     marked = lake.ingested_chunk_cells("ATL06", [GRANULE])
     assert marked, "the chunks that did write should be marked"
-    assert {k for _g, _b, k, _c in marked} == {1, 2}, "the failed chunk 0 was marked as ingested anyway"
+    assert {k for _g, _b, k, _c in marked} == {0, 1, 2} - set(failed), f"chunk {failed} was marked despite failing"
 
     # the next request re-fetches exactly the chunk that failed, and still returns the full result
     again, st = index_atl06.fetch_bbox(BBOX)
