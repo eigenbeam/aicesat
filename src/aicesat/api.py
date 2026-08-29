@@ -279,6 +279,8 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
             stream_lock = threading.Lock()
             stream_pending: dict[str, list] = {}     # mission -> partials buffered before z0 is known (baking needs z0)
             finalized: set[str] = set()              # missions whose authoritative add_series has replaced the preview
+            last_stream_save = [0.0]                  # coalesce the progressive saves: json.dumps(doc) per granule is O(N^2)
+            STREAM_SAVE_MIN_S = 1.0                   # persist the growing preview at most ~1/s; finalize always saves
 
             def _flush_pending_locked():
                 """Append every buffered partial now that z0 is known. Caller holds stream_lock; does not save."""
@@ -302,7 +304,9 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                             stream_pending.setdefault(mission, []).append(pts); return
                         _flush_pending_locked()                # drain anything buffered before z0, then this granule
                         scene.append_partial(doc, mission, pts)
-                        cache.save_scene(sid, doc)
+                        now = time.time()                      # coalesce saves: re-dumping the whole doc every granule is O(N^2)
+                        if now - last_stream_save[0] >= STREAM_SAVE_MIN_S:
+                            cache.save_scene(sid, doc); last_stream_save[0] = now
                 return cb
 
             def _prefetch_imagery():                 # warm the imagery JPEG cache; add_imagery() below then cache-hits

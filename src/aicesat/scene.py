@@ -108,6 +108,15 @@ def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) ->
             "labels": {"note": "Native coordinates as delivered; no co-registration applied."}}
 
 
+# Per-mission cap on the streamed preview point count. append_partial accumulates the un-strided display points of
+# every granule as it lands; without a cap a dense mission (e.g. ATL06 over a big area, ~2M points across ~200
+# granules) grows the doc to tens of MB, and since cache.save_scene json.dumps the WHOLE doc on every granule that is
+# O(N^2) serialisation — the dominant cost of a large build. The preview only needs enough points to read as "the
+# cloud is raining in"; the finalize (add_series over the authoritative arrays) replaces it with the full strided
+# series regardless. So once a mission's preview reaches this many points, further partials are dropped.
+PARTIAL_PREVIEW_CAP = 200_000
+
+
 GLAS_OUTLIER_M = 50.0     # a shot this far from the median of its neighbours is a cloud/atmosphere return
 GLAS_NEIGHBOR_M = 400.0   # neighbourhood radius: ~2 shots along-track plus repeat-track shots from other campaigns
 GLAS_MIN_NEIGHBORS = 6
@@ -179,7 +188,7 @@ def append_partial(doc: dict, mission: str, arrays: dict) -> dict:
         s = {"mission": mission, "color": COLORS[mission], "n": 0, "n_extracted": 0, "stride": 1,
              "cache_key": None, "positions": [], "meta": {"partial": True}, "granules": []}
         doc["series"][mission] = s
-    if lon.size:
+    if lon.size and (len(s["positions"]) // 3) < PARTIAL_PREVIEW_CAP:   # cap the preview so the doc can't balloon (O(N^2) saves)
         x, y = to_local(doc["frame"], lon, np.asarray(arrays["lat"], dtype="f8"))
         z = np.asarray(arrays["h"], dtype="f8") - doc["z0"]
         pos = np.round(np.column_stack([x, y, z]).astype("f4"), 3).ravel().tolist()
