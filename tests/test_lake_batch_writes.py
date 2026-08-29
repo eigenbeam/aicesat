@@ -16,10 +16,11 @@ import pytest
 
 from aicesat import index_atl06, lake
 
-from test_lake_cache import _atl06_scene, _lake_env, _same   # noqa: F401
+from test_lake_cache import _atl06_scene, _build_atl06, _lake_env, _same   # noqa: F401
 
 BBOX = (-45.5, 69.5, -44.5, 71.5)
 GRANULE = "ATL06_20200115000000_11760601_007_01.h5"
+LONG_GRANULE = "ATL06_20200310000000_11760601_007_01.h5"
 
 
 @pytest.fixture
@@ -152,3 +153,53 @@ def test_a_superseding_batch_removes_the_files_it_replaces(batched, monkeypatch)
     rows = _rows(again)
     assert len(rows) == len(set(rows)), "the batch did not supersede the per-chunk files it replaced"
     _same(golden, again)
+
+
+def _long_track_scene():
+    """A track far longer than the query box, which is the production geometry and what the small fixture lacks.
+
+    An ATL06 chunk is 10,000 segments (~400 km) while a scene bbox is tens of km, so a chunk touches many cells the
+    query never asked for. _atl06_scene()'s track sits entirely INSIDE its bbox, so it writes no out-of-bbox cells at
+    all — a wanted-cells-only test built on it passes whether the restriction works or not.
+    """
+    n = 60
+    lat = np.linspace(66.0, 75.0, n); lon = np.full(n, -45.0)
+    h = np.linspace(2500.0, 2560.0, n).astype("f4")
+    q = np.zeros(n, "i1")
+    _build_atl06(lat, lon, h, q, C=20, granule=LONG_GRANULE, url="https://x/atl06long.h5")
+
+
+def _cells_written():
+    return {int(p.name.split("=")[1]) for p in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*")}
+
+
+def test_wanted_cells_only_writes_less_but_returns_the_same_points(monkeypatch):
+    """A fetched chunk materialises every cell it TOUCHES, not just the cells the query wants.
+
+    An ATL06 chunk spans ~400 km and a res-5 hexagon ~20 km, so a scene-sized bbox pays to write ~4x the cells it
+    asked for — speculative caching for a later pan. AICESAT_WRITE_WANTED_CELLS_ONLY=1 turns that off. The returned
+    points must be identical either way; only the cache footprint changes.
+    """
+    narrow = (-45.5, 69.5, -44.5, 70.0)                     # a slice of a track running 66N to 75N
+    _long_track_scene()
+    monkeypatch.setenv(index_atl06.WANTED_CELLS_ONLY_ENV, "0")
+    full, _ = index_atl06.fetch_bbox(narrow)
+    assert lake.drain_writes(timeout=20.0)
+    full_cells = _cells_written()
+
+    import shutil
+    shutil.rmtree(lake.LAKE_DIR, ignore_errors=True)
+    lake.META_DB.unlink(missing_ok=True)
+    monkeypatch.setenv(index_atl06.WANTED_CELLS_ONLY_ENV, "1")
+    lean, _ = index_atl06.fetch_bbox(narrow)
+    assert lake.drain_writes(timeout=20.0)
+    lean_cells = _cells_written()
+
+    golden, _ = index_atl06._fetch_direct(narrow)
+    _same(golden, full)
+    _same(golden, lean)                                     # identical points either way — only the cache differs
+
+    want = set(index_atl06._index_rows(narrow, None, index_atl06.ATL06_RES, False)[0])
+    assert lean_cells <= want, (lean_cells - want)
+    assert len(lean_cells) < len(full_cells), (
+        f"the fixture wrote no out-of-bbox cells ({len(full_cells)}), so this proves nothing")

@@ -76,6 +76,14 @@ def main(bbox) -> None:
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
+    # Files written, because the whole layout argument turns on this and we have been inferring it. cells/chunk is
+    # the multiplier that actually sets the write cost: a 10,000-segment ATL06 chunk spans ~400 km, and a res-5 hex is
+    # ~20 km, so one chunk touches far more cells than a small bbox wants.
+    nfiles = sum(1 for _ in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*/*.parquet"))
+    ncells = sum(1 for _ in (lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*"))
+    nch = st.get("chunks_fetched") or 1
+    print(f"  lake wrote    {nfiles:,} files in {ncells:,} cells  ({nfiles/nch:.1f} files/chunk, "
+          f"{st.get('cells')} cells wanted)")
     print(f"\n  WALL          {wall:7.1f}s   (what the request waits for)")
     print(f"  writer tail   {tail:7.1f}s   (background lake writes still outstanding at that point)")
     for k in PHASES:

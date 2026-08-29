@@ -164,6 +164,13 @@ def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.nda
 
 MISSION = "ATL06"
 _EMPTY = ("lon", "lat", "h", "t", "quality")
+WANTED_CELLS_ONLY_ENV = "AICESAT_WRITE_WANTED_CELLS_ONLY"
+
+
+def _wanted_cells_only() -> bool:
+    """EXPERIMENTAL: materialise only the cells the query asked for, not every cell a fetched chunk touches."""
+    import os
+    return os.environ.get(WANTED_CELLS_ONLY_ENV, "0").lower() in ("1", "true", "yes")
 
 
 def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tuple[list[int], list[dict]]:
@@ -265,6 +272,12 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
     n_lake = len(chunk_cells) - len(todo)
 
+    # A 10,000-segment ATL06 chunk spans ~400 km and a res-5 hexagon is ~20 km, so one chunk materialises ~20 cells
+    # while a scene-sized bbox wants ~5 — roughly 4x the write work, spent caching neighbours nobody asked for. That
+    # speculative overlap is a real (if unquantified) benefit when the user pans, so restricting it is opt-in:
+    # AICESAT_WRITE_WANTED_CELLS_ONLY=1 writes only the requested cells, as ICESSN already does for its own reason.
+    # Coverage stays consistent either way — mark_cells is the chunk's WANTED cells, which is a subset of both.
+    want_only = tuple(sorted(int(c) for c in want_cells)) if _wanted_cells_only() else None
     reader, fresh_parts = None, []
     if todo:
         reader = RangeReader()
@@ -312,7 +325,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is
                 # not re-fetched forever; write_point_chunk adds any extra cell its points materialise.
                 writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["chunk_index"], mats,
-                                              mark_cells=tuple(sorted(chunk_cells[k]))))
+                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k]))))
                 keep = _keep(mats, {c for c in chunk_cells[k] if (k[0], k[1], k[2], c) in have})
                 g = out.setdefault(r["granule"], {kk: [] for kk in _EMPTY})
                 for kk in _EMPTY:
