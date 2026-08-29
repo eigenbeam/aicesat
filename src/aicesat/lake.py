@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import zlib
 from datetime import datetime, timezone
 from typing import NamedTuple
@@ -91,18 +92,30 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
     so a fetched span must materialize ONLY the cells it was fetched for (writing a sibling cell from a partial span
     would reintroduce the partial-cell bug). ATL06/GLAS pass None: a fetched chunk materializes every cell it touches.
     """
+    tables = _cell_tables(granule, beam, chunk_index, arrays, res, extras, only_cells)
+    beam = beam or "na"; gstem = _stem(granule)
+    for cell, tbl in tables.items():
+        d = cell_dir(mission, cell); d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(tbl, d / f"{gstem}__{beam}__c{int(chunk_index)}.parquet",
+                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
+    return {int(chunk_index): sorted(tables)}
+
+
+def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: int,
+                 extras: tuple[str, ...], only_cells) -> dict[int, "pa.Table"]:
+    """One chunk's points split into {cell: Arrow table}. Shared by the per-chunk and per-granule write paths so both
+    produce byte-identical column layouts."""
     from . import planner
 
     lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8")
     h = np.asarray(arrays["h"], "f8"); t = np.asarray(arrays["t"]).astype("datetime64[ms]")
     ok = np.isfinite(lon) & np.isfinite(lat)          # a point with no valid position cannot be placed in a cell
     if not ok.any():
-        return {int(chunk_index): []}
+        return {}
     cells = np.zeros(lon.size, "u8")
     cells[ok] = planner._cells_vectorized(lat[ok], lon[ok], res)
-    beam = beam or "na"; gstem = _stem(granule)
     keep_cells = None if only_cells is None else {int(c) for c in only_cells}
-    written: list[int] = []
+    out: dict[int, pa.Table] = {}
     for cell in np.unique(cells[ok]):
         if keep_cells is not None and int(cell) not in keep_cells:
             continue
@@ -110,15 +123,112 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
         nn = int(m.sum())
         cols = {"native_lon": lon[m], "native_lat": lat[m], "native_height": h[m], "t": pa.array(t[m]),
                 "source_granule": pa.array([granule] * nn).dictionary_encode(),
-                "beam": pa.array([beam] * nn).dictionary_encode(),
+                "beam": pa.array([beam or "na"] * nn).dictionary_encode(),
                 "source_chunk_index": np.full(nn, int(chunk_index), "i4")}
         for ex in extras:
             cols[ex] = np.asarray(arrays[ex])[m]
-        d = cell_dir(mission, int(cell)); d.mkdir(parents=True, exist_ok=True)
-        pq.write_table(pa.table(cols), d / f"{gstem}__{beam}__c{int(chunk_index)}.parquet",
-                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
-        written.append(int(cell))
-    return {int(chunk_index): sorted(written)}
+        out[int(cell)] = pa.table(cols)
+    return out
+
+
+BATCH_WRITE_ENV = "AICESAT_LAKE_BATCH_WRITES"
+_TAG_RE = re.compile(r"__c([0-9.]+)\.parquet$")
+MAX_TAG_LEN = 120        # keep the filename well inside any filesystem limit; longer batches fall back to per-chunk
+
+
+def batch_writes_enabled() -> bool:
+    """EXPERIMENTAL. Set AICESAT_LAKE_BATCH_WRITES=1 to write one Parquet file per (cell, granule, beam, chunk-BATCH)
+    instead of one per chunk. Off by default until the win is measured on the box — see write_point_chunks."""
+    return os.environ.get(BATCH_WRITE_ENV, "0").lower() in ("1", "true", "yes")
+
+
+def _chunk_tag(chunks) -> str | None:
+    """Filename tag naming the exact chunk SET a file holds, e.g. 'c12.13.14'. None when it would be too long.
+
+    The set must be IN the name. Naming a batch file by granule+beam alone would make a later partial re-fetch
+    overwrite a file holding chunks the re-fetch does not carry, silently deleting cached data; naming it by the set
+    makes every write either an exact rewrite or a new file, both of which are safe.
+    """
+    tag = "c" + ".".join(str(int(c)) for c in sorted(set(chunks)))
+    return tag if len(tag) <= MAX_TAG_LEN else None
+
+
+def _file_chunks(path) -> set[int] | None:
+    m = _TAG_RE.search(path.name)
+    return {int(x) for x in m.group(1).split(".") if x != ""} if m else None
+
+
+def write_point_chunks(mission: str, chunks, res: int, extras: tuple[str, ...] = ()) -> dict[int, list[int]]:
+    """Materialize a whole granule's chunks with ONE file per cell instead of one per (cell, chunk).
+
+    Motivation, measured on the box: a 4,566-chunk leg spent 115.9 write thread-seconds over ~32k files — ~3.6 ms per
+    file, and `bench_lake_params` writing the same shape to $TMPDIR unloaded measured 0.089 ms per file. Those differ
+    by 40x, so the sweep's "bigger files buy 26%" does not describe this path; here per-FILE cost looks dominant and
+    cutting the file count ~5x should be worth much more.
+
+    Safety: each file is named by the chunk SET it holds. A re-fetch of the same set rewrites the same file; a batch
+    that strictly SUPERSEDES older files deletes them after writing. A PARTIAL overlap (neither equal nor a superset)
+    cannot be resolved without a read-modify-write, so this falls back to per-chunk files for that cell — today's
+    behaviour, always correct. Partial overlap needs eviction to split a chunk's cells, so it is rare.
+    """
+    per_cell: dict[int, list] = {}                     # cell -> [(chunk_index, table)]
+    written: dict[int, list[int]] = {int(c.chunk_index): [] for c in chunks}
+    for cw in chunks:
+        for cell, tbl in _cell_tables(cw.granule, cw.beam, cw.chunk_index, cw.arrays, res, extras, cw.only_cells).items():
+            per_cell.setdefault(cell, []).append((int(cw.chunk_index), tbl))
+    if not per_cell:
+        return written
+    granule, beam = chunks[0].granule, (chunks[0].beam or "na")
+    gstem = _stem(granule)
+    for cell, items in per_cell.items():
+        d = cell_dir(mission, cell); d.mkdir(parents=True, exist_ok=True)
+        new = {ci for ci, _ in items}
+        tag = _chunk_tag(new)
+        superseded, overlapping = [], []
+        for p in d.glob(f"{gstem}__{beam}__c*.parquet"):
+            have = _file_chunks(p)
+            if have is None or not (have & new):
+                continue                               # unrelated file, or a disjoint chunk range: leave it alone
+            (superseded if have <= new else overlapping).append((p, have))
+        # A file carrying SOME of the chunks we are about to write must give them up first. Writing beside it — even
+        # under the per-chunk name — leaves its copy in place and duplicates those rows, which is exactly what a
+        # per-chunk fallback silently did: a cell holding `c1.2` plus a re-fetch of chunk 1 got `c1` alongside it.
+        for p, have in overlapping:
+            _trim_file(p, have - new, d, gstem, beam)
+        if tag is None:                                # cannot name the set: use the always-safe per-chunk layout
+            for ci, tbl in items:
+                pq.write_table(tbl, d / f"{gstem}__{beam}__c{ci}.parquet",
+                               compression="zstd", row_group_size=ROW_GROUP_ROWS)
+        else:
+            merged = items[0][1] if len(items) == 1 else pa.concat_tables([t for _ci, t in items])
+            pq.write_table(merged, d / f"{gstem}__{beam}__{tag}.parquet",
+                           compression="zstd", row_group_size=ROW_GROUP_ROWS)
+        keep = {d / f"{gstem}__{beam}__c{ci}.parquet" for ci, _ in items} if tag is None else {d / f"{gstem}__{beam}__{tag}.parquet"}
+        for p, _have in superseded:
+            if p not in keep:
+                p.unlink(missing_ok=True)              # its chunks are all in the file(s) just written
+        for ci, _tbl in items:
+            written[ci].append(cell)
+    return {ci: sorted(cs) for ci, cs in written.items()}
+
+
+def _trim_file(path, keep_chunks: set[int], d, gstem: str, beam: str) -> None:
+    """Rewrite `path` holding only `keep_chunks`, renamed to match, or delete it when nothing is left.
+
+    Reachable only when a re-fetch covers PART of an existing file's chunk set, which needs eviction to split a
+    chunk's cells. Costs one read + one write of a small file on a rare path, and keeps the invariant that every
+    chunk lives in exactly one file per cell.
+    """
+    if not keep_chunks:
+        path.unlink(missing_ok=True)
+        return
+    tag = _chunk_tag(keep_chunks)
+    tbl = pq.read_table(path)
+    m = np.isin(np.asarray(tbl.column("source_chunk_index")), np.asarray(sorted(keep_chunks), "i4"))
+    out = d / (f"{gstem}__{beam}__{tag}.parquet" if tag else path.name)
+    pq.write_table(tbl.filter(pa.array(m)), out, compression="zstd", row_group_size=ROW_GROUP_ROWS)
+    if out != path:
+        path.unlink(missing_ok=True)
 
 
 STREAM_BATCHES = 6   # cell groups per streamed read: enough to look continuous, few enough not to add query overhead
@@ -495,16 +605,33 @@ class _Writer:
     def _run_job(self, job) -> None:
         mission, res, chunks, cells, extras = job
         per_gb: dict[tuple[str, str], dict] = {}
+        # A job carries one granule but possibly several beams; the batch path writes one file per cell per
+        # (granule, beam), so group before calling it.
+        by_gb: dict[tuple[str, str], list] = {}
         for cw in chunks:
-            try:
-                cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
-                                       extras=extras, only_cells=cw.only_cells)
-            except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
-                self.chunk_errors += 1
-                log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
-                              mission, cw.granule, cw.beam, cw.chunk_index)
+            by_gb.setdefault((cw.granule, cw.beam), []).append(cw)
+        for (granule, beam), group in by_gb.items():
+            if batch_writes_enabled():
+                try:
+                    cc = write_point_chunks(mission, group, res, extras=extras)
+                except Exception:   # a failed batch loses only this (granule, beam); it stays unmarked, so re-fetched
+                    self.chunk_errors += len(group)
+                    log.exception("lake writer: %s %s/%s batch of %d chunks failed to write; it will be re-fetched",
+                                  mission, granule, beam, len(group))
+                    continue
+                for cw in group:
+                    per_gb.setdefault((granule, beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
                 continue
-            per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
+            for cw in group:
+                try:
+                    cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
+                                           extras=extras, only_cells=cw.only_cells)
+                except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
+                    self.chunk_errors += 1
+                    log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
+                                  mission, cw.granule, cw.beam, cw.chunk_index)
+                    continue
+                per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
         with self._lock:
             self._done.append((mission, [(g, b, cm) for (g, b), cm in per_gb.items()], cells))
             self.jobs_written += 1
