@@ -12,7 +12,8 @@ import time
 from aicesat import atl06, auth, cache, index_atl06, lake, regions
 from aicesat.access import RangeReader
 
-PHASES = ("fetch", "decode", "write", "index_rows", "ingested", "mark", "query_points", "evict", "cache_save")
+PHASES = ("fetch", "decode", "write", "cells", "mark_many",
+          "index_rows", "ingested", "query_points", "evict", "cache_save")
 TOT = {k: 0.0 for k in PHASES}
 CNT = {k: 0 for k in PHASES}
 
@@ -38,7 +39,12 @@ def main(bbox) -> None:
     # everything else on the leg's critical path — the first run left 27.5s of 58.5s unaccounted
     index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
     lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
-    lake.mark_ingested = _timed("mark", lake.mark_ingested)
+    lake.mark_ingested_many = _timed("mark_many", lake.mark_ingested_many)
+    # H3 assignment is the main untimed CPU step inside the per-granule work. NOTE it is called from BOTH the
+    # ingest path and write_point_chunk, so "cells" partly double-counts "write" — read it as "how much H3", not
+    # as a disjoint slice.
+    from aicesat import planner
+    planner._cells_vectorized = _timed("cells", planner._cells_vectorized)
     lake.query_points = _timed("query_points", lake.query_points)
     lake.enforce_global_limit = _timed("evict", lake.enforce_global_limit)
     cache.save = _timed("cache_save", cache.save)
