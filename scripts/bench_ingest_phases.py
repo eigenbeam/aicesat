@@ -86,7 +86,9 @@ def main(bbox) -> None:
           f"writers={lake._writer_threads()}  fetch_workers={nw} (cap {FETCH_WORKER_CAP})")
     print(f"  points        {arrays['lon'].size:,}")
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
+    gap = st.get("gap_bytes", 0)
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
+    print(f"                {(st.get('bytes', 0)-gap)/1e6:.1f} MB WANTED + {gap/1e6:.1f} MB over-fetch from coalescing")
     nch = st.get("chunks_fetched") or 1
     print(f"  lake wrote    {WROTE['files']:,} files in {len(WROTE['cells']):,} cells  "
           f"({WROTE['files']/nch:.1f} files/chunk, {st.get('cells')} cells wanted)")
@@ -96,7 +98,11 @@ def main(bbox) -> None:
         print(f"  {k:13s} {TOT[k]:7.1f}s  (thread-seconds over {CNT[k]} calls)")
     print(f"  unaccounted   {wall - sum(TOT.values()):7.1f}s  (negative = phases ran concurrently)")
     if st.get("bytes"):
-        print(f"\n  effective     {st['bytes']/1e6/wall:.1f} MB/s   vs ~358 MB/s measured for the raw transport")
+        # Two rates, because they differ by ~2.4x and the flattering one is the wrong one to optimise. The raw ceiling
+        # (~358 MB/s) was itself measured on bytes READ, so that comparison belongs with the read rate.
+        print(f"\n  effective     {(st['bytes']-gap)/1e6/wall:.1f} MB/s of WANTED data")
+        print(f"                {st['bytes']/1e6/wall:.1f} MB/s read incl. over-fetch  "
+              f"(vs ~358 MB/s measured for the raw transport)")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,20 @@
 """How much is the byte-range coalescing gap worth in-region?
 
-RangeReader defaults to a 256 KB gap in-region, on the reasoning that "the round trip is ~10-30 ms and egress is
-free, so a SMALL gap wins (less over-fetch)". The ingest measurements contradict the premise: a real leg moved
-1,415 MB in 5,741 GETs — 246 KB each at ~25 ms each, i.e. ~9.7 MB/s per stream, almost entirely time-to-first-byte.
-If a GET costs the same whether it carries 246 KB or 1.5 MB, then a round trip is EXPENSIVE relative to over-fetch
-and the gap should be large.
+RangeReader defaulted to a 256 KB gap in-region, on the reasoning that "the round trip is ~10-30 ms and egress is
+free, so a SMALL gap wins (less over-fetch)".
+
+Measured on the box (921 granules, 22,830 ranges, 591 MB wanted, 16 workers), there are TWO regimes and that default
+sits on the wrong side of the knee:
+
+     gap    spans   MB read   best s   ms/GET
+    0.25    5,741      1415     13.6     38.0     <- the old default
+    1.00    3,969      2184      9.3     37.7     <- the knee
+    4.00    1,711      7437     13.7    128.0
+   16.00      924     13965     23.6    408.2
+
+ms/GET is FLAT below ~1 MB per span (latency-bound: a GET costs the same whatever it carries, so removing round trips
+is nearly free) and climbs steeply above it (bandwidth-bound: the over-fetch is now real transfer time). Both the old
+comment and the objection to it were right about different halves of the curve.
 
 This sweeps the gap over the real range geometry of a bbox — same granules, same byte offsets the ingest would use —
 and fetches only (no decode, no lake write), so the transport is the only variable. It reports the over-fetch each
@@ -72,7 +82,8 @@ def main() -> None:
                    cpu_bound=False)
     print(f"{len(plan)} granules, {sum(len(r) for r in plan.values()):,} ranges, {wanted/1e6:.0f} MB wanted, "
           f"{nw} workers, s3_direct={in_region()}")
-    print(f"\n{'gap MB':>8}{'spans':>9}{'MB read':>10}{'over-fetch':>12}{'best s':>9}{'MB/s':>9}{'ms/GET':>9}")
+    print(f"\n{'gap MB':>8}{'spans':>9}{'MB read':>10}{'over-fetch':>12}{'best s':>9}"
+          f"{'MB/s want':>11}{'MB/s read':>11}{'ms/GET':>9}")
     for g in args.gaps:
         gap = int(g * (1 << 20))
         spans = sum(len(coalesce(rs, gap)) for rs in plan.values())   # predicted, before any network call
@@ -83,7 +94,7 @@ def main() -> None:
                 best, st = dt, s
         over = st.bytes - wanted
         print(f"{g:>8.2f}{spans:>9,}{st.bytes/1e6:>10.0f}{over/1e6:>11.0f}M{best:>9.1f}"
-              f"{st.bytes/1e6/best:>9.1f}{best*1000*nw/max(spans,1):>9.1f}")
+              f"{wanted/1e6/best:>11.1f}{st.bytes/1e6/best:>11.1f}{best*1000*nw/max(spans,1):>9.1f}")
     print("\nover-fetch is bytes pulled only because they sat between two wanted ranges; in-region egress is free, so\n"
           "it costs time only, and a gap pays whenever it removes more round-trip latency than it adds transfer.")
 
