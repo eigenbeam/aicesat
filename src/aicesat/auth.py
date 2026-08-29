@@ -22,7 +22,10 @@ _TOKEN_KEYS = ("token", "access_token", "EARTHDATA_TOKEN", "edl_token")
 _auth = None
 
 
-def read_edl_token(path: Path = EDL_FILE) -> str | None:
+def read_edl_token(path: Path | None = None) -> str | None:
+    # Resolved at CALL time, not bound as a default: a default argument would freeze EDL_FILE at import and make the
+    # module global (and any override of it) a lie.
+    path = EDL_FILE if path is None else path
     if path.is_dir():
         path = path / "token.prod"
     if not path.exists():
@@ -78,8 +81,12 @@ def login():
             os.environ["EARTHDATA_TOKEN"] = tok
             log.info("loaded EARTHDATA_TOKEN from %s", EDL_FILE)
         else:
-            log.warning("no EARTHDATA_TOKEN and no token at %s; trying ~/.netrc (strategy='all')", EDL_FILE)
-    strategy = "environment" if os.environ.get("EARTHDATA_TOKEN") else "all"
+            log.warning("no EARTHDATA_TOKEN and no token at %s; trying ~/.netrc", EDL_FILE)
+    # NEVER "all": earthaccess tries environment -> netrc -> INTERACTIVE, and the interactive strategy prompts on
+    # stdin. In a benchmark or the web server that turns a missing token into a silent hang instead of an error, and
+    # in the MCP stdio server a stdin prompt corrupts the protocol. Name the non-interactive strategy and let the
+    # failure raise _AUTH_HELP, which says how to supply a token.
+    strategy = "environment" if os.environ.get("EARTHDATA_TOKEN") else "netrc"
     try:
         _auth = earthaccess.login(strategy=strategy)
     except Exception as e:
