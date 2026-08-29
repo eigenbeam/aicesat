@@ -9,11 +9,12 @@ downstream. This wraps the three phases in place and reports the totals.
 import sys
 import time
 
-from aicesat import atl06, auth, index_atl06, lake, regions
+from aicesat import atl06, auth, cache, index_atl06, lake, regions
 from aicesat.access import RangeReader
 
-TOT = {"fetch": 0.0, "decode": 0.0, "write": 0.0}
-CNT = {"fetch": 0, "decode": 0, "write": 0}
+PHASES = ("fetch", "decode", "write", "index_rows", "ingested", "mark", "query_points", "evict", "cache_save")
+TOT = {k: 0.0 for k in PHASES}
+CNT = {k: 0 for k in PHASES}
 
 
 def _timed(bucket, fn):
@@ -34,6 +35,13 @@ def main(bbox) -> None:
     RangeReader.fetch = _timed("fetch", RangeReader.fetch)
     index_atl06._decode_chunk = _timed("decode", index_atl06._decode_chunk)
     lake.write_point_chunk = _timed("write", lake.write_point_chunk)
+    # everything else on the leg's critical path — the first run left 27.5s of 58.5s unaccounted
+    index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
+    lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
+    lake.mark_ingested = _timed("mark", lake.mark_ingested)
+    lake.query_points = _timed("query_points", lake.query_points)
+    lake.enforce_global_limit = _timed("evict", lake.enforce_global_limit)
+    cache.save = _timed("cache_save", cache.save)
 
     t = time.time()
     arrays, meta = atl06.extract(bbox, regions.DEFAULT_ATL06_WINDOW)
@@ -44,7 +52,7 @@ def main(bbox) -> None:
     print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
     print(f"\n  WALL          {wall:7.1f}s")
-    for k in ("fetch", "decode", "write"):
+    for k in PHASES:
         print(f"  {k:13s} {TOT[k]:7.1f}s  (thread-seconds over {CNT[k]} calls)")
     print(f"  unaccounted   {wall - sum(TOT.values()):7.1f}s  (negative = phases ran concurrently)")
     if st.get("bytes"):
