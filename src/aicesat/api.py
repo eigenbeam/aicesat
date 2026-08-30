@@ -448,10 +448,20 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
                             registry_upsert(sid, series=sorted(doc["series"]))
                             cache.save_scene(sid, doc)    # progressive persistence: this series is now paintable
                     except Exception as e:
-                        log.warning("%s unavailable: %s", disp, e); log_fn(f"{disp} unavailable: {e}")
+                        # exc_info: a leg's traceback is the only record of WHY it failed, and discarding it has now
+                        # twice sent a diagnosis down the wrong path — "GLAS unavailable: ..." reads like missing
+                        # data whether the cause is an empty region or a TypeError on the first line.
+                        log.warning("%s unavailable: %s: %s", disp, type(e).__name__, e, exc_info=True)
+                        log_fn(f"{disp} unavailable: {type(e).__name__}: {e}")
                         with stream_lock:   # a leg that never lands must stop showing as in-flight
                             doc.setdefault("progress", {}).setdefault(mkey, {}).update(
-                                {"phase": "unavailable", "note": str(e)[:120]})
+                                {"phase": "unavailable", "note": f"{type(e).__name__}: {e}"[:160]})
+                            # Its streamed preview is still in the doc and would render as if it were the mission's
+                            # real data — a partial GLAS cloud looks like sparse coverage, not a failed leg. Mark it
+                            # so the UI can say so; the points are real, the SERIES is not complete.
+                            ser = (doc.get("series") or {}).get(mkey)
+                            if ser is not None:
+                                ser.setdefault("meta", {})["failed"] = f"{type(e).__name__}: {e}"[:160]
                         continue
 
                 if not doc["series"]:

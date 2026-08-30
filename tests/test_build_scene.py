@@ -409,3 +409,36 @@ def test_progress_marks_a_failed_collection_unavailable(monkeypatch, tmp_path):
     pr = doc.get("progress") or {}
     assert pr.get("ICESSN", {}).get("phase") == "unavailable", pr.get("ICESSN")
     assert pr.get("GLAS", {}).get("phase") == "done"
+
+
+def test_a_failed_leg_leaves_a_traceback_and_marks_its_preview(monkeypatch, tmp_path, caplog):
+    """A leg that dies after streaming leaves a PARTIAL series in the doc that renders like real data.
+
+    Observed in production: GLAS and ICESSN sat at partial=True with cache_key=None while ATL06 finalized, so the
+    scene showed a thinned preview of each and looked like sparse coverage rather than two failed legs. And the
+    handler logged only str(e), so the traceback — the only record of WHY — was gone.
+    """
+    import logging
+
+    from aicesat import glas
+
+    def _boom_after_streaming(*a, on_granule=None, on_plan=None, **k):
+        if on_granule:                       # stream one granule, exactly as a real leg does, THEN fail
+            on_granule({"granule": "G_partial.h5", "lon": GLAS_A["lon"][:5], "lat": GLAS_A["lat"][:5],
+                        "h": GLAS_A["h"][:5], "t": np.zeros(5, "datetime64[ms]")})
+        raise ValueError("exploded after streaming")
+
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(glas, "extract", _boom_after_streaming)
+    with caplog.at_level(logging.WARNING):
+        doc = api.build_scene(bbox=BBOX, with_glas=True, with_icessn=True, with_atl06=True, with_atl03=False)
+
+    pr = (doc.get("progress") or {}).get("GLAS", {})
+    assert pr.get("phase") == "unavailable"
+    assert "ValueError" in (pr.get("note") or ""), pr          # the TYPE, not just the message
+    ser = (doc.get("series") or {}).get("GLAS")
+    if ser is not None:                                        # a preview survived: it must not look complete
+        assert (ser.get("meta") or {}).get("failed"), "a failed leg's preview is indistinguishable from real data"
+    assert any("Traceback" in r.getMessage() or r.exc_info for r in caplog.records), \
+        "the leg's traceback was discarded — this is what sent two diagnoses down the wrong path"
+    assert set(doc["series"]) >= {"ICESSN", "ATL06"}, "one bad leg must not take the others down"
