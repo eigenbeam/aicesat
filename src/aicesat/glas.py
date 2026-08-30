@@ -88,7 +88,7 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def _extract_via_index(bbox, window, polygon, k, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
+def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_glas
     # clip_cells: build from the H3 cells the selection actually touches (a box gains a hex-aligned fringe; a polygon no
     # longer expands to its bounding rectangle). The precise points_in_polygon below still trims a polygon to its exact

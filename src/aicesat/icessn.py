@@ -66,7 +66,7 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def _extract_via_index(bbox, window, polygon, k, on_granule=None) -> tuple[dict[str, np.ndarray], dict]:
+def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
     from . import index_icessn
     # clip_cells: build from the H3 cells the selection actually touches (see glas._extract_via_index for the rationale).
     # on_granule (opt-in): threaded through for per-granule progressive streaming on a cache-miss build.
