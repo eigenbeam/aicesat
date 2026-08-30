@@ -617,22 +617,42 @@ def main():
         print("SWEEP (median wall seconds by granule count)")
         print("method".ljust(18) + "".join(f"{lab:>12}" for lab in labels))
         print("-" * 125)
+        # A method that returned the WRONG points must not show a comparable-looking time here. The per-region block
+        # prints CORRECTNESS: MISMATCH, but the sweep table is what gets quoted, and kerchunk once appeared as
+        # "29.04" at N=50 having returned 0 points. Mark it, do not time it.
+        def _consensus(results):
+            """The (points, checksum) the majority of methods agree on — the answer, against which the rest are judged."""
+            from collections import Counter
+            votes = Counter((x["points"], x["checksum"]) for x in results if not x.get("skipped"))
+            return votes.most_common(1)[0][0] if votes else None
+
+        agreed = [_consensus(r) for r in all_results]
         for m in methods:
             cells = []
-            for results in all_results:
+            for results, want in zip(all_results, agreed):
                 r = next((x for x in results if _mkey(x.get("method", "")) == m), None)
-                cells.append("skip" if (r is None or r.get("skipped")) else f"{r['stats']['med']:.2f}")
+                if r is None or r.get("skipped"):
+                    cells.append("skip")
+                elif want is not None and (r["points"], r["checksum"]) != want:
+                    cells.append("WRONG")          # returned a different answer; its wall time means nothing
+                else:
+                    cells.append(f"{r['stats']['med']:.2f}")
             print(disp.get(m, m).ljust(18) + "".join(f"{c:>12}" for c in cells))
         # Per-granule scaling is the claim worth making: a single ratio at one N says much less than how the ratio
         # MOVES. Anchored on the first step so "5.7x for 10x the granules" is readable straight off the table.
-        pts = [next((x.get("points") for x in results if not x.get("skipped")), 0) for results in all_results]
+        pts = [(w[0] if w else 0) for w in agreed]
         print("\npoints returned".ljust(18) + "".join(f"{p:>12,}" for p in pts))
         for m in methods:
-            row = [next((x for x in results if _mkey(x.get("method", "")) == m and not x.get("skipped")), None)
-                   for results in all_results]
+            row = []
+            for results, want in zip(all_results, agreed):
+                r = next((x for x in results if _mkey(x.get("method", "")) == m and not x.get("skipped")), None)
+                row.append(r if (r and (want is None or (r["points"], r["checksum"]) == want)) else None)
             if row[0] and row[-1] and row[0]["stats"]["med"] > 0:
                 growth = row[-1]["stats"]["med"] / row[0]["stats"]["med"]
-                print(f"  {disp.get(m, m):<24} {labels[0]} -> {labels[-1]}: {growth:.1f}x slower")
+                print(f"  {disp.get(m, m):<24} {labels[0]} -> {labels[-1]}: {growth:.1f}x slower "
+                      f"for {pts[-1]/max(pts[0], 1):.0f}x the points")
+            else:
+                print(f"  {disp.get(m, m):<24} incomplete — skipped or wrong at one end of the sweep")
         # A step that adds granules carrying no points in the bbox measures per-granule OVERHEAD against a fixed
         # payload, not throughput. That is a fair and useful thing to measure, but a reader who does not notice the
         # points column will read it as throughput.
