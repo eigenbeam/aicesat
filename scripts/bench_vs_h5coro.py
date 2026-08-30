@@ -623,6 +623,23 @@ def main():
                 r = next((x for x in results if _mkey(x.get("method", "")) == m), None)
                 cells.append("skip" if (r is None or r.get("skipped")) else f"{r['stats']['med']:.2f}")
             print(disp.get(m, m).ljust(18) + "".join(f"{c:>12}" for c in cells))
+        # Per-granule scaling is the claim worth making: a single ratio at one N says much less than how the ratio
+        # MOVES. Anchored on the first step so "5.7x for 10x the granules" is readable straight off the table.
+        pts = [next((x.get("points") for x in results if not x.get("skipped")), 0) for results in all_results]
+        print("\npoints returned".ljust(18) + "".join(f"{p:>12,}" for p in pts))
+        for m in methods:
+            row = [next((x for x in results if _mkey(x.get("method", "")) == m and not x.get("skipped")), None)
+                   for results in all_results]
+            if row[0] and row[-1] and row[0]["stats"]["med"] > 0:
+                growth = row[-1]["stats"]["med"] / row[0]["stats"]["med"]
+                print(f"  {disp.get(m, m):<24} {labels[0]} -> {labels[-1]}: {growth:.1f}x slower")
+        # A step that adds granules carrying no points in the bbox measures per-granule OVERHEAD against a fixed
+        # payload, not throughput. That is a fair and useful thing to measure, but a reader who does not notice the
+        # points column will read it as throughput.
+        if len(set(pts)) < len(pts):
+            same = [labels[i] for i in range(1, len(pts)) if pts[i] == pts[i - 1]]
+            print(f"NOTE: {', '.join(same)} returned the SAME point count as the previous step — those granules carry "
+                  f"no data inside the bbox, so that column is per-granule OVERHEAD, not throughput.")
         print("CAVEAT: our per-query win is bought with a one-time index build the others never pay (~$6 whole-Earth "
               "ATL06, amortized over all queries). h5coro/h5py/kerchunk re-walk each granule's structure every query.")
 
