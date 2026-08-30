@@ -186,6 +186,15 @@ class RangeReader:
         # egress is free so the extra bytes are only transfer time), then scales with size. 0.5-1.5 MB is one flat
         # plateau — the 4% spread across it is run-to-run noise — so take the middle with margin to both edges rather
         # than the nominal minimum. Override: AICESAT_COALESCE_GAP (bytes).
+        #
+        # CONFIRMED in a second, 90x smaller regime (bench_vs_h5coro, 10 granules / 6.7 MB wanted), where the worry
+        # was that 1 MB over-fetches 6.3x and would lose to a tighter gap. It does not:
+        #     256 KiB  83 reqs  13.3 MB  0.85 s      1 MiB  25 reqs  42.3 MB  0.53 s
+        #     512 KiB  52 reqs  24.9 MB  0.61 s      2 MiB  25 reqs  42.3 MB  0.69 s
+        # 3.2x more bytes buys a 1.6x speedup. The 2 MiB row reads IDENTICAL spans and bytes to 1 MiB — coalescing has
+        # saturated, every bridgeable gap already bridged — so the 0.53 vs 0.69 difference is pure noise, which puts
+        # the median's noise floor near +/-0.16 s and makes 512 KiB and 1 MiB indistinguishable here. Only 256 KiB is
+        # genuinely worse. Do not re-litigate this for "small queries"; that is the case already measured.
         self.max_gap = max_gap if max_gap is not None else default_coalesce_gap(reg)
         auth.login()
         self.token = os.environ["EARTHDATA_TOKEN"]
