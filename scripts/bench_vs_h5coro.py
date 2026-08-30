@@ -412,7 +412,7 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
     _nw = pool_size(max(len(granules), 2), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
                     cpu_bound=False)
     print(f"config: s3_direct={in_region()}  fetch_workers={_nw}  "
-          f"coalesce_gap={default_coalesce_gap()/1e6:.2f} MB")
+          f"coalesce_gap={default_coalesce_gap()/(1 << 20):.2f} MiB")
     for rep in range(total):
         is_warm = rep < warmup
         for m in methods:
@@ -420,8 +420,13 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
             if s.get("skipped"):
                 continue
             t0 = time.time()
-            npts, lat, h, req, byt, gap = s["one_pass"]()
+            out = s["one_pass"]()
             dt = time.time() - t0
+            # one_pass returns (n_points, lat, h, requests, bytes) and OPTIONALLY a 6th over-fetch count. Only our
+            # path coalesces byte ranges, so only it has one; the others read exactly what they ask for.
+            assert len(out) in (5, 6), f"{m}: one_pass returned {len(out)} values, expected 5 or 6"
+            npts, lat, h, req, byt = out[:5]
+            gap = out[5] if len(out) == 6 else 0
             # Settle our background lake writers BEFORE the next method is timed. fetch_bbox returns as soon as the
             # points are in memory and writes Parquet on daemon threads, and reps are INTERLEAVED — so without this
             # our writes run concurrently with h5coro's timed rep and charge it for our work. Outside the timer, so
