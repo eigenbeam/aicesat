@@ -132,6 +132,15 @@ def in_region() -> bool:
     return "us-west-2" in os.environ.get("AWS_REGION", "") or "us-west-2" in os.environ.get("AWS_DEFAULT_REGION", "")
 
 
+def default_coalesce_gap(reg: bool | None = None) -> int:
+    """The coalescing gap a RangeReader would use here. Split out of __init__ so a benchmark can report the
+    configuration it ran under without building a reader (which would trigger a login)."""
+    env = os.environ.get("AICESAT_COALESCE_GAP")
+    if env:
+        return int(env)
+    return (1 << 20) if (in_region() if reg is None else reg) else (2 << 20)
+
+
 S3_REGION = "us-west-2"          # NSIDC Cumulus S3 + the STS creds are us-west-2 only (in-region == this region)
 _S3_CREDS: dict = {"v": None, "exp": 0.0}
 _S3_CRED_LOCK = threading.Lock()
@@ -177,9 +186,7 @@ class RangeReader:
         # egress is free so the extra bytes are only transfer time), then scales with size. 0.5-1.5 MB is one flat
         # plateau — the 4% spread across it is run-to-run noise — so take the middle with margin to both edges rather
         # than the nominal minimum. Override: AICESAT_COALESCE_GAP (bytes).
-        self.max_gap = (max_gap if max_gap is not None else
-                        int(os.environ["AICESAT_COALESCE_GAP"]) if os.environ.get("AICESAT_COALESCE_GAP")
-                        else (1 << 20 if reg else 2 << 20))
+        self.max_gap = max_gap if max_gap is not None else default_coalesce_gap(reg)
         auth.login()
         self.token = os.environ["EARTHDATA_TOKEN"]
         self.session = requests.Session()

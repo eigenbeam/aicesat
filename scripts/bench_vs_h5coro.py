@@ -3,7 +3,10 @@
 Targets ATL06 (the clean ICESat-2 land-ice case h5coro / SlideRule are built for). Every reader is handed the SAME
 granule set (from the built index) and applies the SAME bbox+quality predicate, so all return byte-identical points;
 only then are timings compared. Readers:
-  ours       -- index_atl06.fetch_bbox (H3 addressing; 0 query-time HDF5 opens; GETs/bytes from reader.stats)
+  ours        -- index_atl06.fetch_bbox with force=True: the H3-addressed byte-range fetch, cold on EVERY rep
+  ours_cached -- the same call without force: served from the lake, no network. A SEPARATE claim from the one above,
+                 so it is a separate row -- nothing resets the lake between reps, and reporting the cache hit as
+                 "our access method" compares our local Parquet to everyone else's network read
   h5coro     -- SlideRule's cloud-native HDF5 reader (re-walks each granule's structure per query)
   h5py_s3fs  -- baseline: h5py slice over s3fs S3-direct
   kerchunk   -- pre-extract chunk refs (amortizable, like our index build), then read via zarr (optional)
@@ -153,17 +156,27 @@ def granules_from_index(bbox, window, res: int) -> list[dict]:
 # and one_pass does the per-query work that is actually timed.
 
 # ----------------------------------------------------------------------------- A. OUR PATH: H3 index + byte-range
-def setup_ours(granules, bbox, window, res):
+def setup_ours(granules, bbox, window, res, cold=True):
+    """`cold=True` re-fetches from NASA on EVERY rep; `cold=False` is the lake cache hit.
+
+    This used to be one method with neither flag, which quietly measured the wrong thing: nothing resets the lake
+    between reps, so after rep 0 every chunk is marked ingested and fetch_bbox returns from local Parquet with
+    requests=0. With --warmup 1 the single rep that touched the network was then DISCARDED, so the timed comparison
+    was our local cache against h5coro's cold network read. Both numbers are worth having — the index advantage and
+    the cache advantage are different claims — so they are now two rows, each labelled for what it is.
+    """
     from aicesat import index_atl06
 
     def one_pass():
-        arr, st = index_atl06.fetch_bbox(bbox, window=window, res=res)
+        arr, st = index_atl06.fetch_bbox(bbox, window=window, res=res, force=cold)
         m = arr["h"].size > 0
         return (int(arr["h"].size), arr["lat"] if m else np.array([]), arr["h"] if m else np.array([]),
-                st.get("requests"), st.get("bytes"))
+                st.get("requests"), st.get("bytes"), st.get("gap_bytes", 0))
 
-    return {"method": "ours (H3 index)", "one_pass": one_pass, "opens": 0, "granules": len(granules),
-            "note": "query-time HDF5 opens = 0 (addressing came from the index)"}
+    return {"method": "ours (H3 index, cold)" if cold else "ours (lake cache hit)",
+            "one_pass": one_pass, "opens": 0, "granules": len(granules),
+            "note": ("query-time HDF5 opens = 0 (addressing came from the index); force=True so every rep fetches"
+                     if cold else "NO network: served from Parquet the index already materialised")}
 
 
 # ----------------------------------------------------------------------------- B. h5coro (query-time structure walk)
@@ -382,7 +395,9 @@ def setup_kerchunk(granules, bbox, window, res):
         return {"method": "kerchunk+zarr", "skipped": f"wiring failed ({type(e).__name__}: {e}) -- optional path"}
 
 
-SETUPS = {"ours": setup_ours, "h5coro": setup_h5coro, "h5py_s3fs": setup_h5py_s3fs, "kerchunk": setup_kerchunk}
+SETUPS = {"ours": setup_ours,
+          "ours_cached": lambda g, b, w, r: setup_ours(g, b, w, r, cold=False),
+          "h5coro": setup_h5coro, "h5py_s3fs": setup_h5py_s3fs, "kerchunk": setup_kerchunk}
 
 
 # ============================================================================= harness: interleaved reps per region
@@ -392,6 +407,12 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
     setups = {m: SETUPS[m](granules, bbox, window, res) for m in methods}
     recs = {m: [] for m in methods}   # per-rep: {wall, req, byt, points, checksum, warmup}
     total = reps + warmup
+    from aicesat.access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, default_coalesce_gap,
+                                in_region, pool_size)
+    _nw = pool_size(max(len(granules), 2), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
+                    cpu_bound=False)
+    print(f"config: s3_direct={in_region()}  fetch_workers={_nw}  "
+          f"coalesce_gap={default_coalesce_gap()/1e6:.2f} MB")
     for rep in range(total):
         is_warm = rep < warmup
         for m in methods:
@@ -399,9 +420,15 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
             if s.get("skipped"):
                 continue
             t0 = time.time()
-            npts, lat, h, req, byt = s["one_pass"]()
+            npts, lat, h, req, byt, gap = s["one_pass"]()
             dt = time.time() - t0
-            recs[m].append({"wall": dt, "req": req, "byt": byt, "points": npts,
+            # Settle our background lake writers BEFORE the next method is timed. fetch_bbox returns as soon as the
+            # points are in memory and writes Parquet on daemon threads, and reps are INTERLEAVED — so without this
+            # our writes run concurrently with h5coro's timed rep and charge it for our work. Outside the timer, so
+            # ours is still time-to-data.
+            from aicesat import lake as _lake
+            _lake.drain_writes()
+            recs[m].append({"wall": dt, "req": req, "byt": byt, "gap": gap or 0, "points": npts,
                             "checksum": checksum(lat, h) if npts else (0.0, 0.0), "warmup": is_warm})
     for s in setups.values():
         td = s.get("teardown")
@@ -424,7 +451,8 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
         results.append({
             "region": label, "method": s["method"], "granules": s.get("granules", len(granules)),
             "opens": s.get("opens", 0), "requests": _med_int([r["req"] for r in timed]),
-            "bytes": _med_int([r["byt"] for r in timed]), "stats": st, "points": pts, "checksum": cs,
+            "bytes": _med_int([r["byt"] for r in timed]), "gap_bytes": _med_int([r["gap"] for r in timed]),
+            "stats": st, "points": pts, "checksum": cs,
             "build_s": s.get("build_s"), "note": s.get("note", ""), "records": recs[m],
         })
     return results
@@ -433,24 +461,28 @@ def bench_region(label, granules, bbox, window, res, methods, reps, warmup):
 # ----------------------------------------------------------------------------- report + csv
 def print_region(label, results, reg):
     ran = [r for r in results if not r.get("skipped")]
-    print("\n" + "=" * 116)
+    print("\n" + "=" * 125)
     print(f"REGION {label}   (reps timing = post-warmup)")
-    print(f"{'method':<18}{'gran':>5}{'opens':>6}{'reqs':>7}{'MB':>9}{'med':>9}{'p95':>9}{'std':>8}{'min':>9}"
-          f"{'points':>9}{'checksum(lat,h)':>22}")
-    print("-" * 116)
+    print(f"{'method':<22}{'gran':>5}{'opens':>6}{'reqs':>7}{'MB read':>9}{'MB want':>9}{'med':>9}{'p95':>9}"
+          f"{'std':>8}{'min':>9}{'points':>9}{'checksum(lat,h)':>22}")
+    print("-" * 125)
     for r in results:
         if r.get("skipped"):
             reason = r["skipped"].split(".")[0][:78]
-            print(f"{r['method']:<18}  skipped -- {reason}")
+            print(f"{r['method']:<22}  skipped -- {reason}")
             continue
         st = r["stats"]
         mb = None if r.get("bytes") is None else r["bytes"] / 1e6
         mbs = "  n/a" if mb is None else f"{mb:.1f}"
+        # bytes READ includes what coalescing pulled across gaps; bytes WANTED is what the query actually needed.
+        # They differ by ~2.4x on our path at the 1 MB in-region gap, and only one of them is a fair "data moved".
+        want = None if mb is None else (r["bytes"] - (r.get("gap_bytes") or 0)) / 1e6
+        wants = "  n/a" if want is None else f"{want:.1f}"
         reqs = "  n/a" if r.get("requests") is None else f"{r['requests']:d}"
-        print(f"{r['method']:<18}{r.get('granules', ''):>5}{r.get('opens', ''):>6}{reqs:>7}{mbs:>9}"
+        print(f"{r['method']:<22}{r.get('granules', ''):>5}{r.get('opens', ''):>6}{reqs:>7}{mbs:>9}{wants:>9}"
               f"{st['med']:>9.2f}{st['p95']:>9.2f}{st['std']:>8.2f}{st['min']:>9.2f}{r['points']:>9}"
               f"{str(r['checksum']):>22}")
-    print("-" * 116)
+    print("-" * 125)
     if len(ran) >= 2:
         ref = ran[0]
         ok = all(r["points"] == ref["points"] and r["checksum"] == ref["checksum"] for r in ran)
@@ -460,9 +492,10 @@ def print_region(label, results, reg):
         else:
             print("CORRECTNESS: MISMATCH -- methods disagree, timings NOT comparable:")
             for r in ran:
-                print(f"    {r['method']:<18} points={r['points']} checksum={r['checksum']}")
+                print(f"    {r['method']:<22} points={r['points']} checksum={r['checksum']}")
     # per-region winner (median, with spread so a close call reads as close)
-    ours = next((r for r in ran if r["method"].startswith("ours")), None)
+    # explicitly the COLD row: comparing our cache hit to h5coro's network read is not a comparison.
+    ours = next((r for r in ran if r["method"].startswith("ours (H3 index")), None)
     h5c = next((r for r in ran if r["method"] == "h5coro"), None)
     if ours and h5c:
         ot, os_, ht, hs = ours["stats"]["med"], ours["stats"]["std"], h5c["stats"]["med"], h5c["stats"]["std"]
@@ -471,7 +504,9 @@ def print_region(label, results, reg):
         if close:
             print(f"WINNER: tie within noise -- ours {ot:.2f}±{os_:.2f}s vs h5coro {ht:.2f}±{hs:.2f}s "
                   f"(gap {gap:.2f}s < combined stdev {os_ + hs:.2f}s). The stable difference is bytes moved: "
-                  f"ours {(ours['bytes'] or 0)/1e6:.1f} MB vs h5coro {(h5c['bytes'] or 0)/1e6:.1f} MB.")
+                  f"ours {(ours['bytes'] or 0)/1e6:.1f} MB read / "
+                  f"{((ours['bytes'] or 0) - (ours.get('gap_bytes') or 0))/1e6:.1f} MB wanted "
+                  f"vs h5coro {(h5c['bytes'] or 0)/1e6:.1f} MB.")
         elif ot < ht:
             print(f"WINNER: ours, {ht/max(ot,1e-9):.2f}x faster (median {ot:.2f}s vs {ht:.2f}s) -- skips the "
                   f"per-query HDF5 structure walk (0 opens vs {h5c['opens']}).")
@@ -571,12 +606,12 @@ def main():
 
     # sweep summary: median wall per method across N (the crossover, at a glance)
     if len(all_results) > 1:
-        disp = {"ours": "ours (H3 index)", "h5coro": "h5coro", "h5py_s3fs": "h5py+s3fs", "kerchunk": "kerchunk+zarr"}
+        disp = {"ours": "ours (H3 index, cold)", "ours_cached": "ours (lake cache hit)", "h5coro": "h5coro", "h5py_s3fs": "h5py+s3fs", "kerchunk": "kerchunk+zarr"}
         labels = [r[0] for r in regions]
-        print("\n" + "=" * 116)
+        print("\n" + "=" * 125)
         print("SWEEP (median wall seconds by granule count)")
         print("method".ljust(18) + "".join(f"{lab:>12}" for lab in labels))
-        print("-" * 116)
+        print("-" * 125)
         for m in methods:
             cells = []
             for results in all_results:
