@@ -77,6 +77,22 @@ def main() -> None:
             arr, meta = mod.extract(bbox, window)
             print(f"  RESULT         {meta.get('n', arr['lon'].size):,} points in {time.time() - t0:.1f}s "
                   f"(cache_key={meta.get('cache_key')})")
+            # WHERE the points landed, not just how many. "coverage exists but only a couple of hexes appear" is the
+            # expected outcome when a granule FOOTPRINT crosses the box but the track does not: GLAH06 arcs and
+            # IceBridge flight lines both over-report in CMR, and the scene point-filters. Cell counts settle it.
+            if arr["lon"].size:
+                from aicesat import planner
+                res_of = {"GLAS": 5, "ICESSN": 5, "ATL06": 5}[name]
+                cells = planner._cells_vectorized(arr["lat"], arr["lon"], res_of)
+                fine = planner._cells_vectorized(arr["lat"], arr["lon"], 9)
+                print(f"  spread         {len(set(cells.tolist())):,} cells at res {res_of}, "
+                      f"{len(set(fine.tolist())):,} at res 9")
+                print(f"  extent         lat {arr['lat'].min():.4f}..{arr['lat'].max():.4f}  "
+                      f"lon {arr['lon'].min():.4f}..{arr['lon'].max():.4f}   (bbox {bbox})")
+                gs = meta.get("granules")
+                if isinstance(gs, list):
+                    print(f"  granules       {len(gs)} contributed points")
+
             st = meta.get("access") or {}
             if st:
                 print(f"  access         {st.get('chunks_from_nasa', '?')} chunks from NASA, "
