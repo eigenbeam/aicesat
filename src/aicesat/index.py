@@ -201,11 +201,23 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
             except FutTimeout:
                 log.warning("index build of %s timed out (attempt %d)", name, attempt)
                 failed.append(g)
+            except Exception as e:
+                # EVERY worker failure is retryable, not just a timeout. A transient CDN error (503) killed a whole
+                # 120-granule build at granule 101 because only FutTimeout was caught — and it surfaced as
+                # "can't pickle multidict.CIMultiDictProxy", not as the 503 it was: aiohttp's ClientResponseError
+                # carries response headers that ProcessPoolExecutor cannot pickle back to the parent, so the real
+                # cause is destroyed in transit. Never let one flaky granule discard the other 119.
+                log.warning("index build of %s failed (attempt %d): %s: %s", name, attempt, type(e).__name__, e)
+                failed.append(g)
         ex.shutdown(wait=False, cancel_futures=True)
         todo = failed
+    out = {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1),
+           "failed": [g["meta"]["native-id"] for g in todo]}
     if todo:
-        raise TimeoutError("index build timed out twice for: " + ", ".join(g["meta"]["native-id"] for g in todo))
-    return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
+        # Not raised: the granules that DID index are on disk and the caller still needs to stamp the coverage
+        # manifest for them. The caller reports the failures and exits non-zero; a re-run picks up only these.
+        log.error("index build failed for %d granule(s) after 2 attempts: %s", len(todo), ", ".join(out["failed"]))
+    return out
 
 
 def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None) -> dict:

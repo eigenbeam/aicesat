@@ -127,3 +127,83 @@ class _EmptyRefs:
 
     def to_pylist(self):
         return []
+
+
+# --- one flaky granule must not discard the rest of the build --------------------------------------------------------
+class _ImmediateFuture:
+    def __init__(self, exc=None):
+        self._exc = exc
+
+    def result(self, timeout=None):
+        if self._exc is not None:
+            raise self._exc
+        return None
+
+
+class _FakeExecutor:
+    """Runs nothing; hands back a pre-set outcome per granule so the retry logic can be exercised in-process."""
+    outcomes: dict = {}
+    submitted: list = []
+
+    def __init__(self, max_workers=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def submit(self, fn, g):
+        name = g["meta"]["native-id"]
+        _FakeExecutor.submitted.append(name)
+        return _ImmediateFuture(_FakeExecutor.outcomes.get(name))
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
+
+def _granule(name):
+    return {"meta": {"native-id": name}}
+
+
+def test_one_unpicklable_worker_error_does_not_abort_the_build(monkeypatch):
+    """A transient CDN error killed a 120-granule build at 101 because only FutTimeout was caught, and it surfaced
+    as 'can't pickle CIMultiDictProxy' rather than the 503 it was."""
+    import concurrent.futures
+
+    names = [f"g{i}" for i in range(5)]
+    _FakeExecutor.submitted = []
+    _FakeExecutor.outcomes = {"g2": TypeError("can't pickle multidict._multidict.CIMultiDictProxy objects")}
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(index, "indexed_granules", lambda: set())
+
+    out = index.ensure_index([_granule(n) for n in names])
+
+    assert sorted(out["built"]) == ["g0", "g1", "g3", "g4"], "healthy granules must still be indexed"
+    assert out["failed"] == ["g2"], out
+    assert _FakeExecutor.submitted.count("g2") == 2, "the failed granule should be retried once"
+
+
+def test_a_transient_failure_that_clears_on_retry_is_reported_as_built(monkeypatch):
+    import concurrent.futures
+
+    class _OnceFailing(_FakeExecutor):
+        seen: set = set()
+
+        def submit(self, fn, g):
+            name = g["meta"]["native-id"]
+            _FakeExecutor.submitted.append(name)
+            if name == "g1" and name not in _OnceFailing.seen:
+                _OnceFailing.seen.add(name)
+                return _ImmediateFuture(RuntimeError("503 Service Unavailable"))
+            return _ImmediateFuture(None)
+
+    _FakeExecutor.submitted = []
+    _OnceFailing.seen = set()
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _OnceFailing)
+    monkeypatch.setattr(index, "indexed_granules", lambda: set())
+
+    out = index.ensure_index([_granule(n) for n in ("g0", "g1", "g2")])
+    assert out["failed"] == []
+    assert sorted(out["built"]) == ["g0", "g1", "g2"]

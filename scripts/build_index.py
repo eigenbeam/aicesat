@@ -24,3 +24,6 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules))
     print(json.dumps({"bbox": list(bbox), "covered_boxes": cov["boxes"], "window": list(window), "granules": len(granules), **out,
                       "wall_seconds": round(time.time() - t0, 1)}, indent=1))
+    if out["failed"]:
+        print(f"\n{len(out['failed'])} granule(s) did not index; re-run this command to retry just those.", file=sys.stderr)
+        sys.exit(1)
