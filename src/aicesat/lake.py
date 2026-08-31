@@ -156,7 +156,13 @@ def query_points(bbox, cells: list[int], mission: str, granules: list[str] | Non
                 on_batch(r)
             parts.append(r)
         keys = parts[0].keys() if parts else ("lon", "lat", "h", "t")
-        return {k: (np.concatenate([p[k] for p in parts]) if parts else np.array([])) for k in keys}
+        # Drop empty parts before concatenating rather than trusting every producer's empty-array dtype: one
+        # float64 `np.array([])` among datetime64 parts is enough to fail the whole read. When every part is
+        # empty there is nothing to promote, so the first part carries the shape and dtype through.
+        def _cat(k):
+            vals = [p[k] for p in parts if p[k].size]
+            return np.concatenate(vals) if vals else parts[0][k]
+        return {k: _cat(k) for k in keys} if parts else {k: np.array([]) for k in keys}
     return _query_points(bbox, cells, mission, granules, beams, extra_cols, quality_zero, clip_cells)
 
 
@@ -179,8 +185,11 @@ def _query_points(bbox, cells: list[int], mission: str, granules: list[str] | No
     whose H3 cell at this mission's resolution is in the touched-cell set" — the hex-membership clip the caller wants
     for a polygon / hex-aligned box. Default (False) keeps today's rectangular-bbox behaviour byte-for-byte (the golden
     the lake-cache tests and bench_vs_h5coro rely on)."""
-    base = {"lon": np.array([]), "lat": np.array([]), "h": np.array([]), "t": np.array([]),
-            **{c: np.array([]) for c in extra_cols}}
+    # Typed, not bare: np.array([]) is float64, and an empty `t` described as float64 cannot be concatenated with a
+    # real datetime64 one — numpy 2 raises DTypePromotionError rather than promoting. An empty read is normal (a cell
+    # group with nothing materialized), so it must be shaped like a real one.
+    base = {"lon": np.array([], "f8"), "lat": np.array([], "f8"), "h": np.array([], "f8"),
+            "t": np.array([], "datetime64[ms]"), **{c: np.array([]) for c in extra_cols}}
     if not cells or not LAKE_DIR.exists():
         return base
     # Address ONLY the requested cells' directories. A single `h3_cell=*` glob makes DuckDB stat and read the schema of
