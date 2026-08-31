@@ -23,7 +23,6 @@ from .access import pool_size
 log = logging.getLogger("aicesat.timeseries")
 
 MISSION_LABEL = {"GLAS": "ICESat-1", "ICESSN": "IceBridge ATM", "ATL06": "ICESat-2 land ice", "ICESAT2": "ICESat-2 photons"}
-_MAX_PTS_PER_MISSION = 80_000   # cap per-point H3 assignment cost; median residuals are robust to subsampling
 _MIN_BIN_PTS = 3                # a time window needs this many points in the cell to be a usable series point
 _MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
@@ -61,10 +60,9 @@ def _load_all(doc: dict, common_epoch: float) -> list[dict]:
             continue
         lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8"); h = np.asarray(arrays["h"], "f8")
         yr = coreg.decimal_year(arrays["t"])
-        n = lon.size
-        if n > _MAX_PTS_PER_MISSION:                       # thin dense missions for the cell scan
-            idx = np.linspace(0, n - 1, _MAX_PTS_PER_MISSION).astype("i8")
-            lon, lat, h, yr = lon[idx], lat[idx], h[idx], yr[idx]
+        # Every point is binned. A linspace thin to 80k used to live here, justified by the median being robust to
+        # subsampling — true of the median, false of the COUNTS around it: _MIN_BIN_PTS, _MIN_REF_PTS and the n_ref
+        # term in _confidence are thresholds, so thinning moved which cells qualified as candidates at all.
         native = meta.get("native_frame", "ITRF2014")
         try:
             lon, lat, h = coreg.propagate(lon, lat, h, yr, common_epoch, native)
@@ -101,7 +99,7 @@ def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple
 
 
 def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
-               min_bins: int = 3, common_epoch: float = 2005.0, max_candidates: int = 60) -> dict:
+               min_bins: int = 3, common_epoch: float = 2005.0) -> dict:
     recs = _load_all(doc, common_epoch)
     present = [r["mission"] for r in recs]
     ref_set = _reference_set(ref_missions, present)
@@ -212,4 +210,4 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
     out = [c for c in results if c is not None]               # same cells, same order the serial loop appended them
 
     out.sort(key=lambda c: (c["confidence"], c["n_bins"], c["span_years"]), reverse=True)
-    return {"params": params, "candidates": out[:max_candidates]}
+    return {"params": params, "candidates": out}          # every qualifying cell; ranking is the UI's to truncate

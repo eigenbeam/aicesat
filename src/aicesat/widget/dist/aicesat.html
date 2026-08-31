@@ -10035,7 +10035,7 @@ AICESAT.ExploreView = class {
 
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColList').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
-      const body = {...a, max_granules: 100000, ...flags,
+      const body = {...a, ...flags,
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
       try {
@@ -10213,7 +10213,6 @@ AICESAT.LakeView = class {
         <h2>Load / evict cells</h2><div class="small">Click cells (res 6) on the map to select. Colour = data age (bright = fresh). Hover for stats.</div>
         <div id="lkSel" class="small mono" style="margin:6px 0">none selected</div>
         <button id="lkLoad" disabled>Load in background</button><button id="lkEvict" class="danger" disabled>Evict</button><button id="lkClear">Clear</button>
-        <label class="small">granules <input id="lkMaxG" type="number" value="40" min="1" max="200" style="width:56px"></label>
       </div>
       <div class="panel" id="lkAdvanced" data-title="advanced" style="bottom:12px;left:12px;width:440px">
         <h2>Advanced</h2>
@@ -10229,7 +10228,7 @@ AICESAT.LakeView = class {
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
     $('lkLoad').onclick = async () => { const cells = [...this.map.state.selected].map(c => BigInt('0x' + c).toString()); $('lkLoad').disabled = true;
-      try { const d = await api.lakeLoad(cells, {max_granules: +$('lkMaxG').value}); this.watch(d.job_id); } catch (e) { AICESAT.showError(e); $('lkLoad').disabled = false; } };
+      try { const d = await api.lakeLoad(cells); this.watch(d.job_id); } catch (e) { AICESAT.showError(e); $('lkLoad').disabled = false; } };
     $('lkEvict').onclick = async () => { const cells = [...this.map.state.selected].map(c => BigInt('0x' + c).toString());
       try { const d = await api.lakeEvict(cells); $('lkLimitMsg').textContent = `evicted ${d.evicted.length} cells`; this.map.clear(); this.refresh(); } catch (e) { AICESAT.showError(e); } };
     $('lkSetLimit').onclick = async () => { const gb = +$('lkLimit').value; if (!(gb > 0)) return;

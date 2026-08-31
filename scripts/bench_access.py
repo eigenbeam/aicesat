@@ -90,7 +90,7 @@ def run_index():
     idx = index.ensure_index(granules)                      # one-time structure parse, amortized
     t_index = time.time() - t0
     t1 = time.time()
-    plan = planner.ensure(bbox, window, max_granules=len(granules))
+    plan = planner.ensure(bbox, window)                     # was max_granules=len(granules): already every granule
     t_fetch = time.time() - t1
     t2 = time.time()
     q = lake.query_photons(bbox, plan["cells"], atl03.MIN_CONF, granules=plan["granules"])
@@ -108,7 +108,7 @@ def run_index():
                  "Photon count uses the exact per-photon bbox predicate over whole chunks.")
     # warm: everything already materialized
     t3 = time.time()
-    plan2 = planner.ensure(bbox, window, max_granules=len(granules))
+    plan2 = planner.ensure(bbox, window)
     q2 = lake.query_photons(bbox, plan2["cells"], atl03.MIN_CONF, granules=plan2["granules"])
     record("index_warm", label="same, second query (lake warm)", wall_s=round(time.time() - t3, 2),
            requests=plan2["stats"]["requests"], bytes=plan2["stats"]["bytes"], hdf5_opens=0, structure_parses=0, hdf5_opens_at_query_time=0,

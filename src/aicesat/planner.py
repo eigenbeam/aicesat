@@ -95,25 +95,28 @@ def _process_group(item) -> dict:
     return {"granule": gname, "beam": beam, "chunk_cells": chunk_cells, "stats": st, "n_chunks": len(rs)}
 
 
-def ensure(bbox, window, max_granules: int = 8, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
+def ensure(bbox, window, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
     """Make the lake sufficient for (bbox|polygon, window): index missing granules, fetch missing chunks, materialize."""
     cells = cells_for_bbox(bbox, polygon=polygon)
-    return _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox=bbox)
+    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
 
 
-def ensure_cells(cells, window, max_granules: int = 40, force: bool = False, threads: int = 8, group_parallel: int = 4) -> dict:
+def ensure_cells(cells, window, force: bool = False, threads: int = 8, group_parallel: int = 4) -> dict:
     """Materialize a set of H3 cells (background loading from the Lake tab): search by the cells' union bbox, prune
     chunks by that bbox, keep only refs for the requested cells."""
     cells = sorted(int(c) for c in cells)
     boundaries = [h3.cell_to_boundary(h3.int_to_str(c)) for c in cells]
     lats = [la for b in boundaries for la, _ in b]; lons = [lo for b in boundaries for _, lo in b]
     bbox = (min(lons), min(lats), max(lons), max(lats))
-    return _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox=bbox)
+    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
 
 
-def _ensure(cells, bbox, window, max_granules, force, threads, group_parallel, prune_bbox) -> dict:
+def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox) -> dict:
     t0 = time.time()
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)[:max_granules]
+    # Every granule the search returns, in full. A granule-count cap used to truncate this list (default 8); CMR
+    # returns granules oldest-first, so it did not sample the record, it kept the START of it — a bias no caller
+    # could see. See tests/test_no_caps.py and issue #24.
+    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)
     names = [coverage.granule_name(g) for g in granules]
     idx = index.ensure_index(granules)
     refs_cells = index.chunk_refs(cells, granules=names)

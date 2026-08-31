@@ -28,7 +28,7 @@ async def main():
             tools = await s.list_tools()
             print("tools:", [t.name for t in tools.tools])
             show("check_coverage", await s.call_tool("check_coverage", {"region": region}))
-            sp = show("show_photons", await s.call_tool("show_photons", {"region": region, "max_granules": 8,
+            sp = show("show_photons", await s.call_tool("show_photons", {"region": region,
                                                                         "question": "show me ICESat-2 photons over " + region}))
             sid = sp["scene_id"]
             show("add_glas", await s.call_tool("add_glas", {"scene_id": sid}))

@@ -60,7 +60,7 @@ AICESAT.ExploreView = class {
 
     $('exBuild').onclick = async () => { const a = this.map.area(); if (!a) return;
       const flags = {}; $('exColList').querySelectorAll('input[data-flag]').forEach(i => flags[i.dataset.flag] = i.checked);
-      const body = {...a, max_granules: 100000, ...flags,
+      const body = {...a, ...flags,
         question: `area selected on the map (${a.bbox ? 'box' : 'polygon'})`};
       AICESAT.clearError(); $('exBuild').disabled = true;
       try {

@@ -132,18 +132,18 @@ def extract_legacy(bbox, window, max_granules: int = 3, max_photons: int = 20_00
     return arrays, meta
 
 
-def extract(bbox, window, max_granules: int = 8, max_photons: int = 20_000_000, force: bool = False, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
+def extract(bbox, window, max_photons: int = 20_000_000, force: bool = False, polygon=None) -> tuple[dict[str, np.ndarray], dict]:
     """Index-driven path (spec §4–§8): planner makes the lake sufficient, DuckDB answers. Same output contract as before.
     polygon: optional [(lon, lat), ...]; bbox must then be its bounding box (see geom.normalize_area)."""
     from . import geom, lake, planner
 
-    k = cache.key("atl03-lake", coverage.ATL03_VERSION, bbox, window, max_granules, MIN_CONF, polygon)
+    k = cache.key("atl03-lake", coverage.ATL03_VERSION, bbox, window, MIN_CONF, polygon)
     hit = cache.load(k)
     if hit and not force:
         log.info("atl03 cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
-    plan = planner.ensure(bbox, window, max_granules=max_granules, force=force, polygon=polygon)
+    plan = planner.ensure(bbox, window, force=force, polygon=polygon)
     q = lake.query_photons(bbox, plan["cells"], MIN_CONF, granules=plan["granules"])
     glist = q.pop("_granules")
     arrays = {key: v for key, v in q.items()}

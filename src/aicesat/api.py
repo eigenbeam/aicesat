@@ -191,7 +191,7 @@ def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
         return []
 
 
-def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_glas=True, with_coreg=False,
+def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
                 with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
                 log_fn=lambda m: None, scene_id: str | None = None) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
@@ -244,7 +244,7 @@ def build_scene(bbox=None, polygon=None, question=None, max_granules=8, with_gla
         return a, m, m["cache_key"]
 
     def _ex_atl03():
-        a, m = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, max_granules=max_granules, polygon=poly)
+        a, m = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, polygon=poly)
         return a, m, m["cache_key"]
 
     # --- integrators: mutate `doc`; ONLY ever called on the build thread, in priority order, so z0 and the
@@ -513,7 +513,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
     def run():
         try:
             if kind == "scene":
-                doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"), int(params.get("max_granules", 8)),
+                doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"),
                                   bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
                                   with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
                                   with_atl03=bool(params.get("with_atl03", False)),
@@ -525,8 +525,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
                 cells = [int(c) for c in params["cells"]]
                 job["log"].append(f"materializing {len(cells)} cells")
                 with _lock:
-                    out = planner.ensure_cells(cells, tuple(params.get("window") or regions.DEFAULT_ATL03_WINDOW),
-                                               max_granules=int(params.get("max_granules", 40)))
+                    out = planner.ensure_cells(cells, tuple(params.get("window") or regions.DEFAULT_ATL03_WINDOW))
                 st = out["stats"]
                 job["log"].append(f"{st['chunks_fetched']} chunks fetched ({st['bytes'] / 1e6:.0f} MB), {st['chunks_skipped_already_materialized']} already present, "
                                   f"{st['cell_files_written']} cell files written" + (f"; evicted {len(st['evicted_for_limit'])} cells for the limit" if st.get("evicted_for_limit") else ""))
@@ -727,8 +726,8 @@ def lake_evict(cells: list) -> dict:
     return {"evicted": lake.evict_cells([int(c) for c in cells])}
 
 
-def lake_load(cells: list, window=None, max_granules: int = 40) -> dict:
-    return start_job({"cells": [int(c) for c in cells], "window": window, "max_granules": max_granules}, kind="cells")
+def lake_load(cells: list, window=None) -> dict:
+    return start_job({"cells": [int(c) for c in cells], "window": window}, kind="cells")
 
 
 # ----------------------------------------------------------------------------- misc

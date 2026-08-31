@@ -249,7 +249,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, api.lake_settings(max_bytes=self._body().get("max_bytes")))
             if self.path == "/api/lake/load":
                 body = self._body()
-                j = api.lake_load(body["cells"], body.get("window"), int(body.get("max_granules", 40)))
+                j = api.lake_load(body["cells"], body.get("window"))
                 return self._json(202, {"job_id": j["id"]})
             if self.path == "/api/lake/evict":
                 return self._json(200, api.lake_evict(self._body()["cells"]))
@@ -343,14 +343,14 @@ apps.add_html_resource(
 
 @apps.tool(resource_uri=UI_URI, name="show_photons")
 def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
-                 time_window: list[str] | None = None, max_granules: int = 8, question: str | None = None) -> dict:
+                 time_window: list[str] | None = None, question: str | None = None) -> dict:
     """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
     and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
     Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
     later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
     if region and not (bbox or polygon):
         bbox = list(regions.resolve_bbox(region))
-    doc = build_scene(bbox, polygon, question, max_granules, with_glas=False)
+    doc = build_scene(bbox, polygon, question, with_glas=False)
     meta = doc["series"]["ICESAT2"]["meta"]
     return {"scene_id": doc["scene_id"], "widget_url": widget_url(doc["scene_id"]), "n_photons": meta["n"],
             "product": meta["product"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
@@ -428,10 +428,10 @@ def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | No
 
 @apps.tool(name="ui_extract", **_APP)
 def ui_extract(bbox: list[float] | None = None, polygon: list[list[float]] | None = None, question: str | None = None,
-               max_granules: int = 8, with_glas: bool = True, with_coreg: bool = False,
+               with_glas: bool = True, with_coreg: bool = False,
                with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False) -> dict:
     geom.normalize_area(bbox, polygon)
-    j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question, "max_granules": max_granules,
+    j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question,
                        "with_glas": with_glas, "with_coreg": with_coreg, "with_atl06": with_atl06,
                        "with_icessn": with_icessn, "with_atl03": with_atl03})
     return {"job_id": j["id"], "scene_id": j["scene_id"]}
@@ -499,8 +499,8 @@ def ui_lake_settings(max_bytes: int | None = None) -> dict:
 
 
 @apps.tool(name="ui_lake_load", **_APP)
-def ui_lake_load(cells: list[str], max_granules: int = 40) -> dict:
-    j = api.lake_load(cells, None, max_granules)
+def ui_lake_load(cells: list[str]) -> dict:
+    j = api.lake_load(cells, None)
     return {"job_id": j["id"]}
 
 
@@ -544,9 +544,9 @@ def lake_status() -> dict:
 
 
 @mcp.tool()
-def lake_load_cells(cells: list[str], time_window: list[str] | None = None, max_granules: int = 40) -> dict:
+def lake_load_cells(cells: list[str], time_window: list[str] | None = None) -> dict:
     """Materialize H3 (res 6) cells into the lake in the background (cell ids as decimal strings); returns a job id."""
-    j = api.lake_load(cells, time_window, max_granules)
+    j = api.lake_load(cells, time_window)
     return {"job_id": j["id"]}
 
 
