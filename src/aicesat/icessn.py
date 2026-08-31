@@ -26,18 +26,8 @@ _NAME_RE = re.compile(r"(?:ILATM2|BLATM2)_(\d{8})_(\d{6})")
 
 def _index_covers(bbox) -> bool:
     """True if the ICESSN line-offset index was built over a region that contains this bbox."""
-    import json
-
     from . import index_icessn
-    mf = index_icessn._index_dir(index_icessn.ICESSN_RES) / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    return coverage._index_covers_bbox(index_icessn._index_dir(index_icessn.ICESSN_RES), bbox)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

@@ -79,20 +79,44 @@ def test_build_manifest_widens_and_never_shrinks(tmp_path, monkeypatch):
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
     a = (-46.0, 71.0, -45.0, 72.0)
     b = (-45.0, 72.0, -44.0, 73.0)
-    index.write_build_manifest(a, ("2018-10-01", "2026-01-01"), 3)
-    assert coverage._index_covers_bbox(index.ATL03_INDEX_DIR, a)
+    d = index.ATL03_INDEX_DIR
+    index.write_build_manifest(d, a, index.H3_RES, ("2018-10-01", "2026-01-01"), 3)
+    assert coverage._index_covers_bbox(d, a)
 
-    out = index.write_build_manifest(b, ("2018-10-01", "2026-01-01"), 4)
-    assert out["bbox"] == [-46.0, 71.0, -44.0, 73.0]
+    out = index.write_build_manifest(d, b, index.H3_RES, ("2018-10-01", "2026-01-01"), 4)
+    assert out["boxes"] == [list(a), list(b)]
     for box in (a, b):
-        assert coverage._index_covers_bbox(index.ATL03_INDEX_DIR, box), f"{box} lost coverage after a second build"
+        assert coverage._index_covers_bbox(d, box), f"{box} lost coverage after a second build"
+    # ... and the gap BETWEEN two disjoint builds is not claimed
+    assert not coverage._index_covers_bbox(d, (-46.0, 71.0, -44.0, 73.0)), \
+        "the union of two disjoint builds must not be reported as covered"
+
+
+def test_build_manifest_absorbs_a_contained_box(tmp_path, monkeypatch):
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx2")
+    d = index.ATL03_INDEX_DIR
+    index.write_build_manifest(d, (-50.0, 60.0, -40.0, 70.0), index.H3_RES)
+    out = index.write_build_manifest(d, (-46.0, 62.0, -44.0, 64.0), index.H3_RES)
+    assert out["boxes"] == [[-50.0, 60.0, -40.0, 70.0]], "a contained box should not add an entry"
+
+
+def test_legacy_single_bbox_manifest_is_still_read(tmp_path, monkeypatch):
+    """Deployments stamped before the list format must keep working."""
+    import json
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx3")
+    d = index.ATL03_INDEX_DIR
+    d.mkdir(parents=True)
+    (d / "_build.json").write_text(json.dumps({"bbox": [-52, 62, -44, 70], "res": 5, "target": 9}))
+    assert coverage._index_covers_bbox(d, (-50.0, 64.0, -46.0, 68.0))
+    out = index.write_build_manifest(d, (-60.0, 60.0, -55.0, 65.0), 5)      # upgraded in place, old box kept
+    assert out["boxes"] == [[-52.0, 62.0, -44.0, 70.0], [-60.0, 60.0, -55.0, 65.0]]
 
 
 def test_planner_accepts_an_area_once_its_manifest_exists(tmp_path, monkeypatch):
     """The precondition is exactly the manifest — with one present the planner proceeds past the coverage gate."""
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
     bbox = (-45.5, 71.8, -44.5, 72.2)
-    index.write_build_manifest((-50.0, 70.0, -40.0, 75.0), None, 1)
+    index.write_build_manifest(index.ATL03_INDEX_DIR, (-50.0, 70.0, -40.0, 75.0), index.H3_RES)
     monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _EmptyRefs())
     with pytest.raises(RuntimeError, match="no indexed ATL03 chunks"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)

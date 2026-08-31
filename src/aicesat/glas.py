@@ -22,18 +22,8 @@ MAX_SAT_FLAG = 2  # 0 none, 1 minor, 2 corrected; >=3 not correctable / unusable
 
 def _index_covers(bbox) -> bool:
     """True if the GLAS sub-granule index was built over a region that contains this bbox."""
-    import json
-
     from . import index_glas
-    mf = index_glas._index_dir(index_glas.GLAS_RES) / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    return coverage._index_covers_bbox(index_glas._index_dir(index_glas.GLAS_RES), bbox)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

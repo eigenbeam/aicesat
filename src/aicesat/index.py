@@ -8,6 +8,7 @@ The same chunk appears under every cell it touches (§5.3) — the residual lat/
 from __future__ import annotations
 
 import logging
+import pathlib
 import re
 import time
 from datetime import datetime, timezone
@@ -207,28 +208,40 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
     return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
 
 
-def write_build_manifest(bbox, window=None, n_granules: int | None = None) -> dict:
-    """Record the region this index was built over, in `_build.json` beside the granule parquets.
+def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None) -> dict:
+    """Record that an index was built over `bbox`, in `_build.json` beside the granule parquets.
 
-    The query path treats the index as a PRECONDITION (planner._ensure, coverage.check_coverage): an area with no
-    manifest covering it is refused rather than silently falling back to CMR. So every builder must stamp one, and
-    the stamp WIDENS to the union with any previous build — re-indexing a neighbouring box must not shrink the
-    region already covered.
+    The query path treats the index as a PRECONDITION (planner._ensure, the per-collection _index_covers,
+    coverage.check_coverage): an area no build covers is refused rather than silently falling back to CMR. So every
+    builder must stamp one.
+
+    The manifest holds the LIST of boxes built, not one box. Overwriting would discard a previous region's claim;
+    unioning into a single box would claim coverage over the territory BETWEEN two disjoint builds, which was never
+    indexed. Neither is true, and both produce a wrong answer at a bbox nobody built. A box already contained by
+    another is absorbed. Legacy manifests carrying a single `bbox` are read (see coverage._index_covers_bbox) and
+    upgraded in place on the next build.
     """
     import json
 
-    ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    mf = ATL03_INDEX_DIR / "_build.json"
-    b = [float(v) for v in bbox]
-    prev = {}
+    d = pathlib.Path(d)
+    d.mkdir(parents=True, exist_ok=True)
+    mf = d / "_build.json"
+    prev, boxes = {}, []
     if mf.exists():
         try:
             prev = json.loads(mf.read_text())
-            pb = prev.get("bbox")
-            b = [min(b[0], pb[0]), min(b[1], pb[1]), max(b[2], pb[2]), max(b[3], pb[3])]
+            boxes = [list(map(float, b)) for b in (prev.get("boxes") or ([prev["bbox"]] if prev.get("bbox") else []))]
         except Exception:
             log.warning("unreadable %s; replacing", mf)
-    doc = {"bbox": b, "res": H3_RES, "window": list(window) if window else prev.get("window"),
+    new = [float(v) for v in bbox]
+
+    def contains(outer, inner):
+        return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+    if not any(contains(b, new) for b in boxes):
+        boxes = [b for b in boxes if not contains(new, b)] + [new]
+    doc = {"boxes": boxes, "res": res if res is not None else prev.get("res"),
+           "window": list(window) if window else prev.get("window"),
            "target": n_granules if n_granules is not None else prev.get("target")}
     mf.write_text(json.dumps(doc))
     return doc

@@ -88,7 +88,7 @@ def run_index():
 
     t0 = time.time()
     idx = index.ensure_index(granules)                      # one-time structure parse, amortized
-    index.write_build_manifest(bbox, window, len(granules))  # planner.ensure requires the area to be declared indexed
+    index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules))  # planner.ensure requires it
     t_index = time.time() - t0
     t1 = time.time()
     plan = planner.ensure(bbox, window)                     # was max_granules=len(granules): already every granule

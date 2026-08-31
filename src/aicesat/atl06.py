@@ -21,18 +21,8 @@ log = logging.getLogger(__name__)
 
 def _index_covers(bbox) -> bool:
     """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
-    import json
-
     from . import index_atl06
-    mf = index_atl06._index_dir(index_atl06.ATL06_RES) / "_build.json"
-    if not mf.exists():
-        return False
-    try:
-        b = json.loads(mf.read_text()).get("bbox")
-        w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
-    except Exception:
-        return False
+    return coverage._index_covers_bbox(index_atl06._index_dir(index_atl06.ATL06_RES), bbox)
 
 
 def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

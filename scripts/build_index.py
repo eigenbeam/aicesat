@@ -21,6 +21,6 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     t0 = time.time()
     out = index.ensure_index(granules, workers=a.workers)
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
-    cov = index.write_build_manifest(bbox, window, len(granules))
-    print(json.dumps({"bbox": list(bbox), "covered_bbox": cov["bbox"], "window": list(window), "granules": len(granules), **out,
+    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules))
+    print(json.dumps({"bbox": list(bbox), "covered_boxes": cov["boxes"], "window": list(window), "granules": len(granules), **out,
                       "wall_seconds": round(time.time() - t0, 1)}, indent=1))

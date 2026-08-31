@@ -5,12 +5,11 @@ Example (SW Greenland):  uv run python scripts/build_icessn_index.py -52 62 -44 
 """
 import concurrent.futures as cf
 import functools
-import json
 import logging
 import sys
 import time
 
-from aicesat import auth, coverage, index_icessn
+from aicesat import auth, coverage, index, index_icessn
 
 
 def _index_one(granule, res, bbox):
@@ -44,7 +43,7 @@ def main():
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
     md = index_icessn._index_dir(res); md.mkdir(parents=True, exist_ok=True)
-    (md / "_build.json").write_text(json.dumps({"bbox": bbox, "res": res, "target": len(names), "started": time.time()}))
+    index.write_build_manifest(md, bbox, res, None, len(names))   # appends this box; never discards a previous build
     if not todo:
         log.info("nothing to do — index complete")
         log.info("coverage rollup: %s", coverage.build_manifest("ICESSN"))

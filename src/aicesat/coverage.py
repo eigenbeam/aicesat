@@ -275,9 +275,10 @@ def _index_covers_bbox(d, bbox) -> bool:
     if not mf.exists():
         return False
     try:
-        b = json.loads(mf.read_text()).get("bbox")
+        doc = json.loads(mf.read_text())
+        boxes = doc.get("boxes") or ([doc["bbox"]] if doc.get("bbox") else [])   # legacy: one box
         w, s, e, n = bbox
-        return b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]
+        return any(b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3] for b in boxes)
     except Exception:
         return False
 
