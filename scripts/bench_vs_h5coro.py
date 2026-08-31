@@ -56,7 +56,7 @@ def have(mod: str) -> bool:
 
 
 def strong_beams(sc_orient: int) -> list[str]:
-    """Same rule as atl06._strong_beams / index.strong_beams: sc_orient 1 -> right beams, 0 -> left, 2 -> none."""
+    """Same rule as index.strong_beams: sc_orient 1 -> right beams, 0 -> left, 2 -> none."""
     v = int(sc_orient)
     if v == 1:
         return ["gt1r", "gt2r", "gt3r"]

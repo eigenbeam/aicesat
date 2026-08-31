@@ -12,58 +12,12 @@ Granules are ~100 MB (full RGT), so we read them remotely with earthaccess.open 
 from __future__ import annotations
 
 import logging
-import time
 
-import h5py
 import numpy as np
 
-from . import auth, cache, coverage
+from . import cache, coverage
 
 log = logging.getLogger(__name__)
-
-ATLAS_EPOCH = np.datetime64("2018-01-01T00:00:00", "ms")   # ATLAS SDP epoch; delta_time is seconds after it
-FILL = 3.0e38                                              # h_li / lat / lon fill ~ 3.4028235e38
-QUALITY_GOOD = 0                                           # atl06_quality_summary == 0 -> best
-
-
-def _strong_beams(sc_orient) -> list[str]:
-    v = int(np.asarray(sc_orient).ravel()[0])
-    if v == 0:
-        return ["gt1l", "gt2l", "gt3l"]     # backward orientation
-    if v == 1:
-        return ["gt1r", "gt2r", "gt3r"]     # forward orientation
-    return []                               # sc_orient == 2: yaw-flip transition -> skip
-
-
-def _extract_granule(f: h5py.File, bbox) -> dict[str, np.ndarray] | None:
-    w, s, e, n = bbox
-    if "orbit_info/sc_orient" not in f:
-        return None
-    parts = []
-    for bi, b in enumerate(_strong_beams(f["orbit_info/sc_orient"][:])):
-        grp = f"{b}/land_ice_segments"
-        if grp not in f or "latitude" not in f[grp]:
-            continue
-        g = f[grp]
-        lat = g["latitude"][:]
-        lon = g["longitude"][:]
-        keep = (lat >= s) & (lat <= n) & (lon >= w) & (lon <= e)
-        if not keep.any():
-            continue
-        h = g["h_li"][:]
-        q = g["atl06_quality_summary"][:]
-        keep &= (q == QUALITY_GOOD) & (h < FILL) & (lat < FILL) & (lon < FILL)
-        if not keep.any():
-            continue
-        dt = g["delta_time"][:][keep]
-        parts.append({"lon": lon[keep], "lat": lat[keep], "h": h[keep].astype("f8"),
-                      "t": ATLAS_EPOCH + (dt * 1000).astype("timedelta64[ms]"),
-                      "segment_id": g["segment_id"][:][keep].astype("i8"),
-                      "beam": np.full(int(keep.sum()), bi, dtype="i1")})
-    if not parts:
-        return None
-    return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]}
-
 
 def _index_covers(bbox) -> bool:
     """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
@@ -81,8 +35,8 @@ def _index_covers(bbox) -> bool:
         return False
 
 
-def extract(bbox, window, max_granules: int = 20, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
-    k = cache.key("atl06", coverage.ATL06_VERSION, bbox, window, max_granules, polygon)
+def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
+    k = cache.key("atl06", coverage.ATL06_VERSION, bbox, window, polygon)
     hit = cache.load(k)
     if hit:
         log.info("atl06 cache hit %s", k)
@@ -91,7 +45,8 @@ def extract(bbox, window, max_granules: int = 20, polygon=None, on_granule=None,
     # Index-only: byte-range fetch just the chunks whose H3 cell touches the bbox. The sub-granule index is
     # always built for the area of interest first, so there is no whole-granule fallback.
     if not _index_covers(bbox):
-        raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first (scripts/build_atl06_index.py)")
+        raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first "
+                           f"(uv run scripts/build_atl06_index.py)")
     from . import index_atl06
     # All 6 beams (strong + weak). The index already stores every beam; weak beams add coverage/cross-mission
     # coincidence, and atl06_quality_summary==0 (quality_zero) still filters their higher-noise returns.

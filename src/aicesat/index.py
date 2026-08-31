@@ -207,6 +207,33 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
     return {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1)}
 
 
+def write_build_manifest(bbox, window=None, n_granules: int | None = None) -> dict:
+    """Record the region this index was built over, in `_build.json` beside the granule parquets.
+
+    The query path treats the index as a PRECONDITION (planner._ensure, coverage.check_coverage): an area with no
+    manifest covering it is refused rather than silently falling back to CMR. So every builder must stamp one, and
+    the stamp WIDENS to the union with any previous build — re-indexing a neighbouring box must not shrink the
+    region already covered.
+    """
+    import json
+
+    ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    mf = ATL03_INDEX_DIR / "_build.json"
+    b = [float(v) for v in bbox]
+    prev = {}
+    if mf.exists():
+        try:
+            prev = json.loads(mf.read_text())
+            pb = prev.get("bbox")
+            b = [min(b[0], pb[0]), min(b[1], pb[1]), max(b[2], pb[2]), max(b[3], pb[3])]
+        except Exception:
+            log.warning("unreadable %s; replacing", mf)
+    doc = {"bbox": b, "res": H3_RES, "window": list(window) if window else prev.get("window"),
+           "target": n_granules if n_granules is not None else prev.get("target")}
+    mf.write_text(json.dumps(doc))
+    return doc
+
+
 def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:
     """Distinct chunk references for a set of cells (one row per (granule, beam, chunk)); the addressing role of §5.1.
     bbox (W,S,E,N) additionally prunes chunks whose own segment bounding box misses the query — cells are coarse

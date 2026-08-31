@@ -61,7 +61,7 @@ def record(method: str, **kw):
 
 # ----------------------------------------------------------------------------- shared subset (segment-index slicing)
 def subset_with_h5py(f, bbox) -> int:
-    """Same photon subset as atl03.extract_legacy: strong beams, land-ice conf >= 3, bbox clip. Returns photon count."""
+    """The whole-granule baseline: strong beams, land-ice conf >= 3, bbox clip. Returns photon count."""
     sc = int(f["orbit_info/sc_orient"][0])
     n = 0
     for b in atl03.strong_beams(sc):
@@ -88,6 +88,7 @@ def run_index():
 
     t0 = time.time()
     idx = index.ensure_index(granules)                      # one-time structure parse, amortized
+    index.write_build_manifest(bbox, window, len(granules))  # planner.ensure requires the area to be declared indexed
     t_index = time.time() - t0
     t1 = time.time()
     plan = planner.ensure(bbox, window)                     # was max_granules=len(granules): already every granule

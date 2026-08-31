@@ -370,7 +370,7 @@ def open_ui(view: str = "explore") -> dict:
 
 
 @apps.tool(resource_uri=UI_URI, name="add_glas")
-def add_glas(scene_id: str, time_window: list[str] | None = None, max_granules: int = 400) -> dict:
+def add_glas(scene_id: str, time_window: list[str] | None = None) -> dict:
     """Slice 2: add ICESat/GLAS GLAH06 40 Hz shots (2003-2009 campaigns) to an existing scene, in native
     coordinates (ITRF2008; heights converted TOPEX/Poseidon -> WGS84 ellipsoid). Returns provenance by campaign."""
     from . import glas
@@ -380,7 +380,7 @@ def add_glas(scene_id: str, time_window: list[str] | None = None, max_granules: 
         raise ValueError(f"no such scene {scene_id}")
     window = tuple(time_window) if time_window else regions.DEFAULT_GLAS_WINDOW
     with _lock:
-        arrays, meta = glas.extract(tuple(doc["bbox"]), window, max_granules=max_granules)
+        arrays, meta = glas.extract(tuple(doc["bbox"]), window)
         scene.add_series(doc, "GLAS", arrays, meta, meta["cache_key"])
         doc["coreg"] = None
         cache.save_scene(scene_id, doc)

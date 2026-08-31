@@ -72,7 +72,7 @@ Ben found only **13/30** CMR-"coincident" GLAS granules were actually within 2 k
 ### D — Guard ICESSN 2-digit-year parsing (pointCollection +2000 bug)  [obviously actionable]
 `pointCollection` hardcodes **+2000** on 2-digit ATM years, so `BLATM2_93…` (1993) silently becomes
 **2093** and the pre-2000 baseline vanishes. Correct rule: **yy + 1900 if yy ≥ 90 else + 2000**.
-- **Our status:** SAFE — `icessn._parse_file` dates via the full 8-digit `%Y%m%d` from the filename,
+- **Our status:** SAFE — `index_icessn` dates via the full 8-digit `%Y%m%d` from the filename,
   not a 2-digit year. But the failure mode is silent and catastrophic for a decadal baseline.
 - **Action:** add a regression test asserting a pre-2000 ATM filename dates to 199x (not 209x); if we
   ever adopt a `pointCollection` path or a 2-digit parser, apply the yy≥90 rule.

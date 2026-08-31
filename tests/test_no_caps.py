@@ -18,29 +18,68 @@ from aicesat import coreg, coverage, index, planner, timeseries
 from aicesat import scene as scene_mod
 
 
-# --- granules: the planner must hand every searched granule to the index ---------------------------------------
-class _Sentinel(Exception):
-    """Stops _ensure once it has revealed the granule list, so the test needs no lake, no network, no NASA."""
+# --- granules: the planner must use every indexed granule in the window ------------------------------------------
+def _ref_rows(names):
+    """Minimal chunk_refs rows: one chunk per granule, one cell."""
+    return [{"granule": n, "url": f"https://x/{n}", "s3url": None, "beam": "gt1l", "sdp_epoch": 0.0, "cycle": 1,
+             "chunk_index": 0, "h3_cell": 603599455437979647, "ph_start": 0, "ph_end": 10} for n in names]
 
 
-def test_planner_indexes_every_granule_the_search_returns(monkeypatch):
-    found = [{"id": f"g{i:03d}"} for i in range(25)]        # more than the old max_granules default of 8
-    seen = {}
+class _FakeStats:
+    requests = 0
+    presigns = 0
 
-    def _capture(granules):
-        seen["granules"] = list(granules)
-        raise _Sentinel
 
-    monkeypatch.setattr(coverage, "search", lambda *a, **k: found)
-    monkeypatch.setattr(coverage, "granule_name", lambda g: g["id"])
-    monkeypatch.setattr(index, "ensure_index", _capture)
+class _FakeReader:
+    """Nothing is fetched in these tests; the real RangeReader would reach for EDL credentials on construction."""
+    def __init__(self, **kw):
+        self.stats = _FakeStats()
 
-    with pytest.raises(_Sentinel):
-        planner.ensure((-45.5, 71.8, -44.5, 72.2), ("2018-10-01", "2026-01-01"))
+    def presign_all(self, urls):
+        return {u: u for u in urls}
 
-    assert seen["granules"] == found, (
-        f"planner truncated {len(found)} searched granules to {len(seen['granules'])} — "
-        "and CMR is oldest-first, so the survivors are the earliest, not a spread")
+
+class _FakeRefs:
+    def __init__(self, rows):
+        self._rows = rows
+        self.num_rows = len(rows)
+
+    def to_pylist(self):
+        return list(self._rows)
+
+
+def test_planner_uses_every_indexed_granule_in_the_window(monkeypatch):
+    names = [f"ATL03_2019{m:02d}01000000_0235{m:02d}03_007_01.h5" for m in range(1, 13)]   # 12 > the old cap of 8
+    rows = _ref_rows(names)
+
+    monkeypatch.setattr(coverage, "_index_covers_bbox", lambda d, bbox: True)
+    monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _FakeRefs(rows))
+    # everything already materialized -> nothing to fetch, so the test needs no network and no lake
+    monkeypatch.setattr(planner.lake, "ingested_chunk_cells",
+                        lambda mission, ns: {(r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) for r in rows})
+    monkeypatch.setattr(planner.lake, "mark_ingested_many", lambda *a, **k: None)
+    monkeypatch.setattr(planner, "RangeReader", _FakeReader)
+
+    plan = planner.ensure((-45.5, 71.8, -44.5, 72.2), ("2018-10-01", "2026-01-01"))
+
+    assert plan["stats"]["granules"] == sorted(names), (
+        f"planner used {len(plan['stats']['granules'])} of {len(names)} indexed granules")
+
+
+def test_planner_window_filter_reads_the_granule_name(monkeypatch):
+    """Window selection used to come from the CMR search; it now comes from the granule name in the index."""
+    names = ["ATL03_20190601000000_02350103_007_01.h5", "ATL03_20230601000000_02350203_007_01.h5"]
+    rows = _ref_rows(names)
+    monkeypatch.setattr(coverage, "_index_covers_bbox", lambda d, bbox: True)
+    monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _FakeRefs(rows))
+    monkeypatch.setattr(planner.lake, "ingested_chunk_cells",
+                        lambda mission, ns: {(r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) for r in rows})
+    monkeypatch.setattr(planner.lake, "mark_ingested_many", lambda *a, **k: None)
+    monkeypatch.setattr(planner, "RangeReader", _FakeReader)
+
+    plan = planner.ensure((-45.5, 71.8, -44.5, 72.2), ("2019-01-01", "2019-12-31"))
+    assert plan["stats"]["granules"] == [names[0]]
+    assert plan["stats"]["granules_indexed_for_cells"] == 2      # the other one is indexed, just out of window
 
 
 def test_planner_takes_no_granule_cap_argument():

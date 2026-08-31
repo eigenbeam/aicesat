@@ -111,22 +111,46 @@ def ensure_cells(cells, window, force: bool = False, threads: int = 8, group_par
     return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
 
 
+def _in_window(name: str, window) -> bool:
+    """Granule inside the time window, decided from its NAME (ATL03_YYYYMMDD...). The index carries the granule name,
+    so the window no longer needs a CMR search to resolve."""
+    if not window:
+        return True
+    try:
+        start = index.parse_granule_name(name)["start"][:8]
+    except ValueError:                      # an unparseable name is KEPT: dropping data silently is the bug class
+        log.warning("granule %s: unparseable name, not window-filtered", name)
+        return True
+    lo, hi = (str(w).replace("-", "")[:8] for w in window)
+    return lo <= start <= hi
+
+
 def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox) -> dict:
     t0 = time.time()
-    # Every granule the search returns, in full. A granule-count cap used to truncate this list (default 8); CMR
-    # returns granules oldest-first, so it did not sample the record, it kept the START of it — a bias no caller
-    # could see. See tests/test_no_caps.py and issue #24.
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)
-    names = [coverage.granule_name(g) for g in granules]
-    idx = index.ensure_index(granules)
+    # The index IS the discovery layer, and it is a precondition: no CMR search and no index build happen here.
+    # Discovery is paid once, offline (scripts/build_index.py), and a scene is assembled from the index entries whose
+    # H3 cells match the area. An unindexed area is an error, not a slow success via a whole-granule fallback.
+    if not coverage._index_covers_bbox(index.ATL03_INDEX_DIR, bbox):
+        raise RuntimeError(f"ATL03 not indexed over {bbox} — build the chunk index first "
+                           f"(uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)})")
+    refs = index.chunk_refs(cells, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
+    all_rows = refs.to_pylist()
+    names_indexed = {r["granule"] for r in all_rows}
+    names = sorted(n for n in names_indexed if _in_window(n, window))
+    in_window = set(names)
+    ref_rows = [r for r in all_rows if r["granule"] in in_window]
+    if not ref_rows:
+        raise RuntimeError(f"no indexed ATL03 chunks over {bbox} in {list(window) if window else 'any window'} "
+                           f"({len(names_indexed)} granules indexed for these cells, none inside the window)")
+    # Same granule set, WITHOUT the per-chunk box prune, so chunks_pruned_by_boxes measures the box prune alone
+    # rather than the box prune plus the time window.
     refs_cells = index.chunk_refs(cells, granules=names)
-    refs = index.chunk_refs(cells, granules=names, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
     have = set() if force else lake.ingested_chunk_cells("ICESAT2", names)
     # cell-aware: a chunk is fetched if ANY requested cell it touches is not materialized (partial evictions re-fetch)
-    todo_keys = {(r["granule"], r["beam"], r["chunk_index"]) for r in refs.to_pylist()
+    todo_keys = {(r["granule"], r["beam"], r["chunk_index"]) for r in ref_rows
                  if (r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) not in have}
     seen = set(); rows = []
-    for r in refs.to_pylist():
+    for r in ref_rows:
         k = (r["granule"], r["beam"], r["chunk_index"])
         if k not in seen:
             seen.add(k); rows.append({kk: v for kk, v in r.items() if kk != "h3_cell"})
@@ -169,7 +193,8 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox) -> 
     st = {"requests": agg["requests"], "bytes": agg["bytes"], "seconds": round(agg["seconds"], 2), "chunks": agg["chunks"], "spans": agg["spans"],
           "gap_bytes": agg["gap_bytes"], "presigns": agg["presigns"], "granules_touched": n_granules,
           "hdf5_opens_at_query_time": 0, "structure_parses_at_query_time": 0}
-    st.update({"cells": len(cells), "granules": names, "index": idx, "chunk_refs": len(rows), "chunks_fetched": len(todo),
+    st.update({"cells": len(cells), "granules": names, "granules_indexed_for_cells": len(names_indexed),
+               "chunk_refs": len(rows), "chunks_fetched": len(todo),
                "chunk_refs_by_cells_only": refs_cells.num_rows, "chunks_pruned_by_boxes": refs_cells.num_rows - len(rows),
                "presign_seconds": round(t_presign, 1), "group_phase_seconds": round(t_groups, 1), "group_parallel": group_parallel,
                "fetch_seconds": round(agg["fetch_seconds"], 1), "decode_materialize_seconds": round(agg["materialize_seconds"], 1),
