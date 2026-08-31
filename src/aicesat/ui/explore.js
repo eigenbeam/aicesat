@@ -117,7 +117,10 @@ AICESAT.ExploreView = class {
   async loadCollections() {
     try {
       const cols = await this.api.collections();
-      this.$('exColList').innerHTML = cols.filter(c => c.flag !== 'with_atl03').map(c =>   // ATL03 photons: server-side only, not UI-selectable
+      // Every collection is selectable, ATL03 included. `default` decides what starts checked: ATL03 is the heavy
+      // one (whole photon clouds, not segments) so it starts OFF, but excluding it from the list entirely meant the
+      // one collection a user might deliberately opt into was the one they could not reach.
+      this.$('exColList').innerHTML = cols.map(c =>
         `<label class="col-row" title="${c.product} v${c.version} · ${c.epoch}"><input type="checkbox" data-flag="${c.flag}" ${c.default ? 'checked' : ''}><span class="col-name">${c.label}</span><span class="col-cov" data-key="${c.key}"></span></label>`).join('');
       this.scheduleCoverage();   // fill counts if an area is already set
     } catch (e) { this.$('exColList').textContent = 'collections unavailable'; }
