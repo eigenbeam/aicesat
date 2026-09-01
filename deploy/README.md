@@ -64,7 +64,7 @@ Either `scp` the ~75 MB index up, **or** rebuild in-region (fast there):
 # copy from your laptop:
 rsync -av data/index/ ubuntu@HOST:/opt/aicesat/data/index/
 # or rebuild on the box (example: Jakobshavn):
-ssh ubuntu@HOST 'cd /opt/aicesat && uv run python scripts/build_glas_index.py -50.3 68.9 -49.2 69.3 5 8'
+ssh ubuntu@HOST 'cd /opt/aicesat && set -a && . ./aicesat.env && set +a && uv run python scripts/build_glas_index.py -50.3 68.9 -49.2 69.3 5 8'
 ```
 
 ## 7. Start + verify
@@ -72,7 +72,8 @@ ssh ubuntu@HOST 'cd /opt/aicesat && uv run python scripts/build_glas_index.py -5
 ```bash
 ssh ubuntu@HOST
   sudo systemctl start aicesat-web && journalctl -u aicesat-web -f    # public app
-  cd /opt/aicesat && uv run python deploy/verify_region.py            # <-- first real S3-direct test
+  cd /opt/aicesat && set -a && . ./aicesat.env && set +a              # systemd's env, in your shell
+  uv run python deploy/verify_region.py                               # <-- first real S3-direct test
 ```
 
 `verify_region.py` green (presigns = 0) means the whole point of us-west-2 is delivering. Then open `https://<host>/` in a browser → gate page → enter the code → the globe app.
@@ -88,6 +89,15 @@ Merge `deploy/claude-desktop.json` into your `claude_desktop_config.json` (macOS
 - **Save money:** `aws ec2 stop-instances` between sessions — you pay compute only while running (~$0.083/hr for t3.large; EBS persists). `start-instances` to resume; the public IP changes unless you attach an Elastic IP (and the sslip.io host changes with it — an Elastic IP or real domain avoids that).
 - **Rotate the beta code:** edit `AICESAT_ACCESS_CODE` in `aicesat.env`, `sudo systemctl restart aicesat-web`. Existing cookies stop working.
 - **Update code:** `ssh ubuntu@HOST 'cd /opt/aicesat && git pull && uv run python scripts/build_ui.py && sudo systemctl restart aicesat-web'`.
+- **Running anything by hand:** the service gets its environment from systemd; your SSH shell does not. Load it first,
+  or the command runs out-of-region and looks for the Earthdata token in the wrong place — neither of which errors,
+  they just silently cost you time and egress:
+  ```bash
+  cd /opt/aicesat && set -a && . ./aicesat.env && set +a
+  uv run python -c "from aicesat import access, cache, auth; print(access.in_region(), access.default_coalesce_gap(), cache.DATA_DIR, bool(auth.read_edl_token()))"
+  # expect: True 1048576 /opt/aicesat/data True
+  ```
+  Long index builds should run under `tmux` so an SSH drop does not kill them.
 - **Logs:** `journalctl -u aicesat-web -f` (app), `journalctl -u caddy -f` (TLS/proxy).
 
 ## Security notes
