@@ -72,20 +72,30 @@ def to_local(frame: dict, lon, lat) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(x) - ox, np.asarray(y) - oy
 
 
-def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache_key: str, scene_id: str,
-           max_points: int = 300_000) -> dict:
+def _sample_order(n: int, seed: int = 12345) -> np.ndarray:
+    """A fixed shuffle of 0..n-1, so ANY PREFIX of the stored points is a uniform spatial sample of the whole.
+
+    This is what lets the display cap move from the server to the client. Points used to be strided down to 300k
+    before they were stored, because the doc could not hold more; now every extracted point is stored and the client
+    fetches as many as it wants from the front. A prefix of track-ordered points would be one corner of the scene, so
+    the order has to be shuffled once, here, at write time. Seeded, so a rebuild of the same scene is byte-identical.
+    """
+    rng = np.random.default_rng(seed)
+    return rng.permutation(n)
+
+
+def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache_key: str, scene_id: str) -> dict:
     x, y = to_local(frame, arrays["lon"], arrays["lat"])
     z = np.asarray(arrays["h"], dtype="f8") - z0
     n = x.size
-    stride = max(1, int(np.ceil(n / max_points)))
-    sel = slice(None, None, stride)
+    sel = _sample_order(n)                      # every point is kept; the ORDER makes any prefix a fair sample
     pos = np.column_stack([x[sel], y[sel], z[sel]]).astype("f4")
     out = {
         "mission": mission,
         "color": COLORS[mission],
         "n": int(pos.shape[0]),
         "n_extracted": int(n),
-        "stride": int(stride),
+        "stride": 1,                            # nothing is dropped any more; kept so old clients read a sane value
         "cache_key": cache_key,
         "meta": {k: v for k, v in meta.items() if k != "granules"},
         "granules": meta.get("granules", []),
@@ -112,16 +122,15 @@ def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) ->
             "labels": {"note": "Native coordinates as delivered; no co-registration applied."}}
 
 
-# Per-mission cap on the streamed preview point count. append_partial accumulates the UN-STRIDED display points of
-# every granule as it lands, so a dense mission (ATL06 over a big area: ~2M points across ~200 granules) would grow
-# the in-memory/on-disk doc to tens of MB mid-build — and cache.save_scene json.dumps the WHOLE doc, so each save
-# scales with everything accumulated so far.
+# Per-mission cap on the streamed preview point count. Its original job — keeping the scene doc from ballooning,
+# since cache.save_scene re-serialised the whole thing per granule — is gone: preview points now append to a binary
+# sidecar and the doc holds only counts.
 #
-# NOTE this is a bound on the SERVER-side doc, not on what the client transfers: the widget fetches the small `meta`
-# part and appends only the new position chunks (api.scene_part / adapter.loadSceneInto), so transport is already
-# incremental. The preview only needs enough points to read as "the cloud is raining in" — the finalize (add_series
-# over the authoritative arrays) replaces it with the full strided series regardless — so once a mission's preview
-# reaches this many points, further partials are dropped.
+# It survives for a different reason. The finalized series is stored SHUFFLED, so a client can take any prefix as a
+# fair sample; the streamed preview cannot be, because it is appended granule by granule as they land. A prefix of it
+# is therefore the FIRST granules, not a sample of all of them — and the client now fetches a prefix. Halving the
+# buffer and doubling the stride keeps the preview both bounded and spatially representative of every granule seen so
+# far, which is exactly what a prefix-fetching client needs. See test_late_granules_still_reach_the_preview.
 PARTIAL_PREVIEW_CAP = 200_000
 
 

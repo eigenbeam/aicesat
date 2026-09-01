@@ -117,8 +117,7 @@ MCP_CHUNK_BYTES = 96_000        # an MCP host caps a tool result; the app adapte
 HTTP_CHUNK_BYTES = 1_000_000    # a browser has no such cap, and 23 sequential requests for one array is the cost
 
 
-def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = HTTP_CHUNK_BYTES,
-               stride: int = 1) -> dict:
+def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = HTTP_CHUNK_BYTES) -> dict:
     """Chunked access for hosts with small result limits. parts: meta | surface | imagery | coreg | positions:<MISSION>
     (base64 float32 xyz, chunked) | dh (histogram data)."""
     doc = _scene_for_read(scene_id)
@@ -147,20 +146,15 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         # ICESSN platelet slopes are [sn, we, ...] — 2 per point, strided in lock-step with positions so they stay
         # aligned. Both come from the binary sidecar: mmap-backed, so serving one chunk touches one chunk's bytes
         # rather than materialising the whole array from a JSON list (see cache.scene_array_*).
+        # No stride: points are STORED shuffled, so a client that wants fewer simply stops fetching chunks. Striding
+        # here meant reading the whole array to discard most of it, on every request.
         per = 3 if kind == "positions" else 2
-        st = max(1, int(stride))
-        if st == 1:                       # the common case: hand back exactly the bytes this chunk covers
-            vals_per_chunk = (chunk_bytes // cache.ARRAY_DTYPE.itemsize) if chunk_bytes else None
-            total = cache.scene_array_len(scene_id, m, kind)
-            if vals_per_chunk:
-                piece = cache.scene_array_read(scene_id, m, kind, chunk * vals_per_chunk, vals_per_chunk)
-                n_chunks = max(1, -(-total // vals_per_chunk))
-                return {"name": "xyz" if per == 3 else "sw", "dtype": "float32", "n_values": int(total),
-                        "chunk": chunk, "n_chunks": n_chunks,
-                        "chunk_values": vals_per_chunk,
-                        "b64": base64.b64encode(np.ascontiguousarray(piece).tobytes()).decode("ascii")}
-        arr = cache.scene_array_read(scene_id, m, kind).reshape(-1, per)[::st]
-        return _chunked(np.ascontiguousarray(arr).ravel(), chunk, chunk_bytes, "xyz" if per == 3 else "sw")
+        vals_per_chunk = max(1, chunk_bytes // cache.ARRAY_DTYPE.itemsize)
+        total = cache.scene_array_len(scene_id, m, kind)
+        piece = cache.scene_array_read(scene_id, m, kind, chunk * vals_per_chunk, vals_per_chunk)
+        return {"name": "xyz" if per == 3 else "sw", "dtype": "float32", "n_values": int(total), "chunk": chunk,
+                "n_chunks": max(1, -(-total // vals_per_chunk)), "chunk_values": vals_per_chunk,
+                "b64": base64.b64encode(np.ascontiguousarray(piece).tobytes()).decode("ascii")}
     if part == "coreg":
         c = doc.get("coreg") or {}
         return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact")}

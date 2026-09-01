@@ -161,6 +161,8 @@ def test_no_granule_slice_or_point_decimation_in_the_source():
         r"\[:\s*max_granules\s*\]": "granule-list truncation",
         r"_MAX_PTS_PER_MISSION": "per-mission point decimation",
         r"\bmax_candidates\b": "candidate-list truncation",
+        r"\bmax_points\b": "display-stride cap on stored points (#25)",
+        r"stride: int = ": "a stride parameter on the transport (#25)",
     }
     def _enclosing_def(text: str, pos: int) -> str:
         before = text[:pos]

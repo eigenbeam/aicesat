@@ -417,8 +417,8 @@ def ui_scenes() -> dict:
 
 
 @apps.tool(name="ui_scene_part", **_APP)
-def ui_scene_part(scene_id: str, part: str = "meta", chunk: int = 0, stride: int = 1) -> dict:
-    return api.scene_part(scene_id, part, chunk, api.MCP_CHUNK_BYTES, stride=stride)
+def ui_scene_part(scene_id: str, part: str = "meta", chunk: int = 0) -> dict:
+    return api.scene_part(scene_id, part, chunk, api.MCP_CHUNK_BYTES)
 
 
 @apps.tool(name="ui_coverage", **_APP)

@@ -328,7 +328,7 @@ function updateLabels() {
     const s = scene.series[m], info = MISSIONS[m] || {name: m, epoch: '', gloss: ''}, on = visible[m] !== false, col = colorOf(m);
     return `<label class="misrow${on ? '' : ' off'}" title="${info.gloss}"><input type="checkbox" data-m="${m}" ${on ? 'checked' : ''}>` +
       `<span class="dot" style="background:rgb(${col.join(',')})"></span><span class="misname">${info.name}</span>` +
-      `<span class="mismeta">${s.n.toLocaleString()} pts · ${info.epoch}</span></label>`;
+      `<span class="mismeta">${ptsLabel(s)} · ${info.epoch}</span></label>`;
   }).join('');
   $('missionToggles').innerHTML = rows;
   $('missionToggles').querySelectorAll('input[data-m]').forEach(i => i.onchange = e => { visible[e.target.dataset.m] = e.target.checked; render(); updateLabels(); });
@@ -454,6 +454,15 @@ function renderProgress(loading, log) {
     setText(e.pct, known ? pct + '%' : '—');
     setText(e.bits, bits.join(' · '));
   }
+}
+
+// The scene holds every extracted point; the viewer draws a sample of them. Say so rather than showing a count
+// that is not what is on screen.
+function ptsLabel(s) {
+  const shown = s.n_shown != null ? s.n_shown : (s.positions ? s.positions.length / 3 : s.n);
+  const total = s.n || shown;
+  return shown < total ? `${shown.toLocaleString()} of ${total.toLocaleString()} pts`
+                       : `${total.toLocaleString()} pts`;
 }
 
 function esc(v) { return String(v == null ? '' : v).replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c])); }

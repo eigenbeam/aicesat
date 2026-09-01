@@ -59,10 +59,16 @@ window.AICESAT = window.AICESAT || {};
   // ones, so hard-coding it here made the two disagree the moment either changed. Only used to resume a partial
   // fetch; `n_chunks` from the reply still drives the loop.
   let CHUNK_FLOATS = 24000;
+  // Points per mission the viewer holds. The server now stores EVERY extracted point, in a shuffled order, so any
+  // prefix is a fair spatial sample of the whole — fetching the first N is the level-of-detail control, and the cap
+  // lives here (where the memory and the frame budget actually are) rather than in the stored scene.
+  const DISPLAY_BUDGET = 400000;
   // `getChunk` MUST accept (part, chunkIndex). Passing a one-argument function here silently drops the index, so every
   // request returns chunk 0 and the caller concatenates n_chunks copies of it — which corrupted the surface grid into
   // a rolling-offset repeat and duplicated the point clouds.
-  async function fetchValuesFrom(getChunk, part, fromValue) {
+  // `toValue` (opt-in) stops the fetch once that many values are in hand. The stored order is shuffled, so stopping
+  // early yields a fair sample rather than one corner of the scene — this is the display cap, and it belongs here.
+  async function fetchValuesFrom(getChunk, part, fromValue, toValue) {
     const startChunk = Math.floor(fromValue / CHUNK_FLOATS);
     const parts = []; let n = startChunk + 1;
     for (let c = startChunk; c < n; c++) {
@@ -75,10 +81,13 @@ window.AICESAT = window.AICESAT || {};
       n = d.n_chunks;
       if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
       parts.push(b64ToF32(d.b64));
+      if (toValue != null && (startChunk * CHUNK_FLOATS + parts.reduce((a, v) => a + v.length, 0)) >= toValue) break;
     }
-    const got = concatF32(parts);
+    let got = concatF32(parts);
     const skip = fromValue - startChunk * CHUNK_FLOATS;   // trim the head of the first chunk
-    return skip > 0 ? got.subarray(skip) : got;
+    if (skip > 0) got = got.subarray(skip);
+    const room = toValue == null ? null : toValue - fromValue;
+    return room != null && got.length > room ? got.subarray(0, room) : got;
   }
 
   // Build/refresh a scene doc incrementally against `prev` (the last doc this view rendered, or null).
@@ -91,27 +100,30 @@ window.AICESAT = window.AICESAT || {};
       const old = prev && prev.series && prev.series[m];
       const sameVersion = old && old._ver === seriesVersion(s);
       const haveVals = sameVersion ? (old._pos ? old._pos.length : 0) : 0;
-      const wantVals = (s.n || 0) * 3;
+      const shown = Math.min(s.n || 0, DISPLAY_BUDGET);
+      const wantVals = shown * 3;
       let pos = sameVersion ? old._pos : null;
       if (wantVals > haveVals) {                                   // grew (or first sight): fetch ONLY the new tail
-        const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, haveVals);
+        const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, haveVals, wantVals);
         pos = haveVals ? concatF32([pos, add]) : add;
         changed.add(m);
       } else if (!sameVersion) {
-        pos = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, 0);
+        pos = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, 0, wantVals);
         changed.add(m);
       }
       let slopes = sameVersion ? old._slopes : null;
       if (s.has_slopes) {
-        const haveS = sameVersion && slopes ? slopes.length : 0, wantS = (s.n || 0) * 2;
+        const haveS = sameVersion && slopes ? slopes.length : 0, wantS = shown * 2;   // prefix-aligned with positions
         if (wantS > haveS) {
-          const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'slopes:' + m, haveS);
+          const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'slopes:' + m, haveS, wantS);
           slopes = haveS ? concatF32([slopes, add]) : add;
           changed.add(m);
         }
       } else slopes = null;
-      doc.series[m] = {...s, positions: pos || new Float32Array(0), slopes: slopes || null,
-                       _pos: pos || new Float32Array(0), _slopes: slopes, _ver: seriesVersion(s)};
+      const shownPos = pos || new Float32Array(0);
+      doc.series[m] = {...s, positions: shownPos, slopes: slopes || null,
+                       n_shown: shownPos.length / 3,          // what is actually on screen, which may be a sample of s.n
+                       _pos: shownPos, _slopes: slopes, _ver: seriesVersion(s)};
     }
     // surface z: static once it lands — fetch exactly once
     if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
@@ -132,10 +144,17 @@ window.AICESAT = window.AICESAT || {};
       if (r.structuredContent) return r.structuredContent;
       const t = (r.content || []).find(c => c.type === 'text'); return t ? JSON.parse(t.text) : {};
     };
-    const chunked = async (id, part, stride) => {
-      const parts = []; let n = 1;
-      for (let c = 0; c < n; c++) { const d = await call('ui_scene_part', {scene_id: id, part, chunk: c, stride}); n = d.n_chunks; parts.push(b64ToF32(d.b64)); }
-      return concatF32(parts);
+    // Fetch chunks from the front until `maxValues` is reached. The stored order is shuffled, so a prefix is a fair
+    // sample — this replaces asking the server to stride, which made it read the whole array to throw most away.
+    const chunked = async (id, part, maxValues) => {
+      const parts = []; let n = 1, got = 0;
+      for (let c = 0; c < n && (maxValues == null || got < maxValues); c++) {
+        const d = await call('ui_scene_part', {scene_id: id, part, chunk: c});
+        n = d.n_chunks;
+        const v = b64ToF32(d.b64); parts.push(v); got += v.length;
+      }
+      const all = concatF32(parts);
+      return maxValues != null && all.length > maxValues ? all.subarray(0, maxValues) : all;
     };
     const chunkedBytes = async (id, part) => {
       let n = 1, b64 = '';
@@ -151,11 +170,10 @@ window.AICESAT = window.AICESAT || {};
         const meta = await call('ui_scene_part', {scene_id: id, part: 'meta'});
         const doc = {...meta, series: {}, coreg: null, surface: null};
         for (const [m, s] of Object.entries(meta.series)) {
-          const stride = Math.max(1, Math.ceil(s.n / budget));
-          const pos = await chunked(id, 'positions:' + m, stride);
-          doc.series[m] = {...s, n: pos.length / 3, stride: s.stride * stride, positions: Array.from(pos)};
+          const pos = await chunked(id, 'positions:' + m, Math.min(s.n || 0, budget) * 3);
+          doc.series[m] = {...s, n_shown: pos.length / 3, positions: pos};
         }
-        if (meta.surface) { const z = await chunked(id, 'surface', 1); doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)}; }
+        if (meta.surface) { const z = await chunked(id, 'surface', null); doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)}; }
         if (meta.has_coreg) {
           const c = await call('ui_scene_part', {scene_id: id, part: 'coreg'});
           const dh = await call('ui_scene_part', {scene_id: id, part: 'dh'});

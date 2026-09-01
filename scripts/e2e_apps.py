@@ -41,10 +41,10 @@ async def main():
                 sid = next((x["scene_id"] for x in scenes if x["status"] == "ready"), scenes[0]["scene_id"])
                 meta = api.scene_part(sid, "meta")
                 m = next(iter(meta["series"]))
-                p0 = api.scene_part(sid, f"positions:{m}", 0, stride=4)
-                parts = [np.frombuffer(base64.b64decode(api.scene_part(sid, f"positions:{m}", c, stride=4)["b64"]), dtype="f4") for c in range(p0["n_chunks"])]
+                p0 = api.scene_part(sid, f"positions:{m}", 0)
+                parts = [np.frombuffer(base64.b64decode(api.scene_part(sid, f"positions:{m}", c)["b64"]), dtype="f4") for c in range(p0["n_chunks"])]
                 arr = np.concatenate(parts)
-                print(f"scene {sid}: {m} positions via {p0['n_chunks']} chunks -> {arr.size // 3:,} points (stride 4 of {meta['series'][m]['n']:,}), chunk0 {len(p0['b64']) / 1e3:.0f} kB")
+                print(f"scene {sid}: {m} positions via {p0['n_chunks']} chunks -> {arr.size // 3:,} points (of {meta['series'][m]['n']:,}), chunk0 {len(p0['b64']) / 1e3:.0f} kB")
                 assert arr.size == p0["n_values"]
             print("OK")
 

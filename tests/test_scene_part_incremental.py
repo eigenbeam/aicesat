@@ -145,3 +145,42 @@ def test_a_pre_sidecar_scene_is_migrated_on_first_read(tmp_path, monkeypatch):
     assert "positions" not in after["series"]["ICESSN"], "the doc should no longer carry the array"
     assert after["series"]["ICESSN"]["has_slopes"] is True
     assert np.allclose(_all_values("s1", "slopes:ICESSN"), np.full(20, 0.5, dtype="f4"))
+
+
+# --- a prefix of the stored points must be a fair sample of all of them ----------------------------------------------
+def test_any_prefix_of_the_stored_series_is_a_spatial_sample(tmp_path, monkeypatch):
+    """The display cap moved to the client, which simply stops fetching. That is only correct because the points are
+    stored SHUFFLED — a prefix of track-ordered points would be one corner of the scene."""
+    monkeypatch.setattr(cache, "SCENE_DIR", tmp_path / "sample")
+    n = 60_000
+    doc = scene.new_scene("s1", [-50.0, 69.0, -49.0, 70.0])
+    doc["z0"] = 0.0
+    arrays = {"lon": np.linspace(-50.0, -49.0, n),       # a long track: order matters enormously
+              "lat": np.linspace(69.0, 70.0, n),
+              "h": np.linspace(0.0, 1000.0, n),
+              "t": np.zeros(n, "datetime64[ms]")}
+    scene.add_series(doc, "ATL06", arrays, {"granules": []}, "ck")
+
+    xyz = cache.scene_array_read("s1", "ATL06", "positions").reshape(-1, 3)
+    assert xyz.shape[0] == n, "every extracted point must be stored, not a stride of them"
+    for frac in (0.02, 0.1, 0.5):
+        pre = xyz[: int(n * frac)]
+        # the prefix must span the same ground as the whole, not a slice of it
+        assert pre[:, 0].min() < xyz[:, 0].min() + 0.05 * np.ptp(xyz[:, 0])
+        assert pre[:, 0].max() > xyz[:, 0].max() - 0.05 * np.ptp(xyz[:, 0])
+        assert abs(pre[:, 2].mean() - xyz[:, 2].mean()) < 0.02 * np.ptp(xyz[:, 2]), \
+            f"prefix of {frac:.0%} is biased in height — the order is not a fair sample"
+
+
+def test_the_shuffle_is_deterministic(tmp_path, monkeypatch):
+    """A rebuild of the same scene must produce byte-identical arrays, or every cache key downstream is a lie."""
+    n = 5_000
+    arrays = {"lon": np.linspace(-50.0, -49.0, n), "lat": np.linspace(69.0, 70.0, n),
+              "h": np.linspace(0.0, 100.0, n), "t": np.zeros(n, "datetime64[ms]")}
+    out = []
+    for i in (1, 2):
+        monkeypatch.setattr(cache, "SCENE_DIR", tmp_path / f"run{i}")
+        doc = scene.new_scene("s1", [-50.0, 69.0, -49.0, 70.0]); doc["z0"] = 0.0
+        scene.add_series(doc, "ATL06", arrays, {"granules": []}, "ck")
+        out.append(cache.scene_array_read("s1", "ATL06", "positions"))
+    assert np.array_equal(out[0], out[1])

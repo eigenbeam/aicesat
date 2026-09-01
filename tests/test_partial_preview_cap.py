@@ -1,5 +1,9 @@
-"""append_partial must cap the streamed preview so the scene doc can't balloon to the full point count — otherwise
-cache.save_scene re-serialises an ever-growing doc on every granule (O(N^2)), the dominant cost of a large build."""
+"""append_partial must keep the streamed preview bounded AND representative of every granule seen so far.
+
+The original reason was doc size (positions were JSON in the doc, re-serialised per granule). That is gone — they
+append to a binary sidecar now. The reason it still matters: the finalized series is stored shuffled so any prefix is
+a fair sample, but the preview is appended as granules land, so its prefix is the FIRST granules. The client fetches
+a prefix, so the thinning is what stops a long build's preview from showing only where it started."""
 import numpy as np
 import pytest
 
