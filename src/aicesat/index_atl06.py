@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 H3_RES = 6
 ATL06_RES = 5   # per-collection choice: ATL06's 400 km chunks make res 5 the sweet spot (finer buys ~nothing on
                 # scene-sized queries but multiplies index/scan cost) — see the resolution analysis.
-ATL06_INDEX_VERSION = "1"
+ATL06_INDEX_VERSION = "2"   # v2: rows filtered to the build's cells (v1 held the whole track)
 ATL06_DATASETS = ("latitude", "longitude", "h_li", "delta_time", "atl06_quality_summary")
 ATL06_INDEX_DIR = cache.DATA_DIR / "index" / "atl06"
 
@@ -47,6 +47,11 @@ def indexed_atl06_granules(res: int = ATL06_RES) -> set[str]:
         meta = pq.read_schema(p).metadata or {}
         if meta.get(b"aicesat_atl06_index_version", b"").decode() == ATL06_INDEX_VERSION:
             out.add(p.stem)
+        else:
+            # Deleted, not just skipped: queries read every *.parquet in the directory, so a stale file
+            # keeps serving its old-semantics rows until something overwrites it.
+            log.warning("index %s has an old schema; rebuilding", p.name)
+            p.unlink()
     return out
 _NAME_RE = re.compile(r"ATL06_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5")
 

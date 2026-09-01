@@ -29,7 +29,7 @@ from .index import _chunk_manifest, _filters   # reuse the ATL03/ATL06 HDF5 help
 log = logging.getLogger(__name__)
 
 GLAS_RES = 5   # match ATL06 (the two are coregistered/compared): a query cell maps to the same index cells for both.
-GLAS_INDEX_VERSION = "1"
+GLAS_INDEX_VERSION = "2"    # v2: cells filtered whole, not shots clipped to a bbox (v1 cut boundary hexes)
 GLAS_INDEX_DIR = cache.DATA_DIR / "index" / "glas"
 J2000 = np.datetime64("2000-01-01T12:00:00", "ms")
 MAX_SAT_FLAG = 2
@@ -60,6 +60,11 @@ def indexed_glas_granules(res: int = GLAS_RES) -> set[str]:
         meta = pq.read_schema(p).metadata or {}
         if meta.get(b"aicesat_glas_index_version", b"").decode() == GLAS_INDEX_VERSION:
             out.add(p.stem)
+        else:
+            # Deleted, not just skipped: queries read every *.parquet in the directory, so a stale file
+            # keeps serving its old-semantics rows until something overwrites it.
+            log.warning("index %s has an old schema; rebuilding", p.name)
+            p.unlink()
     return out
 
 

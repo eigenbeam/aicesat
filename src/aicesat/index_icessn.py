@@ -26,7 +26,7 @@ from .icessn import MAX_RMS_CM, _NAME_RE
 log = logging.getLogger(__name__)
 
 ICESSN_RES = 5   # match ATL06/GLAS so a query cell maps to the same index cells across missions
-ICESSN_INDEX_VERSION = "1"
+ICESSN_INDEX_VERSION = "2"  # v2: cells filtered whole, not platelets clipped to a bbox
 ICESSN_INDEX_DIR = cache.DATA_DIR / "index" / "icessn"
 
 
@@ -41,6 +41,11 @@ def indexed_icessn_granules(res: int = ICESSN_RES) -> set[str]:
         meta = pq.read_schema(p).metadata or {}
         if meta.get(b"aicesat_icessn_index_version", b"").decode() == ICESSN_INDEX_VERSION:
             out.add(p.stem)
+        else:
+            # Deleted, not just skipped: queries read every *.parquet in the directory, so a stale file
+            # keeps serving its old-semantics rows until something overwrites it.
+            log.warning("index %s has an old schema; rebuilding", p.name)
+            p.unlink()
     return out
 
 

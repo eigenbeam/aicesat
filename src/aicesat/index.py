@@ -25,7 +25,9 @@ from . import auth, cache
 log = logging.getLogger(__name__)
 
 H3_RES = 6
-INDEX_SCHEMA_VERSION = "4"  # v4: per-chunk lat/lon bounding boxes  # bump when index columns change; older files are rebuilt, never read
+INDEX_SCHEMA_VERSION = "5"  # v5: rows are filtered to the cells a build was ASKED for (v4 held a granule's whole
+                            # track). Bump when the columns OR the row semantics change; older files are rebuilt,
+                            # never read — without a bump a re-run would skip them and keep the old rows.
 DATASETS = ("lat_ph", "lon_ph", "h_ph", "signal_conf_ph", "delta_time")
 BEAMS = ("gt1l", "gt1r", "gt2l", "gt2r", "gt3l", "gt3r")
 INDEX_DIR = cache.DATA_DIR / "index"
