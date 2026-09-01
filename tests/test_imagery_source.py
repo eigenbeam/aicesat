@@ -100,23 +100,21 @@ def test_candidates_put_fully_covering_scenes_first_but_keep_the_rest():
 def test_mosaic_fills_gaps_from_later_scenes(monkeypatch, tmp_path):
     """Two half-covering scenes must produce a whole image, where the old single-pick produced half black."""
     monkeypatch.setattr(imagery, "IMG_DIR", tmp_path)
-    west = _item("west", (-52, 68, -50, 70))
-    east = _item("east", (-50, 68, -48, 70))
+    # One synthetic coordinate space throughout: _to_ll and Transformer are both identity, so the frame's metres ARE
+    # the lon/lat the item bboxes are written in. Otherwise the gap test compares real polar lon/lat against made-up
+    # boxes and skips every scene.
+    monkeypatch.setattr(imagery, "_to_ll", lambda crs: _IdentityTransformer.from_crs(crs, "EPSG:4326"))
+    monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
+    west = _item("west", (-2000, -2000, 0, 2000))
+    east = _item("east", (0, -2000, 2000, 2000))
     monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [west, east])
 
-    calls = []
-
     def fake_sample(url, ux, uy):
-        calls.append(url)
         out = np.full(ux.shape, np.nan)
-        # each scene only has data on its own side of -50 degrees, in the frame's own x (metres, origin at centre)
-        side = ux < 0 if "west" in url else ux >= 0
-        out[side] = 1000.0
+        out[ux < 0 if "west" in url else ux >= 0] = 1000.0
         return out
 
     monkeypatch.setattr(imagery, "_sample_utm", fake_sample)
-    monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
-
     meta = imagery._build_s2(_FRAME, (-1000.0, -1000.0, 1000.0, 1000.0), width_px=64)
     assert meta["coverage"] == 1.0, meta
     assert sorted(meta["scenes"]) == ["east", "west"], meta["scenes"]
@@ -126,10 +124,30 @@ def test_mosaic_fills_gaps_from_later_scenes(monkeypatch, tmp_path):
 def test_a_mosaic_that_cannot_cover_the_area_raises_rather_than_going_black(monkeypatch, tmp_path):
     """A gap must reach build()'s EOX fallback, not be painted as dark ground."""
     monkeypatch.setattr(imagery, "IMG_DIR", tmp_path)
-    half = _item("half", (-52, 68, -50, 70))
-    monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [half])
-    monkeypatch.setattr(imagery, "_sample_utm",
-                        lambda url, ux, uy: np.where(ux < 0, 1000.0, np.nan))
+    monkeypatch.setattr(imagery, "_to_ll", lambda crs: _IdentityTransformer.from_crs(crs, "EPSG:4326"))
     monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
+    half = _item("half", (-2000, -2000, 0, 2000))
+    monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [half])
+    monkeypatch.setattr(imagery, "_sample_utm", lambda url, ux, uy: np.where(ux < 0, 1000.0, np.nan))
     with pytest.raises(RuntimeError, match="covered only"):
         imagery._build_s2(_FRAME, (-1000.0, -1000.0, 1000.0, 1000.0), width_px=64)
+
+
+def test_a_candidate_that_cannot_touch_the_remaining_gap_is_not_read(monkeypatch, tmp_path):
+    """Each candidate costs three COG reads; one that only clips already-filled ground must be skipped."""
+    monkeypatch.setattr(imagery, "IMG_DIR", tmp_path)
+    monkeypatch.setattr(imagery, "_to_ll", lambda crs: _IdentityTransformer.from_crs(crs, "EPSG:4326"))
+    monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
+    whole = _item("whole", (-2000, -2000, 2000, 2000))
+    corner = _item("corner", (-2000, -2000, -1500, -1500))     # inside the area, but wholly within what `whole` fills
+    monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [whole, corner])
+    read = []
+
+    def fake_sample(url, ux, uy):
+        read.append(url.split("/")[-2])
+        return np.full(ux.shape, 1000.0)
+
+    monkeypatch.setattr(imagery, "_sample_utm", fake_sample)
+    meta = imagery._build_s2(_FRAME, (-1000.0, -1000.0, 1000.0, 1000.0), width_px=32)
+    assert meta["coverage"] == 1.0
+    assert set(read) == {"whole"}, f"corner should never have been read: {set(read)}"
