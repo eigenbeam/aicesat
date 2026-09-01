@@ -44,10 +44,25 @@ class AccessStats:
 
 
 # Coalescing gap: merge two wanted ranges into one GET if the unwanted gap between them is smaller than this.
-# The optimum depends on the bandwidth-delay product of the link: NSIDC measured 256 KB in-region (10-30 ms TTFB);
-# from a remote laptop (100-160 ms TTFB, ~40 MB/s) requests under ~6 MB are latency-bound, so a larger gap that builds
-# multi-MB spans wins. Override with AICESAT_COALESCE_GAP (bytes).
-MAX_GAP_BYTES = int(os.environ.get("AICESAT_COALESCE_GAP", 2 << 20))
+#
+# The break-even gap is (round-trip latency) x (bandwidth AVAILABLE TO ONE CONNECTION) — not the whole link. That
+# distinction is the whole ballgame: the fetch runs FETCH_WORKER_CAP connections at once, so each gets roughly
+# link/workers. This constant was 2 MB out-of-region, justified as "100-160 ms TTFB, ~40 MB/s, so requests under
+# ~6 MB are latency-bound" — which divided by no workers at all and overestimated the optimum by about the worker
+# count. Measured from a laptop (scripts/bench_coalesce.py, 50 granules, 45 MB wanted, 16 workers):
+#
+#      gap    spans   MB read   best s   ms/GET
+#     0.06    1,090        47      2.8     40.5
+#     0.12      999        55      2.8     45.5   <- the knee
+#     0.25      728       109      5.6    122.1
+#     1.00      248       344     14.4    929.8
+#     2.00      237       362     15.4   1040.1   <- the old default, 5.5x slower than the knee
+#
+# ms/GET is flat below ~128 KB and climbs steeply above it, and read throughput is ~17-24 MB/s throughout, so past
+# the knee every extra byte of over-fetch is paid for at link speed and buys nothing. In-region keeps 1 MB: egress is
+# free, RTT is 10-30 ms and per-connection bandwidth is far higher, which moves the knee right (see bench_coalesce).
+# Override with AICESAT_COALESCE_GAP (bytes).
+MAX_GAP_BYTES = int(os.environ.get("AICESAT_COALESCE_GAP", 1 << 17))
 MAX_SPAN_BYTES = 64 << 20    # keep individual GETs bounded so threads still overlap
 
 
@@ -138,7 +153,7 @@ def default_coalesce_gap(reg: bool | None = None) -> int:
     env = os.environ.get("AICESAT_COALESCE_GAP")
     if env:
         return int(env)
-    return (1 << 20) if (in_region() if reg is None else reg) else (2 << 20)
+    return (1 << 20) if (in_region() if reg is None else reg) else (1 << 17)   # 1 MB in-region, 128 KB out (measured)
 
 
 S3_REGION = "us-west-2"          # NSIDC Cumulus S3 + the STS creds are us-west-2 only (in-region == this region)

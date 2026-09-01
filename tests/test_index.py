@@ -163,8 +163,17 @@ def test_vectorized_cells_match_h3py():
     assert np.array_equal(fast, ref)
 
 
-def test_coalesce_gap_env_default_is_bdp_aware():
-    assert access.MAX_GAP_BYTES >= 256 * 1024  # never below the in-region optimum; larger from remote links
+def test_coalesce_gap_is_smaller_from_a_remote_link_not_larger():
+    """The remote gap must be SMALLER than the in-region one — the opposite of what this test used to assert.
+
+    Break-even is latency x the bandwidth available to ONE CONNECTION, and the fetch runs FETCH_WORKER_CAP
+    connections at once, so each gets about link/workers. The old default reasoned from the whole link and landed on
+    2 MB, four doublings past the measured knee; bench_coalesce timed it at 15.4 s against 2.8 s at 128 KB.
+    """
+    remote, in_region = access.default_coalesce_gap(False), access.default_coalesce_gap(True)
+    assert 0 < remote < in_region, (remote, in_region)
+    assert remote <= 256 * 1024, f"{remote} is past the measured out-of-region knee (~128 KB)"
+    assert access.MAX_GAP_BYTES == remote, "the module default should match the remote case it is used from"
 
 
 def _synthetic_lake(tmp_path, monkeypatch, n_cells=3):
