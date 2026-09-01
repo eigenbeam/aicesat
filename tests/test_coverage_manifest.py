@@ -192,39 +192,65 @@ def test_indexed_and_covered_are_reported_separately(tmp_path, monkeypatch):
 
 
 # --- CMR returns every file twice; filtering at the source halves the pagination -------------------------------------
-def test_search_asks_for_cloud_hosted_granules_only(monkeypatch, tmp_path):
-    """CMR lists a Cumulus copy and a retired on-prem copy of every file. dedup_granules threw the duplicate away
-    AFTER paging through it; filtering at the source halves the result set (measured 3.49 s -> 2.38 s)."""
-    import earthaccess
+class _FakeQuery:
+    """Stands in for earthaccess's DataGranules, recording the ORDER things were applied in."""
+    def __init__(self, results=None):
+        self.params = {}
+        self.calls = []
+        self._results = results if results is not None else [{"meta": {"native-id": "g1"}, "umm": {}}]
 
-    seen = []
+    def parameters(self, **kw):
+        self.calls.append(("parameters", tuple(kw)))
+        self.params.update(kw)
+        return self
 
-    def fake(count=-1, **kw):
-        seen.append(kw)
-        return [{"meta": {"native-id": "g1"}, "umm": {}}]
+    def cloud_hosted(self, on=True):
+        self.calls.append(("cloud_hosted", on))
+        # the real one resolves a provider FROM short_name, so it only works once parameters are set
+        if self.params.get("short_name"):
+            self.params["provider"] = "NSIDC_CPRD"
+        return self
 
-    monkeypatch.setattr(earthaccess, "search_data", fake)
+    def get_all(self):
+        return self._results
+
+
+def test_cloud_filter_is_applied_after_the_parameters_not_as_a_kwarg(monkeypatch, tmp_path):
+    """earthaccess evaluates .parameters(**kwargs) IN ORDER and cloud_hosted resolves a provider from short_name.
+    Passed before it, the filter is dropped WITHOUT ERROR — which is how it shipped as a silent no-op: every search
+    kept paging through both the Cumulus and the retired on-prem copy of every file."""
+    q = _FakeQuery()
+    monkeypatch.setattr(coverage, "_cloud_query", lambda **kw: q.parameters(**kw).cloud_hosted(True))
     monkeypatch.setattr(coverage, "dedup_granules", lambda g: g)
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(coverage.auth, "login", lambda *a, **k: None)
+
     coverage.search("ATL06", "007", (-50, 69, -49, 70), None, use_cache=False)
-    assert seen and seen[0].get("cloud_hosted") is True, seen
+    kinds = [c[0] for c in q.calls]
+    assert kinds == ["parameters", "cloud_hosted"], f"order matters: {q.calls}"
+    assert q.params.get("provider") == "NSIDC_CPRD", "the filter has to actually resolve, not just be requested"
+
+
+def test_cloud_query_warns_when_the_filter_does_not_resolve(monkeypatch, caplog):
+    """Its failure mode is silence: no provider set, twice the rows, no error."""
+    import earthaccess
+
+    q = _FakeQuery()
+    monkeypatch.setattr(earthaccess.search, "DataGranules", lambda *a, **k: q)
+    monkeypatch.setattr(earthaccess, "__auth__", type("A", (), {"authenticated": False})())
+    with caplog.at_level("WARNING"):
+        coverage._cloud_query(version="007")            # no short_name -> cannot resolve
+    assert any("did not resolve a provider" in r.message for r in caplog.records), caplog.text
 
 
 def test_search_falls_back_when_the_cloud_filter_finds_nothing(monkeypatch, tmp_path):
     """A filter that silently returns nothing would build an empty index and report success."""
     import earthaccess
 
-    calls = []
-
-    def fake(count=-1, **kw):
-        calls.append(kw)
-        return [] if kw.get("cloud_hosted") else [{"meta": {"native-id": "g1"}, "umm": {}}]
-
-    monkeypatch.setattr(earthaccess, "search_data", fake)
+    monkeypatch.setattr(coverage, "_cloud_query", lambda **kw: _FakeQuery(results=[]))
+    monkeypatch.setattr(earthaccess, "search_data", lambda count=-1, **kw: [{"meta": {"native-id": "g1"}, "umm": {}}])
     monkeypatch.setattr(coverage, "dedup_granules", lambda g: g)
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(coverage.auth, "login", lambda *a, **k: None)
     got = coverage.search("ATL06", "007", (-50, 69, -49, 70), None, use_cache=False)
     assert len(got) == 1, "must fall back rather than report an empty collection"
-    assert len(calls) == 2 and calls[0].get("cloud_hosted") and "cloud_hosted" not in calls[1]

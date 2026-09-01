@@ -55,6 +55,23 @@ def dedup_granules(granules: list) -> list:
 CMR_CACHE_TTL_S = 24 * 3600  # granule lists for a (product, bbox, window) change only when NSIDC reprocesses
 
 
+def _cloud_query(**kw):
+    """A granule query restricted to cloud-hosted collections, with the restriction VERIFIED.
+
+    cloud_hosted resolves a provider from short_name, so it must be applied after the parameters — and when it fails
+    to resolve it does so silently. Checking that `provider` actually landed turns that into a visible warning
+    instead of a search that quietly returns twice the rows."""
+    import earthaccess
+
+    a = earthaccess.__auth__
+    q = (earthaccess.search.DataGranules(a) if a.authenticated else earthaccess.search.DataGranules())
+    q = q.parameters(**kw).cloud_hosted(True)
+    if not q.params.get("provider"):
+        log.warning("cloud_hosted did not resolve a provider for %s; the search will return on-prem duplicates too",
+                    kw.get("short_name"))
+    return q
+
+
 def search(short_name: str, version: str, bbox, window, use_cache: bool = True, polygon=None):
     """CMR granule search, cached on disk for CMR_CACHE_TTL_S: the search is ~1 s per call and every warm query paid it.
 
@@ -87,13 +104,20 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True, 
     if window:
         kw["temporal"] = tuple(window)
     # cloud_hosted: CMR lists every file TWICE — the Cumulus copy and the retired on-prem one — so an unfiltered
-    # search pages through double the results and dedup_granules throws half away. Filtering at the source is
-    # measured 3.49 s -> 2.38 s median on a 1,449-granule area, and matters much more on a region-scale search where
-    # the cost IS the pagination. Verified identical output on all four collections: same files, none missing, none
-    # extra. It also states the requirement rather than a workaround — we can only byte-range read cloud-hosted
-    # granules. (provider="NSIDC_CPRD" is a touch faster still, 1.94 s, but hardcodes one DAAC's provider name and
-    # would return ZERO, silently, for anything outside it.)
-    granules = dedup_granules(earthaccess.search_data(count=-1, cloud_hosted=True, **kw))
+    # search pages through double the results and dedup_granules throws half away. Filtering at the source measured
+    # 3.49 s -> 2.38 s median on a 1,449-granule area, and matters far more region-wide, where the cost IS the
+    # pagination. Verified identical output on all four collections: same files, none missing, none extra.
+    #
+    # Applied by CHAINING, not as a kwarg, because earthaccess evaluates .parameters(**kwargs) IN ORDER and
+    # cloud_hosted resolves the provider from short_name — its own docstring says it "is valid ... when using the
+    # short_name parameter". Passed before short_name it resolves nothing and is dropped WITHOUT ERROR:
+    #
+    #     .parameters(cloud_hosted=True, short_name=...)  -> hits 2,898, provider unset   (silent no-op)
+    #     .parameters(short_name=..., ...).cloud_hosted() -> hits 1,449, provider NSIDC_CPRD
+    #
+    # search_data(count=-1, cloud_hosted=True, **kw) put it first, so the filter never once took effect in
+    # production while a benchmark that happened to pass it last measured the speedup.
+    granules = dedup_granules(_cloud_query(**kw).get_all())
     if not granules:
         # A filter that silently returns nothing would build an empty index and report success. If the unfiltered
         # search finds something the filter missed, take it and say so loudly.
