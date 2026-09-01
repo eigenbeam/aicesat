@@ -373,6 +373,11 @@ function applyDoc(doc) {
 // reasons (a cold NASA fetch), and the point cloud is a poor progress bar — data served from the lake arrives all at
 // once at finalize, so the map can sit still while real work is happening.
 let buildStart = 0, lastLog = [];
+// Once the "Scene ready" confirmation has been dismissed, the panel STAYS dismissed for this scene. renderProgress
+// unconditionally cleared `hidden`, and the ready branch keeps polling every 2.5 s while imagery is still in flight
+// — so every poll re-showed the panel and the 1.4 s timer hid it again, giving a show/hide cycle per poll. That is
+// the panel "disappearing and reappearing": one cycle per scenes + part?part=meta pair in the network log.
+let progressDismissed = false;
 
 // Build progress lives in the drawer beside Controls and Time Series, not over the canvas. It used to be a centred
 // overlay with a backdrop blur, which fought the progressive streaming it exists to announce — the point of streaming
@@ -404,7 +409,7 @@ function setText(el, v) { if (el && el.textContent !== v) el.textContent = v; }
 
 function renderProgress(loading, log) {
   const box = $('progress'); if (!box) return;
-  box.hidden = false;
+  if (!progressDismissed) box.hidden = false;
   const spin = $('slSpin'); if (spin) spin.classList.toggle('sl-idle', !loading);
   setText($('slTitle'), loading ? 'Building scene…' : 'Scene ready');
   const el = $('slElapsed');
@@ -480,7 +485,7 @@ async function pollUntilReady() {
     if (!doc) { stopPoll(); if (ld) ld.hidden = true; AICESAT.showError(`scene ${myId}: not available`); return; }
     // brief "ready" confirmation so a fast build doesn't just flicker, then get out of the way
     renderProgress(false, lastLog);
-    setTimeout(() => { if (sceneReady && ld) ld.hidden = true; }, 1400);
+    setTimeout(() => { if (sceneReady && ld) { ld.hidden = true; progressDismissed = true; } }, 1400);
     // The build no longer waits on imagery, so it can still be in flight after the scene is ready. Keep a slow poll
     // alive until it resolves — the meta part is small, so this is cheap, and it stops as soon as it lands or fails.
     if (doc.imagery_status === 'pending' && !doc.imagery) pollTimer = setTimeout(pollUntilReady, 2500);
@@ -660,7 +665,7 @@ this.open = async (id, query) => {
   if (id !== sceneId) {
     stopPoll();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
-    sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false;
+    sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them
     Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
