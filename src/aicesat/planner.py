@@ -105,9 +105,7 @@ def ensure_cells(cells, window, force: bool = False, threads: int = 8, group_par
     """Materialize a set of H3 cells (background loading from the Lake tab): search by the cells' union bbox, prune
     chunks by that bbox, keep only refs for the requested cells."""
     cells = sorted(int(c) for c in cells)
-    boundaries = [h3.cell_to_boundary(h3.int_to_str(c)) for c in cells]
-    lats = [la for b in boundaries for la, _ in b]; lons = [lo for b in boundaries for _, lo in b]
-    bbox = (min(lons), min(lats), max(lons), max(lats))
+    bbox = cells_bbox(cells)
     return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
 
 
@@ -125,13 +123,28 @@ def _in_window(name: str, window) -> bool:
     return lo <= start <= hi
 
 
+def cells_bbox(cells) -> tuple:
+    """Bounding box of a cell set's OUTER boundary — always >= the bbox the cells were derived from.
+
+    This is the box to search CMR over when building an index for those cells. A hex that intersects the requested
+    rectangle also sticks out past it, and a granule can cross that outside portion without ever entering the
+    rectangle; searching the rectangle would miss it and leave the boundary cell short of granules while still
+    reporting it as built."""
+    bs = [h3.cell_to_boundary(h3.int_to_str(int(c))) for c in cells]
+    las = [la for b in bs for la, _ in b]; los = [lo for b in bs for _, lo in b]
+    return (min(los), min(las), max(los), max(las))
+
+
 def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox) -> dict:
     t0 = time.time()
     # The index IS the discovery layer, and it is a precondition: no CMR search and no index build happen here.
     # Discovery is paid once, offline (scripts/build_index.py), and a scene is assembled from the index entries whose
     # H3 cells match the area. An unindexed area is an error, not a slow success via a whole-granule fallback.
-    if not coverage._index_covers_bbox(index.ATL03_INDEX_DIR, bbox):
-        raise RuntimeError(f"ATL03 not indexed over {bbox} — build the chunk index first "
+    built = index.manifest_cells(index.ATL03_INDEX_DIR)
+    missing = {int(c) for c in cells} - built
+    if missing:
+        raise RuntimeError(f"ATL03 not indexed over {len(missing)} of the {len(cells)} H3 cells this area touches — "
+                           f"build the chunk index first "
                            f"(uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)})")
     refs = index.chunk_refs(cells, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
     all_rows = refs.to_pylist()

@@ -35,7 +35,12 @@ def _scene(kind):
         _build_atl06(lat, lon, elev.astype("f4"), np.zeros(N, "i1"))
         d, mod, win = index_atl06._index_dir(index_atl06.ATL06_RES), atl06, regions.DEFAULT_ATL06_WINDOW
     d.mkdir(parents=True, exist_ok=True)
-    (d / "_build.json").write_text(json.dumps({"bbox": [-50, 60, -40, 80], "res": 5, "target": 1}))
+    # The manifest is a CELL SET now: coverage is "every cell the area touches was built", not bbox containment.
+    from aicesat import index as index_mod
+    from aicesat import planner
+    res = int(str(d.name).replace("res", "")) if str(d.name).startswith("res") else index_mod.H3_RES
+    index_mod.write_build_manifest(d, (-50, 60, -40, 80), res, None, 1,
+                                   cells=planner.cells_for_bbox((-50, 60, -40, 80), res=res))
     return mod, win
 
 

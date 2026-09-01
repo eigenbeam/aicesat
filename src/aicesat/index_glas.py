@@ -23,6 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import auth, cache
+from . import index as index_mod   # shared HDF5 helpers + index-table typing
 from .index import _chunk_manifest, _filters   # reuse the ATL03/ATL06 HDF5 helpers verbatim
 
 log = logging.getLogger(__name__)
@@ -78,14 +79,21 @@ def _nan_fill(a: np.ndarray, fill: float) -> np.ndarray:
     return a
 
 
-def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
+def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     """Parse one GLAH06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows.
-    GLAH06 granules are long orbit arcs; pass `bbox` to index only the cells inside it (a regional index) rather
-    than the whole pole-to-pole track — chunk byte ranges are unchanged, so fetch over that bbox is identical."""
+    GLAH06 granules are long orbit arcs; pass `cells` to index only those H3 cells (a regional index) rather than
+    the whole pole-to-pole track — chunk byte ranges are unchanged, so fetch over that region is identical.
+
+    The filter is on the CELL, not on the shot. Clipping shots to a rectangle first (what this did) left every hex
+    straddling the rectangle's edge holding only its inside-the-edge shots, so a boundary cell looked indexed and was
+    not. A cell is now either fully indexed or absent."""
     from . import access
 
     auth.login()
     from .coverage import granule_name
+
+    _keep = index_mod.cells_filter(cells)
+    keep_arr = None if _keep is None else np.fromiter(sorted(_keep), dtype="u8", count=len(_keep))
 
     url = granule.data_links()[0]
     name = granule_name(granule)
@@ -123,9 +131,6 @@ def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
         n = int(lat.shape[0])
         seg = np.arange(n)
         ok = np.isfinite(lat) & np.isfinite(lon) & (np.abs(lat) <= 90)
-        if bbox is not None:   # regional index: keep only cells inside the build bbox (chunk ranges stay whole)
-            bw, bs, be, bn = bbox
-            ok &= (lat >= bs) & (lat <= bn) & (lon >= bw) & (lon <= be)
         ks = (seg[ok] // C).astype("i8")
         latok, lonok = lat[ok].astype("f8"), lon[ok].astype("f8")
         try:
@@ -133,6 +138,9 @@ def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
             cells = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
         except Exception:
             cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
+        if keep_arr is not None:                  # regional index: keep whole cells, never part of one
+            m = np.isin(cells, keep_arr)
+            ks, latok, lonok, cells = ks[m], latok[m], lonok[m], cells[m]   # empty -> the emit loop below runs zero times
 
         box = {}
         for k in np.unique(ks):
@@ -154,19 +162,16 @@ def build_glas_index(granule, res: int = GLAS_RES, bbox=None) -> pa.Table:
                 rows[f"{key}_filters"].append(fl); rows[f"{key}_dtype"].append(dt)
                 rows[f"{key}_mask"].append(int(ci.filter_mask)); rows[f"{key}_fill"].append(float(fills[key]))
 
-    if not rows["granule"]:   # no data inside bbox: write a schema-matched EMPTY parquet so the granule counts as done
+    if not rows["granule"]:   # nothing in the requested cells: a typed EMPTY parquet so the granule counts as done
         d = _index_dir(res)
-        ref = next(iter(d.glob("*.parquet")), None)
-        if ref is None:
-            return pa.table({"granule": pa.array([], type=pa.string())})   # no sibling to match the schema yet; skip
-        empty = pq.read_schema(ref).empty_table()
+        empty = index_mod.typed_table(rows)   # typed, so it matches a full granule's schema with no sibling to copy
         d.mkdir(parents=True, exist_ok=True)
         tmp = d / f".{name}.parquet.tmp"
         pq.write_table(empty, tmp)
         tmp.replace(d / f"{name}.parquet")
-        log.info("indexed GLAS %s: 0 rows (no shots in bbox) -> empty parquet", name)
+        log.info("indexed GLAS %s: 0 rows (nothing in the requested cells) -> empty parquet", name)
         return empty
-    tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
+    tbl = index_mod.typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     d = _index_dir(res)

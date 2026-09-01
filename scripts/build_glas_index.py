@@ -12,9 +12,9 @@ import time
 from aicesat import auth, coverage, index, index_glas
 
 
-def _index_one(granule, res, bbox):
+def _index_one(granule, res, cells):
     try:
-        t = index_glas.build_glas_index(granule, res=res, bbox=bbox)
+        t = index_glas.build_glas_index(granule, res=res, cells=cells)
         return (coverage.granule_name(granule), t.num_rows, None)
     except Exception as e:
         try:
@@ -34,16 +34,19 @@ def main():
     res = int(a[4]) if len(a) > 4 else index_glas.GLAS_RES
     workers = int(a[5]) if len(a) > 5 else 8
 
+    from aicesat import planner
+    cells = planner.cells_for_bbox(bbox, res=res)
+    hull = planner.cells_bbox(cells)     # search wider than asked: a boundary hex sticks out past the rectangle
     auth.login()
     log.info("enumerating GLAH06 granules over %s (full record) ...", bbox)
-    granules = coverage.search(coverage.GLAS_SHORT_NAME, coverage.GLAS_VERSION, bbox, None)
+    granules = coverage.search(coverage.GLAS_SHORT_NAME, coverage.GLAS_VERSION, hull, None)
     names = {coverage.granule_name(g): g for g in granules}
     done = index_glas.indexed_glas_granules(res)
     todo = [g for n, g in names.items() if n not in done]
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
     md = index_glas._index_dir(res); md.mkdir(parents=True, exist_ok=True)
-    index.write_build_manifest(md, bbox, res, None, len(names))   # appends this box; never discards a previous build
+    index.write_build_manifest(md, bbox, res, None, len(names), cells=cells)   # unions cells; never retracts
     if not todo:
         log.info("nothing to do — index complete")
         log.info("coverage rollup: %s", coverage.build_manifest("GLAS"))
@@ -51,7 +54,7 @@ def main():
 
     t0 = time.time(); ok = err = rows = 0
     with cf.ProcessPoolExecutor(max_workers=workers) as ex:
-        for i, (name, nrows, e) in enumerate(ex.map(functools.partial(_index_one, res=res, bbox=bbox), todo, chunksize=1), 1):
+        for i, (name, nrows, e) in enumerate(ex.map(functools.partial(_index_one, res=res, cells=cells), todo, chunksize=1), 1):
             if e:
                 err += 1; log.warning("FAIL %s: %s", name, e)
             else:

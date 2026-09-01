@@ -87,8 +87,9 @@ def run_index():
     from aicesat import index, lake, planner
 
     t0 = time.time()
-    idx = index.ensure_index(granules)                      # one-time structure parse, amortized
-    index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules))  # planner.ensure requires it
+    cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
+    idx = index.ensure_index(granules, cells=cells)         # one-time structure parse, amortized
+    index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=cells)
     t_index = time.time() - t0
     t1 = time.time()
     plan = planner.ensure(bbox, window)                     # was max_granules=len(granules): already every granule

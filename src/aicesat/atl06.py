@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 def _index_covers(bbox) -> bool:
     """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
     from . import index_atl06
-    return coverage._index_covers_bbox(index_atl06._index_dir(index_atl06.ATL06_RES), bbox)
+    return coverage._index_covers_bbox(index_atl06._index_dir(index_atl06.ATL06_RES), bbox, index_atl06.ATL06_RES)
 
 
 def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

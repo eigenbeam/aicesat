@@ -15,6 +15,8 @@ import numpy as np
 import pytest
 
 from aicesat import coreg, coverage, index, planner, timeseries
+
+BOX = (-45.5, 71.8, -44.5, 72.2)
 from aicesat import scene as scene_mod
 
 
@@ -52,7 +54,7 @@ def test_planner_uses_every_indexed_granule_in_the_window(monkeypatch):
     names = [f"ATL03_2019{m:02d}01000000_0235{m:02d}03_007_01.h5" for m in range(1, 13)]   # 12 > the old cap of 8
     rows = _ref_rows(names)
 
-    monkeypatch.setattr(coverage, "_index_covers_bbox", lambda d, bbox: True)
+    monkeypatch.setattr(index, "manifest_cells", lambda d: set(planner.cells_for_bbox(BOX)))
     monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _FakeRefs(rows))
     # everything already materialized -> nothing to fetch, so the test needs no network and no lake
     monkeypatch.setattr(planner.lake, "ingested_chunk_cells",
@@ -60,7 +62,7 @@ def test_planner_uses_every_indexed_granule_in_the_window(monkeypatch):
     monkeypatch.setattr(planner.lake, "mark_ingested_many", lambda *a, **k: None)
     monkeypatch.setattr(planner, "RangeReader", _FakeReader)
 
-    plan = planner.ensure((-45.5, 71.8, -44.5, 72.2), ("2018-10-01", "2026-01-01"))
+    plan = planner.ensure(BOX, ("2018-10-01", "2026-01-01"))
 
     assert plan["stats"]["granules"] == sorted(names), (
         f"planner used {len(plan['stats']['granules'])} of {len(names)} indexed granules")
@@ -70,14 +72,14 @@ def test_planner_window_filter_reads_the_granule_name(monkeypatch):
     """Window selection used to come from the CMR search; it now comes from the granule name in the index."""
     names = ["ATL03_20190601000000_02350103_007_01.h5", "ATL03_20230601000000_02350203_007_01.h5"]
     rows = _ref_rows(names)
-    monkeypatch.setattr(coverage, "_index_covers_bbox", lambda d, bbox: True)
+    monkeypatch.setattr(index, "manifest_cells", lambda d: set(planner.cells_for_bbox(BOX)))
     monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _FakeRefs(rows))
     monkeypatch.setattr(planner.lake, "ingested_chunk_cells",
                         lambda mission, ns: {(r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) for r in rows})
     monkeypatch.setattr(planner.lake, "mark_ingested_many", lambda *a, **k: None)
     monkeypatch.setattr(planner, "RangeReader", _FakeReader)
 
-    plan = planner.ensure((-45.5, 71.8, -44.5, 72.2), ("2019-01-01", "2019-12-31"))
+    plan = planner.ensure(BOX, ("2019-01-01", "2019-12-31"))
     assert plan["stats"]["granules"] == [names[0]]
     assert plan["stats"]["granules_indexed_for_cells"] == 2      # the other one is indexed, just out of window
 

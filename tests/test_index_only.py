@@ -73,60 +73,56 @@ def test_extract_takes_no_granule_cap(mod):
     assert "max_granules" not in inspect.signature(mod.extract).parameters
 
 
-# --- the manifest that makes "indexed" checkable --------------------------------------------------------------------
-def test_build_manifest_widens_and_never_shrinks(tmp_path, monkeypatch):
-    """Every builder stamps _build.json; re-indexing a neighbouring box must not un-cover the first one."""
+# --- the manifest that makes "indexed" checkable ---------------------------------------------------------------------
+def test_build_manifest_unions_cells_and_never_drops_them(tmp_path, monkeypatch):
+    """Indexing a second region adds cells; it must never retract the first region's."""
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
-    a = (-46.0, 71.0, -45.0, 72.0)
-    b = (-45.0, 72.0, -44.0, 73.0)
     d = index.ATL03_INDEX_DIR
-    index.write_build_manifest(d, a, index.H3_RES, ("2018-10-01", "2026-01-01"), 3)
-    assert coverage._index_covers_bbox(d, a)
+    a = (-46.0, 71.0, -45.0, 72.0)
+    b = (-42.0, 66.0, -41.0, 67.0)                       # disjoint from a
+    ca = set(planner.cells_for_bbox(a, res=index.H3_RES))
+    cb = set(planner.cells_for_bbox(b, res=index.H3_RES))
+    index.write_build_manifest(d, a, index.H3_RES, None, 3, cells=ca)
+    assert coverage._index_covers_bbox(d, a, index.H3_RES)
 
-    out = index.write_build_manifest(d, b, index.H3_RES, ("2018-10-01", "2026-01-01"), 4)
-    assert out["boxes"] == [list(a), list(b)]
+    out = index.write_build_manifest(d, b, index.H3_RES, None, 4, cells=cb)
+    assert set(out["cells"]) == ca | cb
     for box in (a, b):
-        assert coverage._index_covers_bbox(d, box), f"{box} lost coverage after a second build"
-    # ... and the gap BETWEEN two disjoint builds is not claimed
-    assert not coverage._index_covers_bbox(d, (-46.0, 71.0, -44.0, 73.0)), \
-        "the union of two disjoint builds must not be reported as covered"
+        assert coverage._index_covers_bbox(d, box, index.H3_RES), f"{box} lost coverage after a second build"
 
 
-def test_build_manifest_absorbs_a_contained_box(tmp_path, monkeypatch):
+def test_coverage_is_exact_set_membership_not_a_bounding_box(tmp_path, monkeypatch):
+    """The gap between two disjoint builds must not be claimed — the union of their boxes would have claimed it."""
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx2")
     d = index.ATL03_INDEX_DIR
-    index.write_build_manifest(d, (-50.0, 60.0, -40.0, 70.0), index.H3_RES)
-    out = index.write_build_manifest(d, (-46.0, 62.0, -44.0, 64.0), index.H3_RES)
-    assert out["boxes"] == [[-50.0, 60.0, -40.0, 70.0]], "a contained box should not add an entry"
+    a = (-46.0, 71.0, -45.0, 72.0)
+    b = (-42.0, 66.0, -41.0, 67.0)
+    index.write_build_manifest(d, a, index.H3_RES, cells=planner.cells_for_bbox(a, res=index.H3_RES))
+    index.write_build_manifest(d, b, index.H3_RES, cells=planner.cells_for_bbox(b, res=index.H3_RES))
+    between = (-44.5, 68.5, -43.5, 69.5)
+    assert not coverage._index_covers_bbox(d, between, index.H3_RES), \
+        "an area between two disjoint builds touches cells nobody indexed"
 
 
-def test_legacy_single_bbox_manifest_is_still_read(tmp_path, monkeypatch):
-    """Deployments stamped before the list format must keep working."""
-    import json
+def test_an_area_poking_past_the_built_box_is_refused_cell_by_cell(tmp_path, monkeypatch):
+    """The point of cells: coverage no longer depends on the SHAPE that was built, only on which cells exist."""
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx3")
     d = index.ATL03_INDEX_DIR
-    d.mkdir(parents=True)
-    (d / "_build.json").write_text(json.dumps({"bbox": [-52, 62, -44, 70], "res": 5, "target": 9}))
-    assert coverage._index_covers_bbox(d, (-50.0, 64.0, -46.0, 68.0))
-    out = index.write_build_manifest(d, (-60.0, 60.0, -55.0, 65.0), 5)      # upgraded in place, old box kept
-    assert out["boxes"] == [[-52.0, 62.0, -44.0, 70.0], [-60.0, 60.0, -55.0, 65.0]]
+    built = (-46.0, 71.0, -45.0, 72.0)
+    index.write_build_manifest(d, built, index.H3_RES, cells=planner.cells_for_bbox(built, res=index.H3_RES))
+    inner = (-45.6, 71.3, -45.4, 71.6)
+    assert coverage._index_covers_bbox(d, inner, index.H3_RES)
+    assert not coverage._index_covers_bbox(d, (-47.0, 71.0, -45.0, 72.0), index.H3_RES)
 
 
-def test_planner_accepts_an_area_once_its_manifest_exists(tmp_path, monkeypatch):
-    """The precondition is exactly the manifest — with one present the planner proceeds past the coverage gate."""
-    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
+def test_planner_refuses_when_only_some_cells_are_built(tmp_path, monkeypatch):
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx4")
+    d = index.ATL03_INDEX_DIR
     bbox = (-45.5, 71.8, -44.5, 72.2)
-    index.write_build_manifest(index.ATL03_INDEX_DIR, (-50.0, 70.0, -40.0, 75.0), index.H3_RES)
-    monkeypatch.setattr(index, "chunk_refs", lambda cells, **kw: _EmptyRefs())
-    with pytest.raises(RuntimeError, match="no indexed ATL03 chunks"):
+    cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
+    index.write_build_manifest(d, bbox, index.H3_RES, cells=list(cells)[:-1])   # one cell short
+    with pytest.raises(RuntimeError, match="not indexed over 1 of"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)
-
-
-class _EmptyRefs:
-    num_rows = 0
-
-    def to_pylist(self):
-        return []
 
 
 # --- one flaky granule must not discard the rest of the build --------------------------------------------------------
@@ -154,7 +150,7 @@ class _FakeExecutor:
     def __exit__(self, *a):
         return False
 
-    def submit(self, fn, g):
+    def submit(self, fn, g, *a):
         name = g["meta"]["native-id"]
         _FakeExecutor.submitted.append(name)
         return _ImmediateFuture(_FakeExecutor.outcomes.get(name))
@@ -191,7 +187,7 @@ def test_a_transient_failure_that_clears_on_retry_is_reported_as_built(monkeypat
     class _OnceFailing(_FakeExecutor):
         seen: set = set()
 
-        def submit(self, fn, g):
+        def submit(self, fn, g, *a):
             name = g["meta"]["native-id"]
             _FakeExecutor.submitted.append(name)
             if name == "g1" and name not in _OnceFailing.seen:

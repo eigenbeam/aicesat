@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import auth, cache
+from . import index as index_mod   # shared HDF5 helpers + index-table typing
 from .index import BEAMS, _chunk_manifest, _filters, strong_beams   # reuse the ATL03 HDF5 helpers verbatim
 
 log = logging.getLogger(__name__)
@@ -58,9 +59,13 @@ def parse_granule_name(name: str) -> dict:
             "version": int(m.group(5)), "release": int(m.group(6))}
 
 
-def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
-    """Parse one ATL06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows."""
+def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
+    """Parse one ATL06 granule's structure (the only time its HDF5 b-trees are read) into addressing rows.
+
+    `cells` (opt-in): keep only rows whose H3 cell is in the set this build was asked for — see
+    index.build_granule_index for why indexing a granule's whole track made "indexed" mean less than it looked."""
     auth.login()
+    keep = index_mod.cells_filter(cells)
     from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
     from .coverage import granule_name
 
@@ -117,16 +122,18 @@ def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
             latok, lonok = lat[ok].astype("f8"), lon[ok].astype("f8")
             try:
                 from h3ronpy.vector import coordinates_to_cells
-                cells = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
+                cell_ids = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
             except Exception:
-                cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
+                cell_ids = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
 
             box = {}
             for k in np.unique(ks):
                 m = ks == k
                 box[int(k)] = (float(latok[m].min()), float(latok[m].max()), float(lonok[m].min()), float(lonok[m].max()))
 
-            for k, cell in sorted(set(zip(ks.tolist(), cells.tolist()))):
+            for k, cell in sorted(set(zip(ks.tolist(), cell_ids.tolist()))):
+                if keep is not None and int(cell) not in keep:
+                    continue                      # outside the cells this build was asked for
                 assert h3.is_valid_cell(h3.int_to_str(int(cell))), cell
                 rows["granule"].append(name); rows["url"].append(url); rows["s3url"].append(s3)
                 rows["revision"].append(str(granule["meta"].get("revision-id", ""))); rows["sc_orient"].append(sc_orient)
@@ -142,7 +149,7 @@ def build_atl06_index(granule, res: int = ATL06_RES) -> pa.Table:
                     rows[f"{d}_offset"].append(int(ci.byte_offset)); rows[f"{d}_size"].append(int(ci.size))
                     rows[f"{d}_filters"].append(fl); rows[f"{d}_dtype"].append(dt); rows[f"{d}_ncols"].append(nc); rows[f"{d}_mask"].append(int(ci.filter_mask))
 
-    tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
+    tbl = index_mod.typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_atl06_index_version": ATL06_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     d = _index_dir(res)

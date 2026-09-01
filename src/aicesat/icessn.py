@@ -27,7 +27,7 @@ _NAME_RE = re.compile(r"(?:ILATM2|BLATM2)_(\d{8})_(\d{6})")
 def _index_covers(bbox) -> bool:
     """True if the ICESSN line-offset index was built over a region that contains this bbox."""
     from . import index_icessn
-    return coverage._index_covers_bbox(index_icessn._index_dir(index_icessn.ICESSN_RES), bbox)
+    return coverage._index_covers_bbox(index_icessn._index_dir(index_icessn.ICESSN_RES), bbox, index_icessn.ICESSN_RES)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

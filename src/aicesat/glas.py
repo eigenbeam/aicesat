@@ -23,7 +23,7 @@ MAX_SAT_FLAG = 2  # 0 none, 1 minor, 2 corrected; >=3 not correctable / unusable
 def _index_covers(bbox) -> bool:
     """True if the GLAS sub-granule index was built over a region that contains this bbox."""
     from . import index_glas
-    return coverage._index_covers_bbox(index_glas._index_dir(index_glas.GLAS_RES), bbox)
+    return coverage._index_covers_bbox(index_glas._index_dir(index_glas.GLAS_RES), bbox, index_glas.GLAS_RES)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:

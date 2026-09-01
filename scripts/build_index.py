@@ -17,12 +17,15 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     a = ap.parse_args()
     bbox = regions.resolve_bbox(a.region, tuple(a.bbox) if a.bbox else None)
     window = tuple(a.window) if a.window else regions.DEFAULT_ATL03_WINDOW
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window)
+    from aicesat import planner
+    cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
+    hull = planner.cells_bbox(cells)     # search wider than asked: a boundary hex sticks out past the rectangle
+    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, hull, window)
     t0 = time.time()
-    out = index.ensure_index(granules, workers=a.workers)
+    out = index.ensure_index(granules, workers=a.workers, cells=cells)
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
-    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules))
-    print(json.dumps({"bbox": list(bbox), "covered_boxes": cov["boxes"], "window": list(window), "granules": len(granules), **out,
+    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=cells)
+    print(json.dumps({"bbox": list(bbox), "cells_built": len(cov["cells"]), "window": list(window), "granules": len(granules), **out,
                       "wall_seconds": round(time.time() - t0, 1)}, indent=1))
     if out["failed"]:
         print(f"\n{len(out['failed'])} granule(s) did not index; re-run this command to retry just those.", file=sys.stderr)

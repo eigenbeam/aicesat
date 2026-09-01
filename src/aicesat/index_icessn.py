@@ -20,6 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import auth, cache
+from . import index as index_mod   # shared index-table typing
 from .icessn import MAX_RMS_CM, _NAME_RE
 
 log = logging.getLogger(__name__)
@@ -61,8 +62,8 @@ def _parse_fields(ln: bytes):
     return lat, lon, elev, rms, track, sn, we
 
 
-def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
-    """Scan one ILATM2 CSV once (the only full read) into per-(cell) byte-span rows. Pass `bbox` to index only the
+def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
+    """Scan one ILATM2 CSV once (the only full read) into per-(cell) byte-span rows. Pass `cells` to index only the
     nadir platelets inside it (a regional index)."""
     from .access import RangeReader, access_url
 
@@ -89,30 +90,27 @@ def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
         lat, lon, _elev, _rms, track, _sn, _we = p
         if track != 0 or not (np.isfinite(lat) and np.isfinite(lon)):
             continue                                # index every nadir platelet; the rms<50 cut is re-applied at fetch
-        if bbox is not None and not (bbox[1] <= lat <= bbox[3] and bbox[0] <= lon <= bbox[2]):
-            continue                                # regional index: only platelets inside the build bbox
         lats.append(lat); lons.append(lon)
         starts.append(start); ends.append(min(pos, size))
-    if not lats:   # no platelets inside bbox: write a schema-matched EMPTY parquet so the granule counts as done
-        d = _index_dir(res)
-        ref = next(iter(d.glob("*.parquet")), None)
-        if ref is None:
-            return pa.table({"granule": pa.array([], type=pa.string())})   # no sibling to match the schema yet; skip
-        empty = pq.read_schema(ref).empty_table()
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / f".{name}.parquet.tmp"
-        pq.write_table(empty, tmp)
-        tmp.replace(d / f"{name}.parquet")
-        log.info("indexed ICESSN %s: 0 platelets in bbox -> empty parquet", name)
-        return empty
+    # No special case for "nothing here": an empty granule falls through the normal path and writes a TYPED empty
+    # parquet (so it counts as done on a re-run). The old branch copied a schema off a sibling file and gave up
+    # entirely when it was the first granule of a fresh index.
+    keep = index_mod.cells_filter(cells)
     lat_a = np.asarray(lats, "f8"); lon_a = np.asarray(lons, "f8")
     st_a = np.asarray(starts, "i8"); en_a = np.asarray(ends, "i8")
-    try:
-        from h3ronpy.vector import coordinates_to_cells
-        cell_a = np.asarray(coordinates_to_cells(lat_a, lon_a, res), dtype="u8")
-    except Exception:
-        import h3
-        cell_a = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(lat_a, lon_a)], dtype="u8")
+    if lat_a.size == 0:
+        cell_a = np.array([], dtype="u8")
+    else:
+        try:
+            from h3ronpy.vector import coordinates_to_cells
+            cell_a = np.asarray(coordinates_to_cells(lat_a, lon_a, res), dtype="u8")
+        except Exception:
+            import h3
+            cell_a = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(lat_a, lon_a)], dtype="u8")
+    if keep is not None:      # regional index: whole cells only. The old per-platelet rectangle test cut hexes in
+        keep_arr = np.fromiter(sorted(keep), dtype="u8", count=len(keep))   # half, leaving boundary cells partial.
+        m = np.isin(cell_a, keep_arr)
+        lat_a, lon_a, st_a, en_a, cell_a = lat_a[m], lon_a[m], st_a[m], en_a[m], cell_a[m]
 
     base = {k: [] for k in ("granule", "url", "s3url", "gdate", "h3_cell",
                             "byte_start", "byte_end", "n_lines", "lat_min", "lat_max", "lon_min", "lon_max")}
@@ -125,7 +123,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, bbox=None) -> pa.Table:
         base["lat_min"].append(float(lat_a[mk].min())); base["lat_max"].append(float(lat_a[mk].max()))
         base["lon_min"].append(float(lon_a[mk].min())); base["lon_max"].append(float(lon_a[mk].max()))
 
-    tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in base.items()})
+    tbl = index_mod.typed_table(base)
     tbl = tbl.replace_schema_metadata({"aicesat_icessn_index_version": ICESSN_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     d = _index_dir(res)

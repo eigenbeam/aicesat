@@ -268,19 +268,28 @@ def index_files_for_cells(collection: str, cells) -> list[str] | None:
         return None
 
 
-def _index_covers_bbox(d, bbox) -> bool:
-    """True if the index's build manifest (_build.json) region contains this bbox."""
-    import json
-    mf = d / "_build.json"
-    if not mf.exists():
+def _index_covers_bbox(d, bbox, res: int | None = None, polygon=None) -> bool:
+    """True if EVERY cell the area touches was built. Exact set membership, not rectangle containment.
+
+    Containment was both too strict and unsound: it refused areas whose cells are all present merely because the
+    drawn rectangle poked outside the built one, while accepting nothing about the cells at the built rectangle's
+    own edge, which held only part of their data. With cells as the unit, "covered" means what it says.
+    """
+    from . import index as atl03_index
+    from . import planner
+
+    built = atl03_index.manifest_cells(d)
+    if not built:
         return False
-    try:
-        doc = json.loads(mf.read_text())
-        boxes = doc.get("boxes") or ([doc["bbox"]] if doc.get("bbox") else [])   # legacy: one box
-        w, s, e, n = bbox
-        return any(b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3] for b in boxes)
-    except Exception:
-        return False
+    if res is None:                       # infer from the manifest so callers need not know each collection's res
+        import json
+        try:
+            res = json.loads((d / "_build.json").read_text()).get("res")
+        except Exception:
+            res = None
+        if res is None:
+            return False
+    return set(planner.cells_for_bbox(bbox, res=int(res), polygon=polygon)) <= built
 
 
 def check_coverage(bbox, **_ignored) -> dict:
@@ -308,7 +317,7 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         d, res, ym = _index_for(c["key"])
-        covered = bool(d is not None and d.exists() and _index_covers_bbox(d, bbox))
+        covered = bool(d is not None and d.exists() and _index_covers_bbox(d, bbox, res))
         if d is None or not d.exists():
             row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)

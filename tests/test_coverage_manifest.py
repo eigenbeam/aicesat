@@ -181,8 +181,10 @@ def test_indexed_and_covered_are_reported_separately(tmp_path, monkeypatch):
     monkeypatch.setattr(cov, "_index_for", lambda key: (d, 5, "ym") if key == "GLAS" else (None, None, None))
     monkeypatch.setattr(cov, "_ensure_manifest", lambda dd, ym: None)   # index dir present, nothing rolled up yet
 
-    # no manifest at all -> nothing is covered
-    (d / "_build.json").write_text('{"boxes": [[-51.0, 69.0, -50.0, 69.5]], "res": 5}')
+    from aicesat import index as index_mod
+    from aicesat import planner
+    built = (-51.0, 69.0, -50.0, 69.5)
+    index_mod.write_build_manifest(d, built, 5, cells=planner.cells_for_bbox(built, res=5))
     inside = cov.check_coverage((-50.8, 69.1, -50.2, 69.4))["collections"][0]
     outside = cov.check_coverage((-50.8, 69.1, -49.0, 69.4))["collections"][0]
     assert inside["covered"] is True, "an area within the built box must be buildable"

@@ -33,6 +33,40 @@ ATL03_INDEX_DIR = INDEX_DIR / "atl03"
 _NAME_RE = re.compile(r"ATL03_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5")
 
 
+# --- shared index-table typing -------------------------------------------------------------------------------------
+# Every builder assembles python lists and hands them to pa.table(). With a CELL FILTER a granule can legitimately
+# contribute zero rows (its track never enters the requested cells), and pa.array([]) is null-typed — a null column
+# makes DuckDB's union_by_name reconcile schemas across files and fail. Declaring the type per column makes an empty
+# granule's parquet schema-identical to a full one, which also retires the "copy the schema off a sibling file" hack
+# (which had no answer for the FIRST granule of a fresh index).
+_I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient"}
+_F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch"}
+
+
+def col_type(name: str):
+    if name == "h3_cell":
+        return pa.uint64()
+    if name == "strong":
+        return pa.bool_()
+    if name in _F64_NAMES or name.endswith("_fill"):
+        return pa.float64()
+    if name in _I64_NAMES or name.endswith(("_offset", "_size", "_mask", "_ncols")):
+        return pa.int64()
+    return pa.string()
+
+
+def typed_table(rows: dict) -> pa.Table:
+    """pa.table() with an explicit type per column, so an empty granule still writes a readable, matching schema."""
+    return pa.table({k: pa.array(v, type=col_type(k)) for k, v in rows.items()})
+
+
+def cells_filter(cells) -> set | None:
+    """Normalise a build's cell set (ints/str/None) to a set of int cell ids, or None for 'index everything'."""
+    if cells is None:
+        return None
+    return {int(c) if not isinstance(c, str) else h3.str_to_int(c) for c in cells}
+
+
 def parse_granule_name(name: str) -> dict:
     m = _NAME_RE.match(name)
     if not m:
@@ -65,9 +99,15 @@ def strong_beams(sc_orient: int) -> set[str]:
     return {"gt1l", "gt2l", "gt3l"} if sc_orient == 0 else ({"gt1r", "gt2r", "gt3r"} if sc_orient == 1 else set())
 
 
-def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
-    """Parse one granule's structure (the only time its HDF5 b-trees are ever read) into addressing rows."""
+def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
+    """Parse one granule's structure (the only time its HDF5 b-trees are ever read) into addressing rows.
+
+    `cells` (opt-in): keep only rows whose H3 cell is in this set — the cells a build was asked for. Without it a
+    granule's WHOLE pole-to-pole track is indexed, so a regional build left 99.8% of its cells outside the region it
+    claimed to cover, each holding only the granules that happened to cross that region: rows that look like coverage
+    and are incomplete by construction."""
     auth.login()
+    keep = cells_filter(cells)
     from .coverage import granule_name
     url = granule.data_links()[0]
     name = granule_name(granule)
@@ -138,6 +178,8 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
             # NB: never np.stack int64 with uint64 -> float64 silently destroys the low bits of the cell id
             pairs = sorted(set(zip(ks.tolist(), cs.tolist())))
             for k, cell in pairs:
+                if keep is not None and int(cell) not in keep:
+                    continue                      # outside the cells this build was asked for
                 assert h3.is_valid_cell(h3.int_to_str(int(cell))), cell
                 rows["granule"].append(name); rows["url"].append(url); rows["s3url"].append(s3)
                 rows["revision"].append(str(granule["meta"].get("revision-id", ""))); rows["sc_orient"].append(sc_orient)
@@ -153,7 +195,7 @@ def build_granule_index(granule, res: int = H3_RES) -> pa.Table:
                     rows[f"{d}_offset"].append(int(ci.byte_offset)); rows[f"{d}_size"].append(int(ci.size))
                     rows[f"{d}_filters"].append(fl); rows[f"{d}_dtype"].append(dt); rows[f"{d}_ncols"].append(nc)
                     rows[f"{d}_mask"].append(int(ci.filter_mask))
-    tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
+    tbl = typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_index_version": INDEX_SCHEMA_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,7 +222,7 @@ INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out an
 INDEX_WORKERS = 8      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
 
 
-def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
+def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
 
     have = indexed_granules()
@@ -191,7 +233,7 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
             break
         failed = []
         ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)))
-        futs = {ex.submit(build_granule_index, g): g for g in todo}
+        futs = {ex.submit(build_granule_index, g, H3_RES, cells): g for g in todo}
         deadline = time.time() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
         for f, g in futs.items():
             name = g["meta"]["native-id"]
@@ -220,43 +262,50 @@ def ensure_index(granules, workers: int = INDEX_WORKERS) -> dict:
     return out
 
 
-def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None) -> dict:
-    """Record that an index was built over `bbox`, in `_build.json` beside the granule parquets.
+def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None,
+                         cells=None) -> dict:
+    """Record WHICH CELLS an index was built over, in `_build.json` beside the granule parquets.
 
-    The query path treats the index as a PRECONDITION (planner._ensure, the per-collection _index_covers,
-    coverage.check_coverage): an area no build covers is refused rather than silently falling back to CMR. So every
-    builder must stamp one.
+    A cell set, not a rectangle. The rectangle was a claim about where CMR was searched, and it answered the wrong
+    question twice over: cells outside it still held rows (a granule's whole track was indexed), and hexes on its
+    edge held only part of their data. Coverage is now exact set membership — an area is buildable iff every cell it
+    touches was built — so "indexed" means the same thing to the Explore panel, the Lake view and the planner.
 
-    The manifest holds the LIST of boxes built, not one box. Overwriting would discard a previous region's claim;
-    unioning into a single box would claim coverage over the territory BETWEEN two disjoint builds, which was never
-    indexed. Neither is true, and both produce a wrong answer at a bbox nobody built. A box already contained by
-    another is absorbed. Legacy manifests carrying a single `bbox` are read (see coverage._index_covers_bbox) and
-    upgraded in place on the next build.
+    Cell sets from repeated builds are UNIONED: indexing a neighbouring region adds cells, never retracts them.
+    `bbox` is kept only as provenance (what was asked for); nothing reads it for coverage.
     """
     import json
 
     d = pathlib.Path(d)
     d.mkdir(parents=True, exist_ok=True)
     mf = d / "_build.json"
-    prev, boxes = {}, []
+    prev, have = {}, set()
     if mf.exists():
         try:
             prev = json.loads(mf.read_text())
-            boxes = [list(map(float, b)) for b in (prev.get("boxes") or ([prev["bbox"]] if prev.get("bbox") else []))]
+            have = {int(c) for c in (prev.get("cells") or [])}
         except Exception:
             log.warning("unreadable %s; replacing", mf)
-    new = [float(v) for v in bbox]
-
-    def contains(outer, inner):
-        return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
-
-    if not any(contains(b, new) for b in boxes):
-        boxes = [b for b in boxes if not contains(new, b)] + [new]
-    doc = {"boxes": boxes, "res": res if res is not None else prev.get("res"),
+    have |= {int(c) for c in (cells or [])}
+    doc = {"cells": sorted(have), "res": res if res is not None else prev.get("res"),
            "window": list(window) if window else prev.get("window"),
-           "target": n_granules if n_granules is not None else prev.get("target")}
+           "target": n_granules if n_granules is not None else prev.get("target"),
+           "requested": (list(prev.get("requested") or []) + [list(bbox)]) if bbox is not None else prev.get("requested")}
     mf.write_text(json.dumps(doc))
     return doc
+
+
+def manifest_cells(d) -> set:
+    """The cells an index was built over, or an empty set when it has no manifest."""
+    import json
+
+    mf = pathlib.Path(d) / "_build.json"
+    if not mf.exists():
+        return set()
+    try:
+        return {int(c) for c in (json.loads(mf.read_text()).get("cells") or [])}
+    except Exception:
+        return set()
 
 
 def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:
