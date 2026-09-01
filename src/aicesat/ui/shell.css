@@ -205,6 +205,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .col-cov { flex:0 0 auto; color:var(--muted); font-size:11px; white-space:nowrap; min-width:14px; text-align:right; }
 .col-cov b { color:var(--ink); font-variant-numeric:tabular-nums; }
 .col-cov .no { color:var(--muted); opacity:.7; }
+.col-cov .partial { color:var(--amber); }
 .covnote { margin-top:5px; color:var(--muted); line-height:1.35; }
 /* scene cards + inline build progress inside the Scenes list */
 .scene-card { border-bottom:1px solid var(--hair); padding:3px 0; }

@@ -286,9 +286,21 @@ def _index_covers_bbox(d, bbox) -> bool:
 def check_coverage(bbox, **_ignored) -> dict:
     """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
     index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
-    fall in the box's cells (not CMR's footprint over-claim). A collection whose index does not cover this bbox is
-    reported as not-indexed (n_granules=None, indexed=False) — never fetched from CMR: we always build the index.
-    Returns {bbox, collections:[{key,label,product,version,epoch,window,n_granules,indexed,cells,by_month}, ...]}."""
+    fall in the box's cells (not CMR's footprint over-claim).
+
+    TWO different facts, because conflating them made the Explore panel contradict the Lake view:
+
+      `indexed`  — this collection has index rows we can read. The counts (n_granules, cells, by_month) are measured
+                   over the query's OWN cells, so they answer "what data exists over my area".
+      `covered`  — a declared build box fully CONTAINS the query area, so a build will accept it. Partial overlap is
+                   not enough: planner._ensure and each collection's _index_covers require containment, because
+                   building over a half-indexed area would silently return less data than the area asks for.
+
+    An area that overlaps a built box without being inside it is therefore `indexed=True, covered=False`: the Lake
+    view is right that cells are indexed there, AND a build will still refuse. Reporting only the containment (the
+    old behaviour) claimed "not indexed" over hundreds of genuinely indexed cells.
+
+    Returns {bbox, collections:[{key,label,product,version,epoch,window,n_granules,indexed,covered,cells,by_month}]}."""
     import duckdb
 
     from . import planner
@@ -296,13 +308,14 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         d, res, ym = _index_for(c["key"])
-        if d is None or not d.exists() or not _index_covers_bbox(d, bbox):
-            row.update(n_granules=None, indexed=False, cells=0, by_month={})
+        covered = bool(d is not None and d.exists() and _index_covers_bbox(d, bbox))
+        if d is None or not d.exists():
+            row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)
             continue
         manifest = _ensure_manifest(d, ym)   # one tiny rolled-up file, built/refreshed lazily (see above)
         if manifest is None:                 # index dir present but no granule parquets yet
-            row.update(n_granules=None, indexed=False, cells=0, by_month={})
+            row.update(n_granules=None, indexed=False, covered=covered, cells=0, by_month={})
             out.append(row)
             continue
         cells = planner.cells_for_bbox(bbox, res=res)
@@ -315,7 +328,7 @@ def check_coverage(bbox, **_ignored) -> dict:
                              f"WHERE {pred} GROUP BY m ORDER BY m").fetchall()
         finally:
             con.close()
-        row.update(n_granules=int(ng or 0), indexed=True, cells=int(ncells or 0),
+        row.update(n_granules=int(ng or 0), indexed=True, covered=covered, cells=int(ncells or 0),
                    by_month={m: int(n) for m, n in by if m})
         out.append(row)
     return {"bbox": list(bbox), "collections": out}

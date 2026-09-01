@@ -104,6 +104,18 @@ AICESAT.ExploreView = class {
         const c = byKey[el.dataset.key];
         if (!c) { el.innerHTML = ''; return; }
         if (c.n_granules == null) { el.innerHTML = c.indexed === false ? '<span class="no" title="No sub-granule index built over this area yet — build the index to see coverage here.">not indexed</span>' : '<span class="no">n/a</span>'; return; }
+        // `indexed` and `covered` are different facts, and the gap is real. An index is built by searching CMR over
+        // a RECTANGLE and indexing the granules that intersect it. Cells outside that rectangle still end up with
+        // rows — ATL03/ATL06 index a granule's whole pole-to-pole track, and GLAS/ICESSN clip shots to the box so
+        // boundary hexes keep only their inside-the-box shots. Either way such a cell holds SOME rows but not all
+        // of them: every granule that crosses the cell without crossing the built rectangle was never searched.
+        // The Lake view calls that cell indexed because rows exist. A build requires CONTAINMENT precisely because
+        // containment is the only thing that guarantees the granule set is complete for the area.
+        if (c.covered === false) {
+          const n = c.n_granules ? `<b>${c.n_granules}</b> gran. ` : '';
+          el.innerHTML = `${n}<span class="partial" title="Your area reaches outside the region this index was built over. The granules shown are real but incomplete: out there the index only holds granules that also crossed the built region, so a build refuses the area rather than silently return part of it. Shrink the area to the built region, or extend the index.">reaches outside index</span>`;
+          return;
+        }
         el.innerHTML = c.n_granules ? `<b>${c.n_granules}</b> gran.${this.covCaveat()}` : '<span class="no">none</span>';
       });
       if (note) note.textContent = 'granule counts over your area — the scene keeps only points inside it';

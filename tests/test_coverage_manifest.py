@@ -164,3 +164,26 @@ def test_build_manifest_is_explicit_and_reports_what_it_rolled_up(tmp_path, monk
     out = coverage.build_manifest("ATL06")
     assert out["built"] is True and out["granule_files"] == 1
     assert coverage._manifest_fresh(d)
+
+
+def test_indexed_and_covered_are_reported_separately(tmp_path, monkeypatch):
+    """A cell can hold index rows while the query area still reaches outside the built rectangle.
+
+    The Explore panel used to gate the whole row on containment and report "not indexed" over areas the Lake view
+    showed as indexed — the two views contradicted each other. `indexed` now answers "is there data here" and
+    `covered` answers "will a build accept this area", because only containment guarantees the granule set is
+    complete: outside the built rectangle the index holds only granules that also crossed it.
+    """
+    from aicesat import coverage as cov
+
+    d = tmp_path / "idx"
+    d.mkdir()
+    monkeypatch.setattr(cov, "_index_for", lambda key: (d, 5, "ym") if key == "GLAS" else (None, None, None))
+    monkeypatch.setattr(cov, "_ensure_manifest", lambda dd, ym: None)   # index dir present, nothing rolled up yet
+
+    # no manifest at all -> nothing is covered
+    (d / "_build.json").write_text('{"boxes": [[-51.0, 69.0, -50.0, 69.5]], "res": 5}')
+    inside = cov.check_coverage((-50.8, 69.1, -50.2, 69.4))["collections"][0]
+    outside = cov.check_coverage((-50.8, 69.1, -49.0, 69.4))["collections"][0]
+    assert inside["covered"] is True, "an area within the built box must be buildable"
+    assert outside["covered"] is False, "an area reaching past the built box must not be reported as buildable"
