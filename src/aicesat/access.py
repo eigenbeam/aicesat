@@ -174,6 +174,47 @@ def s3_credentials(refresh: bool = False) -> dict:
         return _S3_CREDS["v"]
 
 
+_AIO_CACHE: dict = {}
+_AIO_LOCK = threading.Lock()
+
+
+def _aio_shared(creds: dict, region: str, max_pool: int) -> "_AioS3":
+    """One _AioS3 per (STS token, region, pool size) per PROCESS.
+
+    _AioS3 starts a background event-loop thread and enters an aiobotocore S3 client on it, and building that client
+    makes botocore parse its multi-megabyte S3 service model. Its docstring says "one per RangeReader ... reused
+    across every granule" — but every caller builds a RangeReader PER GRANULE, and none of them called close(), so
+    each granule left a live thread pinning a client and its parsed JSON. Measured growth was ~19 MB per granule with
+    no plateau; eight pool workers reached ~4.8 GB each and the kernel OOM-killed the ATL06 Greenland build at 3,090
+    of 32,608 granules (/proc/vmstat oom_kill, anon-rss 4,891,488 kB). Caching by token fixes every caller at once,
+    the server's per-scene readers included, and bounds the process to one loop thread per distinct credential.
+    """
+    key = (creds.get("sessionToken"), region, max_pool)
+    with _AIO_LOCK:
+        got = _AIO_CACHE.get(key)
+        if got is None:
+            for k, old in list(_AIO_CACHE.items()):     # a new token retires the old clients rather than stacking
+                if k[0] != key[0]:                      # one up per hourly STS refresh
+                    _AIO_CACHE.pop(k, None)
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
+            got = _AIO_CACHE[key] = _AioS3(creds, region=region, max_pool=max_pool)
+        return got
+
+
+def _aio_evict() -> None:
+    """Close and forget every shared client — used when STS creds are found expired mid-flight."""
+    with _AIO_LOCK:
+        for _, obj in list(_AIO_CACHE.items()):
+            try:
+                obj.close()
+            except Exception:
+                pass
+        _AIO_CACHE.clear()
+
+
 def access_url(https_url: str, s3_url: str | None) -> str:
     """The URL to byte-range at run time: S3-direct in-region (no presign, no egress), else HTTPS/CloudFront.
     The index stores both, so a query picks the fast path for wherever it runs."""
@@ -274,6 +315,7 @@ class RangeReader:
     def _s3_reset(self):
         """Drop every cached S3 client so the next call rebuilds with fresh STS creds."""
         self._s3 = None
+        _aio_evict()          # the shared client holds the expired token too; a per-reader reset alone would not help
         for attr in ("_aio", "_boto3", "_crt"):
             obj = getattr(self, attr, None)
             if obj is not None and hasattr(obj, "close"):
@@ -297,7 +339,7 @@ class RangeReader:
 
     def _aio_client(self):
         if self._aio is None:
-            self._aio = _AioS3(s3_credentials(), max_pool=max(self.threads, 32))
+            self._aio = _aio_shared(s3_credentials(), S3_REGION, max(self.threads, 32))
         return self._aio
 
     def _boto3_client(self):
@@ -317,16 +359,18 @@ class RangeReader:
         return self._crt
 
     def close(self):
-        """Release async/CRT resources (background event loop, CRT client). Safe to call more than once. The HTTPS
-        session and s3fs filesystem are GC'd normally; this only matters for mechanisms that spin their own loop."""
-        for attr in ("_aio", "_crt"):
-            obj = getattr(self, attr, None)
-            if obj is not None and hasattr(obj, "close"):
-                try:
-                    obj.close()
-                except Exception:
-                    pass
-            setattr(self, attr, None)
+        """Release this reader's own resources. Safe to call more than once.
+
+        The aiobotocore client is NOT closed here: it is shared process-wide by _aio_shared, and closing it would
+        stop a background loop other readers are still using. Dropping the reference is enough — the cache owns its
+        lifetime. The CRT client is still per-reader, so it is closed."""
+        obj = getattr(self, "_crt", None)
+        if obj is not None and hasattr(obj, "close"):
+            try:
+                obj.close()
+            except Exception:
+                pass
+        self._crt = self._aio = None
 
     def _getter(self, url: str, refresh: bool = False):
         """A callable (offset, size) -> bytes for one granule: S3-direct for s3:// URLs, presigned HTTPS otherwise."""
