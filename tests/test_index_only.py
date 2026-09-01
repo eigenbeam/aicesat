@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from aicesat import atl06, coverage, glas, icessn, index, planner, regions
+from aicesat import atl06, cache, coverage, glas, icessn, index, planner, regions
 
 UNINDEXED = (-100.0, -70.0, -99.0, -69.0)      # nothing is ever indexed here
 

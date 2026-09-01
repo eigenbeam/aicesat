@@ -86,7 +86,22 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True, 
         kw["bounding_box"] = tuple(bbox)
     if window:
         kw["temporal"] = tuple(window)
-    granules = dedup_granules(earthaccess.search_data(count=-1, **kw))
+    # cloud_hosted: CMR lists every file TWICE — the Cumulus copy and the retired on-prem one — so an unfiltered
+    # search pages through double the results and dedup_granules throws half away. Filtering at the source is
+    # measured 3.49 s -> 2.38 s median on a 1,449-granule area, and matters much more on a region-scale search where
+    # the cost IS the pagination. Verified identical output on all four collections: same files, none missing, none
+    # extra. It also states the requirement rather than a workaround — we can only byte-range read cloud-hosted
+    # granules. (provider="NSIDC_CPRD" is a touch faster still, 1.94 s, but hardcodes one DAAC's provider name and
+    # would return ZERO, silently, for anything outside it.)
+    granules = dedup_granules(earthaccess.search_data(count=-1, cloud_hosted=True, **kw))
+    if not granules:
+        # A filter that silently returns nothing would build an empty index and report success. If the unfiltered
+        # search finds something the filter missed, take it and say so loudly.
+        granules = dedup_granules(earthaccess.search_data(count=-1, **kw))
+        if granules:
+            log.warning("%s v%s: cloud_hosted found nothing but the unfiltered search found %d granules — "
+                        "the collection may not be flagged cloud-hosted; using the unfiltered result",
+                        short_name, version, len(granules))
     log.info("%s v%s: %d granules over %s %s", short_name, version, len(granules),
              f"a {len(polygon)}-vertex polygon" if polygon else bbox, window)
     try:

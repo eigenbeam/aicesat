@@ -8,7 +8,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from aicesat import coverage, planner
+from aicesat import cache, coverage, planner
 
 GDATE_YM = "substr(gdate,1,4) || '-' || substr(gdate,5,2)"   # GLAS/ICESSN-style (matches coverage._index_for)
 
@@ -189,3 +189,42 @@ def test_indexed_and_covered_are_reported_separately(tmp_path, monkeypatch):
     outside = cov.check_coverage((-50.8, 69.1, -49.0, 69.4))["collections"][0]
     assert inside["covered"] is True, "an area within the built box must be buildable"
     assert outside["covered"] is False, "an area reaching past the built box must not be reported as buildable"
+
+
+# --- CMR returns every file twice; filtering at the source halves the pagination -------------------------------------
+def test_search_asks_for_cloud_hosted_granules_only(monkeypatch, tmp_path):
+    """CMR lists a Cumulus copy and a retired on-prem copy of every file. dedup_granules threw the duplicate away
+    AFTER paging through it; filtering at the source halves the result set (measured 3.49 s -> 2.38 s)."""
+    import earthaccess
+
+    seen = []
+
+    def fake(count=-1, **kw):
+        seen.append(kw)
+        return [{"meta": {"native-id": "g1"}, "umm": {}}]
+
+    monkeypatch.setattr(earthaccess, "search_data", fake)
+    monkeypatch.setattr(coverage, "dedup_granules", lambda g: g)
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(coverage.auth, "login", lambda *a, **k: None)
+    coverage.search("ATL06", "007", (-50, 69, -49, 70), None, use_cache=False)
+    assert seen and seen[0].get("cloud_hosted") is True, seen
+
+
+def test_search_falls_back_when_the_cloud_filter_finds_nothing(monkeypatch, tmp_path):
+    """A filter that silently returns nothing would build an empty index and report success."""
+    import earthaccess
+
+    calls = []
+
+    def fake(count=-1, **kw):
+        calls.append(kw)
+        return [] if kw.get("cloud_hosted") else [{"meta": {"native-id": "g1"}, "umm": {}}]
+
+    monkeypatch.setattr(earthaccess, "search_data", fake)
+    monkeypatch.setattr(coverage, "dedup_granules", lambda g: g)
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(coverage.auth, "login", lambda *a, **k: None)
+    got = coverage.search("ATL06", "007", (-50, 69, -49, 70), None, use_cache=False)
+    assert len(got) == 1, "must fall back rather than report an empty collection"
+    assert len(calls) == 2 and calls[0].get("cloud_hosted") and "cloud_hosted" not in calls[1]
