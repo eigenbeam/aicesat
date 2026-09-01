@@ -324,3 +324,36 @@ def test_a_sleeping_laptop_does_not_time_out_a_healthy_build(monkeypatch):
     assert out["failed"] == [], "a wall-clock deadline would have failed every granule here"
     assert seen_timeouts and all(x > 1.0 for x in seen_timeouts), \
         f"deadline collapsed to the 1 s floor -> it is following the wall clock: {seen_timeouts}"
+
+
+def test_addressing_cells_handles_a_claim_coarser_than_the_addressing_grid():
+    """claim_res backs off with area, so a big region claims coarser than ATL03 addresses (res 6). Taking a parent
+    then raises H3ResMismatchError — which crashed any build large enough to trigger the back-off, e.g. Greenland."""
+    import h3
+
+    fine9 = planner.coverage_cells((-50.05, 69.10, -49.80, 69.20))          # small area -> claims at res 9
+    assert h3.get_resolution(h3.int_to_str(int(fine9[0]))) > index.H3_RES
+    up = planner.addressing_cells(fine9, index.H3_RES)
+    assert up and all(h3.get_resolution(h3.int_to_str(int(c))) == index.H3_RES for c in up)
+
+    coarse = [h3.str_to_int(h3.latlng_to_cell(69.15, -49.9, 5))]            # a claim COARSER than res 6
+    down = planner.addressing_cells(coarse, index.H3_RES)
+    assert len(down) == 7, f"a res-5 cell holds 7 res-6 children, got {len(down)}"
+    assert all(h3.get_resolution(h3.int_to_str(int(c))) == index.H3_RES for c in down)
+
+    same = planner.addressing_cells(coarse, 5)
+    assert same == coarse
+
+
+def test_a_region_too_big_for_a_cmr_polygon_falls_back_to_the_bbox():
+    """CMR carries the polygon in the query string. Greenland's densified hull is 725 vertices and CMR answers
+    414 Request-URI Too Large, so an index build over it died before fetching anything.
+
+    The fallback must be the BOUNDING BOX, not a coarser polygon: coarsening lets the great-circle bow cut into the
+    region, and a bow excludes ground — it would drop granules silently. A bbox is a strict superset.
+    """
+    small = planner.search_polygon(planner.coverage_cells((-50.05, 69.10, -49.80, 69.20)))
+    assert 3 < len(small) <= planner.MAX_SEARCH_VERTICES
+
+    greenland = planner.coverage_cells((-74.0, 59.5, -11.0, 84.0))
+    assert planner.search_polygon(greenland) == [], "an oversized region must hand back no polygon"

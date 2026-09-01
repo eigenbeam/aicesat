@@ -152,11 +152,26 @@ def coverage_cells(bbox, polygon=None, res: int | None = None) -> list:
 
 
 def addressing_cells(fine_cells, res: int) -> list:
-    """The coarse cells that hold a claim's ground — the index/lake partition keys to filter rows by.
+    """The index/lake partition cells covering a claim's ground, at `res`.
 
-    A coarse cell here may be only PARTLY claimed (its far side was never searched). That is fine and it is the
+    Usually the claim is FINER than the addressing grid and each claim cell maps to its parent. But claim_res backs
+    off with area, so a large enough region claims coarser than something addresses: Greenland claims at res 5 while
+    ATL03 addresses at res 6. Asking for a res-6 parent of a res-5 cell is not a thing, and this raised
+    H3ResMismatchError on any build big enough to trigger the back-off. Going DOWN means taking the children.
+
+    A cell produced here may be only partly claimed (its far side was never searched). That is fine and it is the
     point: we index what the search found, and claim only the fine ground we actually covered."""
-    return sorted({h3.str_to_int(h3.cell_to_parent(h3.int_to_str(int(c)), res)) for c in fine_cells})
+    out: set = set()
+    for c in fine_cells:
+        s = h3.int_to_str(int(c))
+        r = h3.get_resolution(s)
+        if r == res:
+            out.add(s)
+        elif r > res:
+            out.add(h3.cell_to_parent(s, res))
+        else:
+            out.update(h3.cell_to_children(s, res))
+    return sorted(h3.str_to_int(x) for x in out)
 
 
 def _convex_hull(points: list) -> list:
@@ -182,6 +197,7 @@ def _convex_hull(points: list) -> list:
 
 
 MAX_SEARCH_EDGE_DEG = 0.25   # densify to this, so a great-circle edge bows < ~5 m (see search_polygon)
+MAX_SEARCH_VERTICES = 200    # CMR takes the polygon in the query string; a big region blows the URI limit
 
 
 def search_polygon(cells, max_edge_deg: float = MAX_SEARCH_EDGE_DEG) -> list:
@@ -209,6 +225,14 @@ def search_polygon(cells, max_edge_deg: float = MAX_SEARCH_EDGE_DEG) -> list:
         for k in range(n):
             out.append((round(x1 + (x2 - x1) * k / n, 5), round(y1 + (y2 - y1) * k / n, 5)))
     out.append(out[0])
+    if len(out) > MAX_SEARCH_VERTICES:
+        # CMR carries the polygon in the query string. A Greenland-sized hull densified to 0.25 deg is 725 vertices
+        # and the request comes back 414 Request-URI Too Large. Coarsening the densification instead would let the
+        # great-circle bow eat into the region, and a bow EXCLUDES ground — it could drop granules silently. So give
+        # up on the polygon and let the caller search the BOUNDING BOX, which is a strict superset: more granules to
+        # parse, never fewer. The polygon is an optimisation; correctness is not negotiable for it.
+        log.info("search polygon needs %d vertices (> %d); falling back to a bbox search", len(out), MAX_SEARCH_VERTICES)
+        return []
     return out
 
 
