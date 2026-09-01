@@ -247,11 +247,15 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
         failed = []
         ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)))
         futs = {ex.submit(build_granule_index, g, H3_RES, cells): g for g in todo}
-        deadline = time.time() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
+        # MONOTONIC, not wall clock. A laptop that sleeps mid-build advances time.time() by the whole nap, so every
+        # remaining future would blow its deadline the moment the machine woke and a healthy build would report
+        # itself failed. On macOS time.monotonic() is mach_absolute_time and stops during sleep; on Linux
+        # CLOCK_MONOTONIC likewise excludes suspend. (This is what a 95-minute "hang" turned out to be: the lid.)
+        deadline = time.monotonic() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
         for f, g in futs.items():
             name = g["meta"]["native-id"]
             try:
-                f.result(timeout=max(1.0, deadline - time.time()))
+                f.result(timeout=max(1.0, deadline - time.monotonic()))
                 built.append(name)
             except FutTimeout:
                 log.warning("index build of %s timed out (attempt %d)", name, attempt)

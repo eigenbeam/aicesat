@@ -284,3 +284,43 @@ def test_area_outside_the_claim_bounds_is_rejected_without_a_polyfill(tmp_path, 
     assert not coverage.index_covers_area(d, (10.0, 10.0, 10.1, 10.1))
     # and an area that OVERLAPS the claim but extends past it is still refused
     assert not coverage.index_covers_area(d, (-50.30, 69.10, -49.80, 69.20))
+
+
+def test_a_sleeping_laptop_does_not_time_out_a_healthy_build(monkeypatch):
+    """A 95-minute lid-close looked exactly like a hung build; a wall-clock deadline would have failed it on wake.
+
+    time.time() jumps by the whole nap, time.monotonic() does not, so the deadline must come from the latter.
+    """
+    import concurrent.futures
+    import time as time_mod
+
+    seen_timeouts = []
+
+    class _Recording(_FakeExecutor):
+        def submit(self, fn, g, *a):
+            _FakeExecutor.submitted.append(g["meta"]["native-id"])
+            fut = _ImmediateFuture()
+            real = fut.result
+
+            def result(timeout=None):
+                seen_timeouts.append(timeout)
+                return real()
+            fut.result = result
+            return fut
+
+    _FakeExecutor.submitted = []
+    _FakeExecutor.outcomes = {}
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _Recording)
+    monkeypatch.setattr(index, "indexed_granules", lambda: set())
+    # every consultation of the wall clock reports another 10 hours gone, as a long sleep would
+    clock = [time_mod.time()]
+
+    def jumping():
+        clock[0] += 36_000
+        return clock[0]
+    monkeypatch.setattr(index.time, "time", jumping)
+
+    out = index.ensure_index([_granule(f"g{i}") for i in range(3)])
+    assert out["failed"] == [], "a wall-clock deadline would have failed every granule here"
+    assert seen_timeouts and all(x > 1.0 for x in seen_timeouts), \
+        f"deadline collapsed to the 1 s floor -> it is following the wall clock: {seen_timeouts}"
