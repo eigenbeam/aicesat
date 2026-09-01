@@ -10760,22 +10760,57 @@ let buildStart = 0, lastLog = [];
 // Build progress lives in the drawer beside Controls and Time Series, not over the canvas. It used to be a centred
 // overlay with a backdrop blur, which fought the progressive streaming it exists to announce — the point of streaming
 // points is to watch them land.
+// One row element per mission, updated IN PLACE. Rebuilding progRows.innerHTML each poll destroyed and recreated
+// every node ~2.4 times a second, which is what made the panel look like it kept appearing and disappearing: the
+// indeterminate bar's 1.5 s progslide animation restarted from its beginning on every redraw (~3.7 restarts per
+// cycle), and `transition: width .3s` never ran because the node it was transitioning was already gone.
+const progRowEls = new Map();
+
+function progRowFor(m, host) {
+  let e = progRowEls.get(m);
+  if (e && e.root.isConnected) return e;
+  const root = document.createElement('div');
+  root.className = 'prog-row';
+  root.innerHTML = '<div class="prog-name"><span class="dot"></span><span class="prog-label"></span>'
+                 + '<span class="prog-phase"></span></div>'
+                 + '<div class="prog-barwrap"><div class="prog-bar"></div></div>'
+                 + '<div class="prog-meta"><span class="prog-pct"></span><span class="prog-bits"></span></div>';
+  host.appendChild(root);
+  e = {root, dot: root.querySelector('.dot'), label: root.querySelector('.prog-label'),
+       phase: root.querySelector('.prog-phase'), bar: root.querySelector('.prog-bar'),
+       pct: root.querySelector('.prog-pct'), bits: root.querySelector('.prog-bits')};
+  progRowEls.set(m, e);
+  return e;
+}
+
+function setText(el, v) { if (el && el.textContent !== v) el.textContent = v; }
+
 function renderProgress(loading, log) {
   const box = $('progress'); if (!box) return;
   box.hidden = false;
   const spin = $('slSpin'); if (spin) spin.classList.toggle('sl-idle', !loading);
-  $('slTitle').textContent = loading ? 'Building scene…' : 'Scene ready';
+  setText($('slTitle'), loading ? 'Building scene…' : 'Scene ready');
   const el = $('slElapsed');
-  if (el) el.textContent = buildStart ? ((Date.now() - buildStart) / 1000).toFixed(0) + 's' : '';
+  if (el) setText(el, buildStart ? ((Date.now() - buildStart) / 1000).toFixed(0) + 's' : '');
   const now = $('slNow');
-  if (now) now.textContent = loading ? ((log && log.length) ? log[log.length - 1] : '') : '';
+  if (now) setText(now, loading ? ((log && log.length) ? log[log.length - 1] : '') : '');
   const prog = (scene && scene.progress) || {};
   const rows = MISSION_ORDER.filter(m => prog[m] || (scene && scene.series && scene.series[m]));
-  $('progRows').innerHTML = rows.map(m => {
+  const host = $('progRows');
+
+  for (const [m, e] of [...progRowEls]) {            // a mission that went away (scene switch) loses its row
+    if (!rows.includes(m)) { e.root.remove(); progRowEls.delete(m); }
+  }
+  if (!rows.length) {
+    if (host.dataset.state !== 'empty') { host.innerHTML = '<div class="prog-now">waiting for the first collection…</div>'; host.dataset.state = 'empty'; }
+    return;
+  }
+  if (host.dataset.state === 'empty') { host.innerHTML = ''; host.dataset.state = 'rows'; }
+
+  for (const m of rows) {
     const p = prog[m] || {}, name = (MISSIONS[m] || {}).name || m;
     const total = p.total || 0, done = p.done || 0;
-    // No denominator yet (the leg has not reported its plan) => an indeterminate bar, not a fake 0%.
-    const known = total > 0;
+    const known = total > 0;                    // no denominator yet => indeterminate bar, not a fake 0%
     const pct = known ? Math.max(0, Math.min(100, Math.round(done / total * 100))) : 0;
     const phase = p.phase || 'queued';
     const bits = [];
@@ -10783,13 +10818,20 @@ function renderProgress(loading, log) {
     if (known && phase === 'fetching') bits.push(`${done}/${total} granules`);
     if (p.cached_chunks) bits.push(`${p.cached_chunks.toLocaleString()} chunks cached`);
     const rgb = colorOf(m).join(',');
-    return `<div class="prog-row">
-      <div class="prog-name"><span class="dot" style="background:rgb(${rgb})"></span>${esc(name)}
-        <span class="prog-phase prog-${esc(phase).replace(/[^a-z]/g, '')}">${esc(phase)}</span></div>
-      <div class="prog-barwrap"><div class="prog-bar${known ? '' : ' prog-indet'}" style="width:${known ? pct : 24}%;background:rgb(${rgb})"></div></div>
-      <div class="prog-meta"><span class="prog-pct">${known ? pct + '%' : '—'}</span><span>${esc(bits.join(' · '))}</span></div>
-    </div>`;
-  }).join('') || '<div class="prog-now">waiting for the first collection…</div>';
+    const e = progRowFor(m, host);
+    const dotBg = `rgb(${rgb})`;
+    if (e.dot.style.background !== dotBg) e.dot.style.background = dotBg;
+    setText(e.label, name);
+    setText(e.phase, phase);
+    const cls = 'prog-phase prog-' + String(phase).replace(/[^a-z]/g, '');
+    if (e.phase.className !== cls) e.phase.className = cls;
+    const w = (known ? pct : 24) + '%';
+    if (e.bar.style.width !== w) e.bar.style.width = w;
+    if (e.bar.style.background !== dotBg) e.bar.style.background = dotBg;
+    e.bar.classList.toggle('prog-indet', !known);
+    setText(e.pct, known ? pct + '%' : '—');
+    setText(e.bits, bits.join(' · '));
+  }
 }
 
 function esc(v) { return String(v == null ? '' : v).replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c])); }
@@ -11003,6 +11045,7 @@ this.open = async (id, query) => {
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
+    progRowEls.clear();                           // rows belong to the scene that created them
     Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
     const ld = $('progress'); if (ld) ld.hidden = false;
     await pollUntilReady();   // paints the shell + whatever is ready now; keeps polling if the build is still running
