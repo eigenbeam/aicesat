@@ -268,7 +268,7 @@ def index_files_for_cells(collection: str, cells) -> list[str] | None:
         return None
 
 
-def _index_covers_bbox(d, bbox, res: int | None = None, polygon=None) -> bool:
+def index_covers_area(d, bbox, res: int | None = None, polygon=None) -> bool:
     """True if EVERY cell the area touches was built. Exact set membership, not rectangle containment.
 
     Containment was both too strict and unsound: it refused areas whose cells are all present merely because the
@@ -317,7 +317,7 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         d, res, ym = _index_for(c["key"])
-        covered = bool(d is not None and d.exists() and _index_covers_bbox(d, bbox, res))
+        covered = bool(d is not None and d.exists() and index_covers_area(d, bbox, res))
         if d is None or not d.exists():
             row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)

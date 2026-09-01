@@ -83,12 +83,12 @@ def test_build_manifest_unions_cells_and_never_drops_them(tmp_path, monkeypatch)
     ca = set(planner.cells_for_bbox(a, res=index.H3_RES))
     cb = set(planner.cells_for_bbox(b, res=index.H3_RES))
     index.write_build_manifest(d, a, index.H3_RES, None, 3, cells=ca)
-    assert coverage._index_covers_bbox(d, a, index.H3_RES)
+    assert coverage.index_covers_area(d, a, index.H3_RES)
 
     out = index.write_build_manifest(d, b, index.H3_RES, None, 4, cells=cb)
     assert set(out["cells"]) == ca | cb
     for box in (a, b):
-        assert coverage._index_covers_bbox(d, box, index.H3_RES), f"{box} lost coverage after a second build"
+        assert coverage.index_covers_area(d, box, index.H3_RES), f"{box} lost coverage after a second build"
 
 
 def test_coverage_is_exact_set_membership_not_a_bounding_box(tmp_path, monkeypatch):
@@ -100,7 +100,7 @@ def test_coverage_is_exact_set_membership_not_a_bounding_box(tmp_path, monkeypat
     index.write_build_manifest(d, a, index.H3_RES, cells=planner.cells_for_bbox(a, res=index.H3_RES))
     index.write_build_manifest(d, b, index.H3_RES, cells=planner.cells_for_bbox(b, res=index.H3_RES))
     between = (-44.5, 68.5, -43.5, 69.5)
-    assert not coverage._index_covers_bbox(d, between, index.H3_RES), \
+    assert not coverage.index_covers_area(d, between, index.H3_RES), \
         "an area between two disjoint builds touches cells nobody indexed"
 
 
@@ -111,8 +111,8 @@ def test_an_area_poking_past_the_built_box_is_refused_cell_by_cell(tmp_path, mon
     built = (-46.0, 71.0, -45.0, 72.0)
     index.write_build_manifest(d, built, index.H3_RES, cells=planner.cells_for_bbox(built, res=index.H3_RES))
     inner = (-45.6, 71.3, -45.4, 71.6)
-    assert coverage._index_covers_bbox(d, inner, index.H3_RES)
-    assert not coverage._index_covers_bbox(d, (-47.0, 71.0, -45.0, 72.0), index.H3_RES)
+    assert coverage.index_covers_area(d, inner, index.H3_RES)
+    assert not coverage.index_covers_area(d, (-47.0, 71.0, -45.0, 72.0), index.H3_RES)
 
 
 def test_planner_refuses_when_only_some_cells_are_built(tmp_path, monkeypatch):
@@ -203,3 +203,46 @@ def test_a_transient_failure_that_clears_on_retry_is_reported_as_built(monkeypat
     out = index.ensure_index([_granule(n) for n in ("g0", "g1", "g2")])
     assert out["failed"] == []
     assert sorted(out["built"]) == ["g0", "g1", "g2"]
+
+
+# --- an empty granule's parquet must be readable alongside a full one ------------------------------------------------
+@pytest.mark.parametrize("rows", [
+    # (column, one sample value) per builder, mirroring what each assembles
+    {"granule": "g.h5", "url": "u", "s3url": "s", "revision": "1", "sc_orient": 0, "sdp_epoch": 1.5, "beam": "gt1l",
+     "strong": True, "cycle": 3, "rgt": 12, "chunk_index": 0, "ph_start": 0, "ph_end": 10, "h3_cell": 123,
+     "lat_min": 1.0, "lat_max": 2.0, "lon_min": 3.0, "lon_max": 4.0,
+     "lat_ph_offset": 5, "lat_ph_size": 6, "lat_ph_filters": "gzip", "lat_ph_dtype": "f8", "lat_ph_ncols": 1,
+     "lat_ph_mask": 0},
+    # ICESSN: the shape whose byte_start/byte_end/n_lines used to fall through to the string default
+    {"granule": "g.csv", "url": "u", "s3url": "s", "gdate": "20120415", "h3_cell": 123,
+     "byte_start": 0, "byte_end": 99, "n_lines": 7, "lat_min": 1.0, "lat_max": 2.0, "lon_min": 3.0, "lon_max": 4.0},
+    # GLAS
+    {"granule": "g.H5", "url": "u", "s3url": "s", "revision": "1", "gdate": "20051021", "chunk_index": 0,
+     "seg_start": 0, "seg_end": 10, "h3_cell": 123, "lat_min": 1.0, "lat_max": 2.0, "lon_min": 3.0, "lon_max": 4.0,
+     "lat_offset": 1, "lat_size": 2, "lat_filters": "gzip", "lat_dtype": "f8", "lat_mask": 0, "lat_fill": 3.4e38},
+])
+def test_typed_table_empty_schema_matches_full(rows):
+    """A cell filter makes zero-row granules routine; their parquet must not differ in schema from a full one, or
+    DuckDB's union_by_name reconciles across files and the read fails."""
+    full = index.typed_table({k: [v] for k, v in rows.items()})
+    empty = index.typed_table({k: [] for k in rows})
+    assert full.schema == empty.schema, f"schema drift:\n full={full.schema}\nempty={empty.schema}"
+
+
+def test_polygon_selection_is_tested_by_its_own_cells_not_its_bounding_box(tmp_path, monkeypatch):
+    """A drawn shape touches fewer cells than its bounding box. Testing the box refused areas that are fully built."""
+    from aicesat import index_glas
+
+    d = tmp_path / "glas" / "res5"
+    monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "glas")
+    res = index_glas.GLAS_RES
+    # a thin diagonal sliver: its bbox spans a wide square, the shape itself only a corridor
+    poly = [[-50.4, 69.05], [-50.35, 69.05], [-49.6, 69.55], [-49.65, 69.55]]
+    bbox = (min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly))
+    poly_cells = set(planner.cells_for_bbox(bbox, res=res, polygon=poly))
+    box_cells = set(planner.cells_for_bbox(bbox, res=res))
+    assert poly_cells < box_cells, "fixture must have a shape narrower than its bounding box"
+
+    index.write_build_manifest(d, bbox, res, cells=poly_cells)      # only the shape's own cells are built
+    assert glas._index_covers(bbox, poly) is True, "the drawn shape's cells are all built -> it must be accepted"
+    assert glas._index_covers(bbox) is False, "without the polygon it falls back to the box and is refused"

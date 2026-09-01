@@ -20,10 +20,13 @@ log = logging.getLogger(__name__)
 MAX_SAT_FLAG = 2  # 0 none, 1 minor, 2 corrected; >=3 not correctable / unusable
 
 
-def _index_covers(bbox) -> bool:
-    """True if the GLAS sub-granule index was built over a region that contains this bbox."""
+def _index_covers(bbox, polygon=None) -> bool:
+    """True if every H3 cell the selection touches is in the GLAS sub-granule index's built cell set.
+
+    `polygon` matters: a drawn shape's bounding box touches cells the shape itself never enters, so testing
+    the box refused areas whose own cells are all indexed."""
     from . import index_glas
-    return coverage._index_covers_bbox(index_glas._index_dir(index_glas.GLAS_RES), bbox, index_glas.GLAS_RES)
+    return coverage.index_covers_area(index_glas._index_dir(index_glas.GLAS_RES), bbox, index_glas.GLAS_RES, polygon)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
@@ -66,7 +69,7 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         log.info("glas cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
-    if not _index_covers(bbox):
+    if not _index_covers(bbox, polygon):
         raise RuntimeError(f"GLAS not indexed over {bbox} — build the sub-granule index first "
                            f"(uv run scripts/build_glas_index.py)")
     return _extract_via_index(bbox, window, polygon, k, on_granule=on_granule, on_plan=on_plan)

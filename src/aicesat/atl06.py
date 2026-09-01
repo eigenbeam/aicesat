@@ -19,10 +19,13 @@ from . import cache, coverage
 
 log = logging.getLogger(__name__)
 
-def _index_covers(bbox) -> bool:
-    """True if the ATL06 sub-granule index was built over a region that contains this bbox (full-record window)."""
+def _index_covers(bbox, polygon=None) -> bool:
+    """True if every H3 cell the selection touches is in the ATL06 sub-granule index's built cell set.
+
+    `polygon` matters: a drawn shape's bounding box touches cells the shape itself never enters, so testing
+    the box refused areas whose own cells are all indexed."""
     from . import index_atl06
-    return coverage._index_covers_bbox(index_atl06._index_dir(index_atl06.ATL06_RES), bbox, index_atl06.ATL06_RES)
+    return coverage.index_covers_area(index_atl06._index_dir(index_atl06.ATL06_RES), bbox, index_atl06.ATL06_RES, polygon)
 
 
 def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
@@ -34,7 +37,7 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         return hit
     # Index-only: byte-range fetch just the chunks whose H3 cell touches the bbox. The sub-granule index is
     # always built for the area of interest first, so there is no whole-granule fallback.
-    if not _index_covers(bbox):
+    if not _index_covers(bbox, polygon):
         raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first "
                            f"(uv run scripts/build_atl06_index.py)")
     from . import index_atl06

@@ -24,10 +24,13 @@ MAX_RMS_CM = 50.0          # platelets whose plane-fit RMS exceeds 0.5 m are rou
 _NAME_RE = re.compile(r"(?:ILATM2|BLATM2)_(\d{8})_(\d{6})")
 
 
-def _index_covers(bbox) -> bool:
-    """True if the ICESSN line-offset index was built over a region that contains this bbox."""
+def _index_covers(bbox, polygon=None) -> bool:
+    """True if every H3 cell the selection touches is in the ICESSN line-offset index's built cell set.
+
+    `polygon` matters: a drawn shape's bounding box touches cells the shape itself never enters, so testing
+    the box refused areas whose own cells are all indexed."""
     from . import index_icessn
-    return coverage._index_covers_bbox(index_icessn._index_dir(index_icessn.ICESSN_RES), bbox, index_icessn.ICESSN_RES)
+    return coverage.index_covers_area(index_icessn._index_dir(index_icessn.ICESSN_RES), bbox, index_icessn.ICESSN_RES, polygon)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
@@ -66,7 +69,7 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         log.info("icessn cache hit %s", k)
         hit[1]["cache_key"] = k
         return hit
-    if not _index_covers(bbox):
+    if not _index_covers(bbox, polygon):
         raise RuntimeError(f"ICESSN not indexed over {bbox} — build the line-offset index first "
                            f"(uv run scripts/build_icessn_index.py)")
     return _extract_via_index(bbox, window, polygon, k, on_granule=on_granule, on_plan=on_plan)

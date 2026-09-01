@@ -39,25 +39,38 @@ _NAME_RE = re.compile(r"ATL03_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5
 # makes DuckDB's union_by_name reconcile schemas across files and fail. Declaring the type per column makes an empty
 # granule's parquet schema-identical to a full one, which also retires the "copy the schema off a sibling file" hack
 # (which had no answer for the FIRST granule of a fresh index).
-_I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient"}
+_I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient",
+              "byte_start", "byte_end", "n_lines"}
 _F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch"}
 
 
 def col_type(name: str):
+    """The declared type for a known index column, or None when we have no opinion (infer it)."""
     if name == "h3_cell":
-        return pa.uint64()
+        return pa.uint64()          # NEVER inferred: a python int infers as int64 and the cell ids need the full range
     if name == "strong":
         return pa.bool_()
     if name in _F64_NAMES or name.endswith("_fill"):
         return pa.float64()
     if name in _I64_NAMES or name.endswith(("_offset", "_size", "_mask", "_ncols")):
         return pa.int64()
-    return pa.string()
+    return None
 
 
 def typed_table(rows: dict) -> pa.Table:
-    """pa.table() with an explicit type per column, so an empty granule still writes a readable, matching schema."""
-    return pa.table({k: pa.array(v, type=col_type(k)) for k, v in rows.items()})
+    """pa.table() that types EMPTY columns explicitly so an empty granule's schema matches a full one's.
+
+    Populated columns keep pyarrow's inference. Declaring a type for them too made an unlisted column a hard failure
+    at write time — ICESSN's byte_start/byte_end/n_lines fell through to the string default and every granule died
+    with "ArrowTypeError: Expected bytes, got a 'int' object". Inference cannot be wrong about data that is there;
+    only the empty case needs a declaration, and test_typed_table_empty_schema_matches_full guards that it agrees."""
+    def _col(k, v):
+        ty = col_type(k)
+        if ty is not None:
+            return pa.array(v, type=ty)          # a known column is declared in BOTH cases, or the two drift apart
+        return pa.array(v) if len(v) else pa.array(v, type=pa.string())   # unknown: infer, and assume text if empty
+
+    return pa.table({k: _col(k, v) for k, v in rows.items()})
 
 
 def cells_filter(cells) -> set | None:
