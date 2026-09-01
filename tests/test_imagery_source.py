@@ -3,9 +3,24 @@
 "s2" reads real Sentinel-2 L2A scenes from the in-region bucket (fast on the box) but has genuine coverage gaps —
 notably at the high latitudes this tool mostly looks at. "eox" is a global cloudless mosaic that always has something,
 but is a cross-Atlantic tile fetch. So s2 is preferred in-region and falls back."""
+import numpy as np
 import pytest
 
 from aicesat import imagery
+
+
+class _IdentityTransformer:
+    """Stands in for pyproj: these tests work directly in the frame's own metres."""
+    @staticmethod
+    def from_crs(a, b, always_xy=True):
+        class _T:
+            @staticmethod
+            def transform(x, y):
+                return x, y
+        return _T()
+
+
+_FRAME = {"crs": "EPSG:3413", "origin_xy": (0.0, 0.0)}
 
 FRAME = {"crs": "EPSG:3413", "origin_xy": [0.0, 0.0]}
 EXTENT = (-1000.0, -1000.0, 1000.0, 1000.0)
@@ -61,3 +76,60 @@ def test_explicit_s2_request_does_not_silently_fall_back(stub, monkeypatch):
     with pytest.raises(RuntimeError):
         imagery.build(FRAME, EXTENT, source="s2")
     assert stub == ["s2"]                             # no eox attempt
+
+
+# ---------------------------------------------------------------------------- Sentinel-2 mosaic (issue: black imagery)
+def _item(iid, bbox, epsg=32622, cloud=5.0, sun=40.0):
+    return {"id": iid, "bbox": list(bbox),
+            "properties": {"proj:epsg": epsg, "eo:cloud_cover": cloud, "view:sun_elevation": sun,
+                           "datetime": "2026-08-24T00:00:00Z"},
+            "assets": {k: {"href": f"https://x/{iid}/{k}.tif"} for k in imagery.S2_BANDS}}
+
+
+def test_candidates_put_fully_covering_scenes_first_but_keep_the_rest():
+    """The rest matter: no single 110 km granule can cover a larger area, so the mosaic needs the partial ones."""
+    area = (-51.0, 69.0, -49.0, 69.4)
+    full = _item("full", (-52, 68, -48, 70))
+    part = _item("part", (-51.5, 68.9, -50.0, 69.5))
+    miss = _item("miss", (10, 10, 11, 11))
+    cands = imagery._s2_candidates([part, full, miss], area)
+    assert cands[0]["id"] == "full", "a covering scene should still be preferred first"
+    assert {c["id"] for c in cands} == {"full", "part", "miss"}, "partial scenes must remain available to the mosaic"
+
+
+def test_mosaic_fills_gaps_from_later_scenes(monkeypatch, tmp_path):
+    """Two half-covering scenes must produce a whole image, where the old single-pick produced half black."""
+    monkeypatch.setattr(imagery, "IMG_DIR", tmp_path)
+    west = _item("west", (-52, 68, -50, 70))
+    east = _item("east", (-50, 68, -48, 70))
+    monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [west, east])
+
+    calls = []
+
+    def fake_sample(url, ux, uy):
+        calls.append(url)
+        out = np.full(ux.shape, np.nan)
+        # each scene only has data on its own side of -50 degrees, in the frame's own x (metres, origin at centre)
+        side = ux < 0 if "west" in url else ux >= 0
+        out[side] = 1000.0
+        return out
+
+    monkeypatch.setattr(imagery, "_sample_utm", fake_sample)
+    monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
+
+    meta = imagery._build_s2(_FRAME, (-1000.0, -1000.0, 1000.0, 1000.0), width_px=64)
+    assert meta["coverage"] == 1.0, meta
+    assert sorted(meta["scenes"]) == ["east", "west"], meta["scenes"]
+    assert "mosaic of 2 scenes" in meta["source"]
+
+
+def test_a_mosaic_that_cannot_cover_the_area_raises_rather_than_going_black(monkeypatch, tmp_path):
+    """A gap must reach build()'s EOX fallback, not be painted as dark ground."""
+    monkeypatch.setattr(imagery, "IMG_DIR", tmp_path)
+    half = _item("half", (-52, 68, -50, 70))
+    monkeypatch.setattr(imagery, "_s2_search", lambda *a, **k: [half])
+    monkeypatch.setattr(imagery, "_sample_utm",
+                        lambda url, ux, uy: np.where(ux < 0, 1000.0, np.nan))
+    monkeypatch.setattr(imagery, "Transformer", _IdentityTransformer)
+    with pytest.raises(RuntimeError, match="covered only"):
+        imagery._build_s2(_FRAME, (-1000.0, -1000.0, 1000.0, 1000.0), width_px=64)

@@ -159,14 +159,22 @@ S2_MAX_READ_PX = 2048                           # cap a single COG window read s
 S2_CLOUD_MAX = float(os.environ.get("AICESAT_S2_CLOUD_MAX", "20"))       # max eo:cloud_cover (%) accepted
 S2_MONTHS = float(os.environ.get("AICESAT_S2_MONTHS", "24"))            # look back this many months for a scene
 S2_MIN_SUN_ELEV = float(os.environ.get("AICESAT_S2_MIN_SUN_ELEV", "10"))  # skip polar low-sun / near-dark scenes
+S2_MAX_SCENES = int(os.environ.get("AICESAT_S2_MAX_SCENES", "40"))       # candidates a mosaic may try
+S2_SEARCH_LIMIT = int(os.environ.get("AICESAT_S2_SEARCH_LIMIT", "200"))  # must span TILES, not just dates
+S2_MIN_COVERAGE = float(os.environ.get("AICESAT_S2_MIN_COVERAGE", "0.99"))  # below this, fall back to EOX
 _S2_ENV = dict(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES", VSI_CACHE="TRUE", GDAL_HTTP_MAX_RETRY="3",
                GDAL_HTTP_RETRY_DELAY="1", AWS_NO_SIGN_REQUEST="YES")
 
 
-def _s2_search(bbox_ll: tuple[float, float, float, float], months: float, cloud_max: float, limit: int = 20) -> list[dict]:
+def _s2_search(bbox_ll: tuple[float, float, float, float], months: float, cloud_max: float,
+               limit: int = S2_SEARCH_LIMIT) -> list[dict]:
     """POST the Earth Search STAC /search for L2A scenes intersecting bbox_ll (lon0,lat0,lon1,lat1) over the last
-    `months`, cloud < cloud_max, sorted by cloud cover ascending. Public API — works from anywhere."""
+    `months`, cloud < cloud_max, sorted by cloud cover ascending. Public API — works from anywhere.
+
+    The limit has to be generous: results are sorted by cloud GLOBALLY, so over a large area the clearest N scenes
+    all pile onto whichever MGRS tile happened to have clear days. At limit=20 a 120 km box came back as 20 dates of
+    a single tile and a mosaic could only fill 0.3% of it."""
     end = _dt.datetime.now(_dt.timezone.utc)
     start = end - _dt.timedelta(days=months * 30.5)
     body = {
@@ -182,19 +190,47 @@ def _s2_search(bbox_ll: tuple[float, float, float, float], months: float, cloud_
     return r.json().get("features", [])
 
 
-def _s2_pick(items: list[dict], bbox_ll: tuple[float, float, float, float]) -> dict | None:
-    """From cloud-sorted items, the least-cloudy scene that (1) is well-lit (sun elevation ok, when known) and
-    (2) fully contains the query bbox, backing off each preference if none qualifies. v1 = single scene."""
-    def lit(it):
-        return it["properties"].get("view:sun_elevation", 90.0) >= S2_MIN_SUN_ELEV
+def _tile_of(item: dict) -> str:
+    """MGRS tile id, from grid:code when present, else the second token of the scene id (S2A_22WFB_..._L2A)."""
+    code = (item.get("properties") or {}).get("grid:code")
+    if code:
+        return str(code)
+    parts = str(item.get("id", "")).split("_")
+    return parts[1] if len(parts) > 1 else str(item.get("id", ""))
+
+
+def _s2_candidates(items: list[dict], bbox_ll: tuple[float, float, float, float]) -> list[dict]:
+    """Scenes to draw from, best first — ordered for SPATIAL coverage, then quality.
+
+    Returns a LIST, because one Sentinel-2 granule is 110 km and any area bigger than that — or merely straddling a
+    tile boundary — cannot be covered by a single scene. The previous single-pick preferred a fully-covering scene
+    but fell back to `pool[0]` when none existed, and _sample_utm returns NaN outside a scene while _stretch_rgb
+    turns NaN black: an area too big for one tile silently rendered as terrain-coloured nothing.
+
+    Ordering is one best scene per MGRS TILE first, then second-best per tile, and so on. Sorting purely by cloud
+    (what the search returns) buries the tiles a large area needs under twenty dates of whichever tile was clearest,
+    so the mosaic would run out of candidates before it ran out of gaps.
+    """
+    lit = [it for it in items if it["properties"].get("view:sun_elevation", 90.0) >= S2_MIN_SUN_ELEV]
+    pool = lit or items
 
     def covers(it):
         b = it.get("bbox")
         return bool(b) and b[0] <= bbox_ll[0] and b[1] <= bbox_ll[1] and b[2] >= bbox_ll[2] and b[3] >= bbox_ll[3]
 
-    pool = [it for it in items if lit(it)] or items
-    chosen = [it for it in pool if covers(it)] or pool
-    return chosen[0] if chosen else None       # items are already sorted by cloud cover ascending
+    by_tile: dict[str, list] = {}
+    for it in pool:                       # `pool` is already cloud-ascending, so each tile's list is too
+        by_tile.setdefault(_tile_of(it), []).append(it)
+    rounds: list[dict] = []
+    for i in range(max((len(v) for v in by_tile.values()), default=0)):
+        rounds += [v[i] for v in by_tile.values() if i < len(v)]
+    full = [it for it in rounds if covers(it)]
+    return full + [it for it in rounds if it not in full]
+
+
+def _intersects(it, bbox_ll) -> bool:
+    b = it.get("bbox")
+    return bool(b) and not (b[2] < bbox_ll[0] or b[0] > bbox_ll[2] or b[3] < bbox_ll[1] or b[1] > bbox_ll[3])
 
 
 def _href_for_read(href: str) -> str:
@@ -294,29 +330,72 @@ def _build_s2(frame: dict, extent: tuple[float, float, float, float], width_px: 
     bbox_ll = (float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max()))
 
     items = _s2_search(bbox_ll, S2_MONTHS, S2_CLOUD_MAX)
-    item = _s2_pick(items, bbox_ll)
-    if item is None:
+    cands = _s2_candidates(items, bbox_ll)
+    if not cands:
         raise RuntimeError(f"no Sentinel-2 L2A scene < {S2_CLOUD_MAX:.0f}% cloud with sun > {S2_MIN_SUN_ELEV:.0f}° "
                            f"over {bbox_ll} in the last {S2_MONTHS:.0f} months")
-    epsg = int(item["properties"]["proj:epsg"])
-    cloud = item["properties"].get("eo:cloud_cover")
-    dt = (item["properties"].get("datetime") or "")[:10]
 
-    # Reproject the output grid from the scene frame into the chosen scene's UTM CRS, then sample each RGB band there.
-    ux, uy = Transformer.from_crs(frame["crs"], f"EPSG:{epsg}", always_xy=True).transform(gxr, gyr)
-    ux, uy = np.asarray(ux), np.asarray(uy)
-    urls = [_href_for_read(item["assets"][k]["href"]) for k in S2_BANDS]
-    with ThreadPoolExecutor(3) as ex:
-        bands = list(ex.map(lambda u: _sample_utm(u, ux, uy), urls))
+    # MOSAIC: take the best scene first, then let each subsequent one fill only the pixels still missing. One granule
+    # is 110 km, so a scene any larger than that can never be covered by a single item; sampling one and stopping is
+    # what rendered most of a large area black.
+    bands = [np.full(gxr.shape, np.nan) for _ in S2_BANDS]
+    filled = np.zeros(gxr.shape, dtype=bool)
+    used = []
+    for item in cands[:S2_MAX_SCENES]:
+        need = ~filled
+        if not need.any():
+            break
+        # Aim each read at the REMAINING GAP, not the whole box. Ordered by tile, many candidates only clip a corner
+        # that is already filled: in one run they burned the budget three and seventy-one pixels at a time while 4%
+        # of the area stayed empty. Three COG reads per candidate makes a wasted candidate expensive.
+        gap_ll = (float(lon[need].min()), float(lat[need].min()), float(lon[need].max()), float(lat[need].max()))
+        if not _intersects(item, gap_ll):
+            continue
+        epsg = int(item["properties"]["proj:epsg"])
+        # Reproject ONLY the still-missing pixels into this scene's UTM CRS — each scene may sit in a different zone.
+        ux, uy = Transformer.from_crs(frame["crs"], f"EPSG:{epsg}", always_xy=True).transform(gxr[need], gyr[need])
+        urls = [_href_for_read(item["assets"][k]["href"]) for k in S2_BANDS]
+        try:
+            with ThreadPoolExecutor(3) as ex:
+                got = list(ex.map(lambda u: _sample_utm(u, np.asarray(ux), np.asarray(uy)), urls))
+        except Exception as e:                       # one unreadable scene must not sink the mosaic
+            log.warning("imagery(s2): %s unreadable (%s); skipping", item["id"], e)
+            continue
+        hit = np.isfinite(got[0]) & np.isfinite(got[1]) & np.isfinite(got[2])
+        if not hit.any():
+            continue
+        idx = np.flatnonzero(need)[hit]
+        for k in range(3):
+            bands[k][idx] = got[k][hit]
+        filled[idx] = True
+        used.append(item)
+        log.info("imagery(s2): %s filled %d px, %.1f%% covered", item["id"], int(hit.sum()), 100 * filled.mean())
+
+    frac = float(filled.mean())
+    if frac < S2_MIN_COVERAGE:
+        # Raising hands build() its EOX fallback (a global cloudless mosaic). Returning a mostly-black image instead
+        # is the bug this replaced: the gap rendered as dark ground, indistinguishable from real terrain.
+        raise RuntimeError(f"Sentinel-2 covered only {100 * frac:.0f}% of the area from {len(used)} scene(s) "
+                           f"({len(cands)} candidates); need {100 * S2_MIN_COVERAGE:.0f}%")
+
     rgb = _stretch_rgb(*bands).reshape(h, w, 3)
     Image.fromarray(rgb).save(out, quality=88)
 
-    src_desc = f"Sentinel-2 L2A {item['id']}" + (f" ({dt}, {cloud:.0f}% cloud)" if cloud is not None else f" ({dt})")
-    meta = {**base, "source": src_desc, "attribution": f"{S2_ATTR}; scene {item['id']} {dt}"}
+    ids = [it["id"] for it in used]
+    dts = sorted({(it["properties"].get("datetime") or "")[:10] for it in used})
+    clouds = [it["properties"].get("eo:cloud_cover") for it in used if it["properties"].get("eo:cloud_cover") is not None]
+    span = dts[0] if len(dts) == 1 else f"{dts[0]}..{dts[-1]}"
+    src_desc = (f"Sentinel-2 L2A {ids[0]} ({span}"
+                + (f", {min(clouds):.0f}-{max(clouds):.0f}% cloud" if clouds else "") + ")") if len(ids) == 1 else \
+               (f"Sentinel-2 L2A mosaic of {len(ids)} scenes ({span}"
+                + (f", {min(clouds):.0f}-{max(clouds):.0f}% cloud" if clouds else "") + ")")
+    meta = {**base, "source": src_desc, "scenes": ids, "coverage": round(frac, 4),
+            "attribution": f"{S2_ATTR}; scene{'s' if len(ids) > 1 else ''} {', '.join(ids)} {span}"}
     try:
-        side.write_text(json.dumps({"source": meta["source"], "attribution": meta["attribution"]}))
+        side.write_text(json.dumps({"source": meta["source"], "attribution": meta["attribution"],
+                                    "scenes": meta["scenes"], "coverage": meta["coverage"]}))
     except Exception:
         pass
-    log.info("imagery(s2): %s cloud=%.1f%% epsg=%d -> %dx%d (%.1f m/px) %s",
-             item["id"], cloud if cloud is not None else -1.0, epsg, w, h, m_per_px, out.name)
+    log.info("imagery(s2): %d scene(s), %.1f%% covered -> %dx%d (%.1f m/px) %s",
+             len(ids), 100 * frac, w, h, m_per_px, out.name)
     return meta
