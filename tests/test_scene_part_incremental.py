@@ -62,14 +62,24 @@ def test_slopes_part_roundtrips_and_pairs_with_positions(tmp_path, monkeypatch):
 
 def test_chunks_are_stable_prefixes_so_appending_is_valid(tmp_path, monkeypatch):
     """The client keeps chunks [0..k) and fetches from chunk k onward as the array grows. That is only correct if
-    chunk i holds the same fixed-size slice regardless of total length — i.e. chunking is a stable prefix split."""
+    chunk i holds the same fixed-size slice regardless of total length — i.e. chunking is a stable prefix split.
+
+    The size comes from the SERVER's reported chunk_values, not a constant here: the HTTP route serves ~1 MB chunks
+    and an MCP host small ones, and the client learns it from the reply rather than assuming.
+    """
     _mk_scene(tmp_path, monkeypatch, n=50_000)
-    d0 = api.scene_part("s1", "positions:ICESSN", chunk=0)
-    CHUNK_FLOATS = 96_000 // 4                       # server chunk_bytes / sizeof(float32); the client assumes this
+    d0 = api.scene_part("s1", "positions:ICESSN", chunk=0, chunk_bytes=api.MCP_CHUNK_BYTES)
+    cv = d0["chunk_values"]
+    assert cv == api.MCP_CHUNK_BYTES // 4, d0
     first = np.frombuffer(base64.b64decode(d0["b64"]), dtype="f4")
-    assert first.size == CHUNK_FLOATS                # a full first chunk (array is larger than one chunk)
+    assert first.size == cv                          # a full first chunk (array is larger than one chunk)
     full = _all_values("s1", "positions:ICESSN")
-    assert np.array_equal(first, full[:CHUNK_FLOATS])   # chunk 0 is exactly the first CHUNK_FLOATS values
-    d1 = api.scene_part("s1", "positions:ICESSN", chunk=1)
+    assert np.array_equal(first, full[:cv])          # chunk 0 is exactly the first chunk_values values
+    d1 = api.scene_part("s1", "positions:ICESSN", chunk=1, chunk_bytes=api.MCP_CHUNK_BYTES)
     second = np.frombuffer(base64.b64decode(d1["b64"]), dtype="f4")
-    assert np.array_equal(second, full[CHUNK_FLOATS:CHUNK_FLOATS + second.size])
+    assert np.array_equal(second, full[cv:cv + second.size])
+
+
+def test_http_chunks_are_far_larger_than_mcp_chunks():
+    """Rendering a scene issued 38 sequential requests because the browser used the MCP-sized chunks."""
+    assert api.HTTP_CHUNK_BYTES >= 10 * api.MCP_CHUNK_BYTES

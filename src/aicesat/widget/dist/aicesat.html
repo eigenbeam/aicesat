@@ -9576,7 +9576,10 @@ window.AICESAT = window.AICESAT || {};
 
   // Fetch float32 values [fromValue, ...) of a chunked part. chunk_bytes is fixed server-side (96000 = 24000 floats),
   // so we can start at the chunk containing fromValue and trim the remainder — only NEW data crosses the wire.
-  const CHUNK_FLOATS = 24000;
+  // Floats per chunk, LEARNED from the server: the HTTP route serves ~1 MB chunks while an MCP host needs small
+  // ones, so hard-coding it here made the two disagree the moment either changed. Only used to resume a partial
+  // fetch; `n_chunks` from the reply still drives the loop.
+  let CHUNK_FLOATS = 24000;
   // `getChunk` MUST accept (part, chunkIndex). Passing a one-argument function here silently drops the index, so every
   // request returns chunk 0 and the caller concatenates n_chunks copies of it — which corrupted the surface grid into
   // a rolling-offset repeat and duplicated the point clouds.
@@ -9586,6 +9589,10 @@ window.AICESAT = window.AICESAT || {};
     for (let c = startChunk; c < n; c++) {
       const d = await getChunk(part, c);
       if (d.chunk != null && d.chunk !== c) throw new Error(`scene_part ${part}: asked for chunk ${c}, got ${d.chunk}`);
+      if (d.chunk_values && d.chunk_values !== CHUNK_FLOATS) {   // server chunk size differs from our assumption
+        CHUNK_FLOATS = d.chunk_values;
+        if (fromValue > 0 && c === startChunk) return fetchValuesFrom(getChunk, part, fromValue);   // redo the maths
+      }
       n = d.n_chunks;
       if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
       parts.push(b64ToF32(d.b64));
