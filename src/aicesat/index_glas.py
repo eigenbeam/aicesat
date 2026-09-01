@@ -178,15 +178,12 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
                 rows[f"{key}_filters"].append(fl); rows[f"{key}_dtype"].append(dt)
                 rows[f"{key}_mask"].append(int(ci.filter_mask)); rows[f"{key}_fill"].append(float(fills[key]))
 
-    if not rows["granule"]:   # nothing in the requested cells: a typed EMPTY parquet so the granule counts as done
-        d = _index_dir(res)
-        empty = index_mod.typed_table(rows)   # typed, so it matches a full granule's schema with no sibling to copy
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / f".{name}.parquet.tmp"
-        pq.write_table(empty, tmp)
-        tmp.replace(d / f"{name}.parquet")
-        log.info("indexed GLAS %s: 0 rows (nothing in the requested cells) -> empty parquet", name)
-        return empty
+    # No special case for "nothing in the requested cells": an empty granule falls through the normal path and writes
+    # a TYPED empty parquet (typed_table matches a full granule's schema) so it counts as done. It had its own
+    # early-return branch once, which skipped replace_schema_metadata -- leaving every empty granule unstamped, hence
+    # permanently "an old schema". indexed_glas_granules then deleted and re-indexed all of them on every run AND
+    # invalidated the claim, so a region containing even one empty granule could never stay claimed. See ICESSN,
+    # which never had the branch.
     tbl = index_mod.typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})

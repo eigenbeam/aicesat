@@ -417,3 +417,75 @@ def test_builders_claim_coverage_only_after_the_ground_is_indexed():
     src = _pl.Path("scripts/build_index.py").read_text()
     assert src.index("write_build_manifest") > src.index("ensure_index"), "ATL03 claims before it builds"
     assert "NOT claiming coverage" in src
+
+
+class _FakeGlasGranule(dict):
+    """Minimal stand-in for an earthaccess granule: build_glas_index only needs the links and the revision."""
+    def __init__(self, name):
+        super().__init__()
+        self["meta"] = {"native-id": name, "revision-id": 1}
+        self._url = f"https://example.invalid/{name}"
+
+    def data_links(self, access=None):
+        return [] if access == "direct" else [self._url]
+
+
+def _synthetic_glah06(path, lat0=80.0, lon0=-40.0, n=400):
+    """A GLAH06 granule with the real dataset paths, gzip-chunked like the NSIDC product."""
+    import h5py
+    import numpy as np
+    with h5py.File(path, "w") as f:
+        vals = {
+            "lat": np.linspace(lat0, lat0 + 0.5, n).astype("f8"),
+            "lon": np.linspace(lon0, lon0 + 0.5, n).astype("f8") % 360.0,
+            "elev": np.full(n, 2000.0, "f8"),
+            "sat_corr": np.zeros(n, "f8"),
+            "delta_ellip": np.zeros(n, "f8"),
+            "time": np.linspace(2.5e8, 2.5e8 + n, n).astype("f8"),
+            "elev_use": np.zeros(n, "i1"),
+            "sat_flag": np.zeros(n, "i1"),
+        }
+        from aicesat.index_glas import GLAS_DATASETS
+        for key, dpath in GLAS_DATASETS:
+            f.create_dataset(dpath, data=vals[key], chunks=(100,), compression="gzip")
+    return path
+
+
+def test_glas_empty_granule_is_stamped_so_resume_converges(tmp_path, monkeypatch):
+    """A granule with nothing in the requested cells must still be recognised on the next run.
+
+    It writes a typed EMPTY parquet so it counts as done. That file used to be written by a separate early-return
+    branch that skipped replace_schema_metadata, leaving it unstamped and therefore permanently "an old schema":
+    indexed_glas_granules deleted and re-indexed every empty granule on EVERY run, and — because that marks the scan
+    stale — invalidated the coverage claim each time. A region containing even one empty granule could never stay
+    claimed, so the build never converged.
+    """
+    import numpy as np
+    from aicesat import access, auth, index_glas
+
+    h5 = _synthetic_glah06(tmp_path / "GLAH06_634_2131_002_0045_1_01_0001.H5")
+    monkeypatch.setattr(auth, "login", lambda *a, **k: None)
+    monkeypatch.setattr(access, "cloud_hdf5_file", lambda url, s3: str(h5))
+    monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "idx")
+    d = index_glas._index_dir(index_glas.GLAS_RES)
+
+    g = _FakeGlasGranule("GLAH06_634_2131_002_0045_1_01_0001.H5")
+    # Antarctic cells: the synthetic track is Arctic, so NOTHING it holds falls in the requested cells.
+    far = index_glas.h3.latlng_to_cell(-75.0, 0.0, index_glas.GLAS_RES)
+    tbl = index_glas.build_glas_index(g, cells=[far])
+    assert tbl.num_rows == 0, "the track is nowhere near the requested cells"
+
+    written = list(d.glob("*.parquet"))
+    assert len(written) == 1, "an empty result still writes a file, or the granule is retried forever"
+
+    # The invariant: the builder's own resume scan recognises the file the builder just wrote.
+    index.write_build_manifest(d, (-1.0, -76.0, 1.0, -74.0), index_glas.GLAS_RES, cells=[far])
+    claim_before = index.manifest_cells(d)
+    assert index_glas.indexed_glas_granules() == {written[0].stem}, "empty granule read back as stale -> rebuilt forever"
+    assert written[0].exists(), "the resume scan deleted a file it should have accepted"
+    assert index.manifest_cells(d) == claim_before, "the claim was invalidated by a granule that was correctly indexed"
+
+    # And it is a real, typed, empty table -- the schema must still match a populated granule's.
+    import pyarrow.parquet as pq
+    assert pq.ParquetFile(written[0]).metadata.num_rows == 0
+    assert np.array_equal(sorted(pq.read_schema(written[0]).names), sorted(tbl.schema.names))
