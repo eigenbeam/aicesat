@@ -41,7 +41,7 @@ def _index_dir(res: int):
 
 def indexed_atl06_granules(res: int = ATL06_RES) -> set[str]:
     """Granule names (stems, with .h5) already indexed at this res with the current schema — for resumable builds."""
-    out = set()
+    out, stale = set(), False
     d = _index_dir(res)
     for p in (d.glob("*.parquet") if d.exists() else []):
         meta = pq.read_schema(p).metadata or {}
@@ -52,6 +52,9 @@ def indexed_atl06_granules(res: int = ATL06_RES) -> set[str]:
             # keeps serving its old-semantics rows until something overwrites it.
             log.warning("index %s has an old schema; rebuilding", p.name)
             p.unlink()
+            stale = True
+    if stale:
+        index_mod.invalidate_claim(d, "granule files were rebuilt for a new schema version")
     return out
 _NAME_RE = re.compile(r"ATL06_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5")
 

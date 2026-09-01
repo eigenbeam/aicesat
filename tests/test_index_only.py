@@ -357,3 +357,26 @@ def test_a_region_too_big_for_a_cmr_polygon_falls_back_to_the_bbox():
 
     greenland = planner.coverage_cells((-74.0, 59.5, -11.0, 84.0))
     assert planner.search_polygon(greenland) == [], "an oversized region must hand back no polygon"
+
+
+def test_a_schema_bump_drops_the_coverage_claim(tmp_path, monkeypatch):
+    """Bumping the index version deletes every stale granule file. The claim in _build.json must go with them:
+    otherwise coverage keeps reporting that ground as indexed with no rows behind it, and a scene there builds
+    'successfully' from nothing."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    d = tmp_path / "atl03"
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", d)
+    d.mkdir(parents=True)
+    bbox = (-50.05, 69.10, -49.80, 69.20)
+    index.write_build_manifest(d, bbox, index.H3_RES, cells=planner.coverage_cells(bbox))
+    assert coverage.index_covers_area(d, bbox)
+
+    # a granule file written under an OLD schema version
+    tbl = pa.table({"granule": pa.array(["g.h5"])}).replace_schema_metadata({"aicesat_index_version": "0"})
+    pq.write_table(tbl, d / "g.h5.parquet")
+
+    assert index.indexed_granules() == set(), "a stale file must not count as indexed"
+    assert not (d / "g.h5.parquet").exists(), "and must be deleted, not left to serve old rows"
+    assert not coverage.index_covers_area(d, bbox), "the claim must go with the rows that backed it"

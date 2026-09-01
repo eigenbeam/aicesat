@@ -222,7 +222,7 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
 
 def indexed_granules() -> set[str]:
     """Granules with a current-schema index file; stale-schema files are deleted so they are rebuilt."""
-    out = set()
+    out, stale = set(), False
     for p in (ATL03_INDEX_DIR.glob("*.parquet") if ATL03_INDEX_DIR.exists() else []):
         meta = pq.read_schema(p).metadata or {}
         if meta.get(b"aicesat_index_version", b"").decode() == INDEX_SCHEMA_VERSION:
@@ -230,6 +230,9 @@ def indexed_granules() -> set[str]:
         else:
             log.warning("index %s has an old schema; rebuilding", p.name)
             p.unlink()
+            stale = True
+    if stale:
+        invalidate_claim(ATL03_INDEX_DIR, "granule files were rebuilt for a new schema version")
     return out
 
 
@@ -328,6 +331,30 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
            "requested": (list(prev.get("requested") or []) + [list(bbox)]) if bbox is not None else prev.get("requested")}
     mf.write_text(json.dumps(doc))
     return doc
+
+
+def invalidate_claim(d, reason: str) -> None:
+    """Drop an index's coverage claim because the rows backing it are gone.
+
+    A schema bump deletes every stale granule file, but the claim in _build.json survives — so coverage would keep
+    reporting that ground as indexed with nothing behind it, and a scene there would build "successfully" from no
+    data. The claim is only meaningful alongside the rows it was stamped with, so losing them invalidates it. The
+    next build re-stamps exactly what it rebuilt."""
+    import json
+
+    mf = pathlib.Path(d) / "_build.json"
+    if not mf.exists():
+        return
+    try:
+        doc = json.loads(mf.read_text())
+    except Exception:
+        return
+    if not doc.get("cells"):
+        return
+    log.warning("%s: dropping the coverage claim (%d cells) — %s; rebuild to restore it", mf.parent.name,
+                len(doc["cells"]), reason)
+    doc["cells"] = []
+    mf.write_text(json.dumps(doc))
 
 
 def manifest_cells(d) -> set:

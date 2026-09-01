@@ -35,7 +35,7 @@ def _index_dir(res: int):
 
 
 def indexed_icessn_granules(res: int = ICESSN_RES) -> set[str]:
-    out = set()
+    out, stale = set(), False
     d = _index_dir(res)
     for p in (d.glob("*.parquet") if d.exists() else []):
         meta = pq.read_schema(p).metadata or {}
@@ -46,6 +46,9 @@ def indexed_icessn_granules(res: int = ICESSN_RES) -> set[str]:
             # keeps serving its old-semantics rows until something overwrites it.
             log.warning("index %s has an old schema; rebuilding", p.name)
             p.unlink()
+            stale = True
+    if stale:
+        index_mod.invalidate_claim(d, "granule files were rebuilt for a new schema version")
     return out
 
 
