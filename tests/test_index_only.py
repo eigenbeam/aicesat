@@ -73,56 +73,77 @@ def test_extract_takes_no_granule_cap(mod):
     assert "max_granules" not in inspect.signature(mod.extract).parameters
 
 
-# --- the manifest that makes "indexed" checkable ---------------------------------------------------------------------
-def test_build_manifest_unions_cells_and_never_drops_them(tmp_path, monkeypatch):
-    """Indexing a second region adds cells; it must never retract the first region's."""
+# --- the manifest: a compacted claim at the FINE resolution --------------------------------------------------------
+def _claim(d, bbox, polygon=None):
+    """Stamp the manifest for exactly the ground a build over this selection would have searched."""
+    return index.write_build_manifest(d, bbox, 5, cells=planner.coverage_cells(bbox, polygon))
+
+
+def test_claim_is_stored_compacted_and_unions_across_builds(tmp_path, monkeypatch):
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
     d = index.ATL03_INDEX_DIR
-    a = (-46.0, 71.0, -45.0, 72.0)
-    b = (-42.0, 66.0, -41.0, 67.0)                       # disjoint from a
-    ca = set(planner.cells_for_bbox(a, res=index.H3_RES))
-    cb = set(planner.cells_for_bbox(b, res=index.H3_RES))
-    index.write_build_manifest(d, a, index.H3_RES, None, 3, cells=ca)
-    assert coverage.index_covers_area(d, a, index.H3_RES)
+    a = (-46.0, 71.0, -45.9, 71.1)
+    b = (-42.0, 66.0, -41.9, 66.1)                       # disjoint from a
+    fine_a = planner.coverage_cells(a)
+    doc = _claim(d, a)
+    assert len(doc["cells"]) < len(fine_a), "a solid region must compact"
+    assert coverage.index_covers_area(d, a)
 
-    out = index.write_build_manifest(d, b, index.H3_RES, None, 4, cells=cb)
-    assert set(out["cells"]) == ca | cb
+    _claim(d, b)
     for box in (a, b):
-        assert coverage.index_covers_area(d, box, index.H3_RES), f"{box} lost coverage after a second build"
+        assert coverage.index_covers_area(d, box), f"{box} lost coverage after a second build"
 
 
-def test_coverage_is_exact_set_membership_not_a_bounding_box(tmp_path, monkeypatch):
-    """The gap between two disjoint builds must not be claimed — the union of their boxes would have claimed it."""
+def test_the_gap_between_two_disjoint_builds_is_not_claimed(tmp_path, monkeypatch):
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx2")
     d = index.ATL03_INDEX_DIR
-    a = (-46.0, 71.0, -45.0, 72.0)
-    b = (-42.0, 66.0, -41.0, 67.0)
-    index.write_build_manifest(d, a, index.H3_RES, cells=planner.cells_for_bbox(a, res=index.H3_RES))
-    index.write_build_manifest(d, b, index.H3_RES, cells=planner.cells_for_bbox(b, res=index.H3_RES))
-    between = (-44.5, 68.5, -43.5, 69.5)
-    assert not coverage.index_covers_area(d, between, index.H3_RES), \
-        "an area between two disjoint builds touches cells nobody indexed"
+    _claim(d, (-46.0, 71.0, -45.9, 71.1))
+    _claim(d, (-42.0, 66.0, -41.9, 66.1))
+    assert not coverage.index_covers_area(d, (-44.5, 68.5, -44.4, 68.6))
 
 
-def test_an_area_poking_past_the_built_box_is_refused_cell_by_cell(tmp_path, monkeypatch):
-    """The point of cells: coverage no longer depends on the SHAPE that was built, only on which cells exist."""
+def test_claim_matches_the_selection_not_the_addressing_cell(tmp_path, monkeypatch):
+    """The point of claiming fine: a coarse addressing cell juts far past the drawn shape, and nothing searched there.
+
+    A selection is buildable, but a box nudged just outside it — still inside the SAME res-5 addressing cell — is not.
+    """
+    import h3
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx3")
     d = index.ATL03_INDEX_DIR
-    built = (-46.0, 71.0, -45.0, 72.0)
-    index.write_build_manifest(d, built, index.H3_RES, cells=planner.cells_for_bbox(built, res=index.H3_RES))
-    inner = (-45.6, 71.3, -45.4, 71.6)
-    assert coverage.index_covers_area(d, inner, index.H3_RES)
-    assert not coverage.index_covers_area(d, (-47.0, 71.0, -45.0, 72.0), index.H3_RES)
+    built = (-46.00, 71.00, -45.98, 71.01)
+    _claim(d, built)
+    assert coverage.index_covers_area(d, built)
+
+    # somewhere in the same res-5 cell as the built area, but outside the built ground itself
+    parent = h3.cell_to_parent(h3.latlng_to_cell(71.005, -45.99, index.COVERAGE_RES), 5)
+    far = [c for c in h3.cell_to_children(parent, index.COVERAGE_RES)
+           if not index.covers_cells(d, [c])]
+    assert far, "fixture needs an uncovered child of the same addressing cell"
+    la, lo = h3.cell_to_latlng(far[0])
+    assert not coverage.index_covers_area(d, (lo - 1e-4, la - 1e-4, lo + 1e-4, la + 1e-4)), \
+        "ground inside the addressing cell but outside the build must NOT be claimed"
 
 
-def test_planner_refuses_when_only_some_cells_are_built(tmp_path, monkeypatch):
+def test_planner_refuses_when_the_claim_does_not_cover_the_area(tmp_path, monkeypatch):
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx4")
-    d = index.ATL03_INDEX_DIR
-    bbox = (-45.5, 71.8, -44.5, 72.2)
-    cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
-    index.write_build_manifest(d, bbox, index.H3_RES, cells=list(cells)[:-1])   # one cell short
-    with pytest.raises(RuntimeError, match="not indexed over 1 of"):
+    bbox = (-45.5, 71.8, -45.4, 71.9)
+    _claim(index.ATL03_INDEX_DIR, (-46.5, 70.8, -46.4, 70.9))     # a claim somewhere else entirely
+    with pytest.raises(RuntimeError, match="not indexed over all"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)
+
+
+def test_polygon_selection_is_claimed_by_its_own_ground_not_its_bounding_box(tmp_path, monkeypatch):
+    """A drawn shape covers far less ground than its bounding box; building it must not require the box."""
+    from aicesat import index_glas
+    monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "glas")
+    d = index_glas._index_dir(index_glas.GLAS_RES)
+    poly = [[-50.40, 69.05], [-50.38, 69.05], [-49.90, 69.35], [-49.92, 69.35]]
+    bbox = (min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly))
+    assert len(planner.coverage_cells(bbox, poly)) < len(planner.coverage_cells(bbox)), "shape must be thinner than its box"
+
+    index.write_build_manifest(d, bbox, index_glas.GLAS_RES, cells=planner.coverage_cells(bbox, poly))
+    assert glas._index_covers(bbox, poly) is True, "the drawn shape's own ground is built -> accept it"
+    assert glas._index_covers(bbox) is False, "the full bounding box was never built -> refuse it"
 
 
 # --- one flaky granule must not discard the rest of the build --------------------------------------------------------
@@ -229,20 +250,37 @@ def test_typed_table_empty_schema_matches_full(rows):
     assert full.schema == empty.schema, f"schema drift:\n full={full.schema}\nempty={empty.schema}"
 
 
-def test_polygon_selection_is_tested_by_its_own_cells_not_its_bounding_box(tmp_path, monkeypatch):
-    """A drawn shape touches fewer cells than its bounding box. Testing the box refused areas that are fully built."""
-    from aicesat import index_glas
 
-    d = tmp_path / "glas" / "res5"
-    monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "glas")
-    res = index_glas.GLAS_RES
-    # a thin diagonal sliver: its bbox spans a wide square, the shape itself only a corridor
-    poly = [[-50.4, 69.05], [-50.35, 69.05], [-49.6, 69.55], [-49.65, 69.55]]
-    bbox = (min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly))
-    poly_cells = set(planner.cells_for_bbox(bbox, res=res, polygon=poly))
-    box_cells = set(planner.cells_for_bbox(bbox, res=res))
-    assert poly_cells < box_cells, "fixture must have a shape narrower than its bounding box"
 
-    index.write_build_manifest(d, bbox, res, cells=poly_cells)      # only the shape's own cells are built
-    assert glas._index_covers(bbox, poly) is True, "the drawn shape's cells are all built -> it must be accepted"
-    assert glas._index_covers(bbox) is False, "without the polygon it falls back to the box and is refused"
+# --- the claim must stay bounded, and mixed resolutions must still answer correctly ----------------------------------
+def test_claim_resolution_backs_off_with_area():
+    """Fixed at res 9 a 10x5 deg selection is ~2M cells and 2.2 s to polyfill — paid per collection per area edit."""
+    small = planner.claim_res((-50.05, 69.10, -49.80, 69.20))
+    wide = planner.claim_res((-51.5, 68.7, -48.5, 69.8))
+    huge = planner.claim_res((-55.0, 66.0, -45.0, 71.0))
+    assert small > wide > huge, (small, wide, huge)
+    for bbox in ((-50.05, 69.10, -49.80, 69.20), (-51.5, 68.7, -48.5, 69.8), (-55.0, 66.0, -45.0, 71.0)):
+        assert len(planner.coverage_cells(bbox)) <= planner.CLAIM_MAX_CELLS
+
+
+def test_a_coarse_claim_still_covers_a_fine_query(tmp_path, monkeypatch):
+    """Builds at different scales land different resolutions in one manifest; membership matches by ancestry."""
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx")
+    d = index.ATL03_INDEX_DIR
+    big = (-52.0, 68.0, -48.0, 70.0)
+    index.write_build_manifest(d, big, 5, cells=planner.coverage_cells(big),
+                               coverage_res=planner.claim_res(big))
+    inner = (-50.05, 69.10, -49.80, 69.20)          # a small area inside it, which claims at a FINER resolution
+    assert planner.claim_res(inner) > planner.claim_res(big)
+    assert coverage.index_covers_area(d, inner), "a coarse claim must still cover ground inside it"
+
+
+def test_area_outside_the_claim_bounds_is_rejected_without_a_polyfill(tmp_path, monkeypatch):
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx2")
+    d = index.ATL03_INDEX_DIR
+    built = (-50.05, 69.10, -49.80, 69.20)
+    index.write_build_manifest(d, built, 5, cells=planner.coverage_cells(built))
+    assert coverage.index_covers_area(d, built)
+    assert not coverage.index_covers_area(d, (10.0, 10.0, 10.1, 10.1))
+    # and an area that OVERLAPS the claim but extends past it is still refused
+    assert not coverage.index_covers_area(d, (-50.30, 69.10, -49.80, 69.20))

@@ -55,8 +55,12 @@ def dedup_granules(granules: list) -> list:
 CMR_CACHE_TTL_S = 24 * 3600  # granule lists for a (product, bbox, window) change only when NSIDC reprocesses
 
 
-def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
-    """CMR granule search, cached on disk for CMR_CACHE_TTL_S: the search is ~1 s per call and every warm query paid it."""
+def search(short_name: str, version: str, bbox, window, use_cache: bool = True, polygon=None):
+    """CMR granule search, cached on disk for CMR_CACHE_TTL_S: the search is ~1 s per call and every warm query paid it.
+
+    `polygon` (a closed CCW [(lon, lat), ...] ring, from planner.search_polygon) searches that shape instead of the
+    rectangle. An index build uses it because the rectangle around a selection's cells can be ~10x the area actually
+    wanted, and every extra granule it returns costs a structure parse — the dominant cost of a build."""
     import pickle
     import time
 
@@ -64,7 +68,8 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
 
     from . import cache
 
-    key = cache.key("cmr", short_name, version, [round(float(v), 6) for v in bbox], list(window) if window else None)
+    key = cache.key("cmr", short_name, version, [round(float(v), 6) for v in bbox], list(window) if window else None,
+                    [[round(float(x), 5), round(float(y), 5)] for x, y in polygon] if polygon else None)
     path = cache.CACHE_DIR / f"cmr_{key}.pkl"
     if use_cache and path.exists() and time.time() - path.stat().st_mtime < CMR_CACHE_TTL_S:
         try:
@@ -74,11 +79,16 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True):
         except Exception:
             pass
     auth.login()
-    kw = dict(short_name=short_name, version=version, bounding_box=tuple(bbox))
+    kw = dict(short_name=short_name, version=version)
+    if polygon:
+        kw["polygon"] = [(float(x), float(y)) for x, y in polygon]
+    else:
+        kw["bounding_box"] = tuple(bbox)
     if window:
         kw["temporal"] = tuple(window)
     granules = dedup_granules(earthaccess.search_data(count=-1, **kw))
-    log.info("%s v%s: %d granules over %s %s", short_name, version, len(granules), bbox, window)
+    log.info("%s v%s: %d granules over %s %s", short_name, version, len(granules),
+             f"a {len(polygon)}-vertex polygon" if polygon else bbox, window)
     try:
         cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path.write_bytes(pickle.dumps(granules))
@@ -268,28 +278,31 @@ def index_files_for_cells(collection: str, cells) -> list[str] | None:
         return None
 
 
-def index_covers_area(d, bbox, res: int | None = None, polygon=None) -> bool:
-    """True if EVERY cell the area touches was built. Exact set membership, not rectangle containment.
+def index_covers_area(d, bbox, polygon=None) -> bool:
+    """True if every cell of the SELECTION's ground was built. Exact set membership at the claim resolution.
 
-    Containment was both too strict and unsound: it refused areas whose cells are all present merely because the
-    drawn rectangle poked outside the built one, while accepting nothing about the cells at the built rectangle's
-    own edge, which held only part of their data. With cells as the unit, "covered" means what it says.
-    """
+    Not the addressing resolution: a res-5 addressing cell juts up to ~10 km past a drawn shape and nothing searched
+    out there, so claiming one whole would assert ground the build never covered."""
+    import json
+
     from . import index as atl03_index
     from . import planner
 
-    built = atl03_index.manifest_cells(d)
-    if not built:
+    mf = d / "_build.json"
+    if not mf.exists():
         return False
-    if res is None:                       # infer from the manifest so callers need not know each collection's res
-        import json
-        try:
-            res = json.loads((d / "_build.json").read_text()).get("res")
-        except Exception:
-            res = None
-        if res is None:
-            return False
-    return set(planner.cells_for_bbox(bbox, res=int(res), polygon=polygon)) <= built
+    try:
+        doc = json.loads(mf.read_text())
+    except Exception:
+        return False
+    b = doc.get("bounds")
+    w, s, e, n = bbox
+    if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
+        return False          # cheap reject: outside the claim's own extent, so no polyfill is needed at all
+    # Test at the resolution the manifest claims at. Finer would be wasted work; COARSER would be wrong, since
+    # covers_cells matches by walking UP and would never reach a finer claim cell.
+    res = doc.get("coverage_res") or atl03_index.COVERAGE_RES
+    return atl03_index.covers_cells(d, planner.coverage_cells(bbox, polygon, res=res))
 
 
 def check_coverage(bbox, **_ignored) -> dict:
@@ -317,7 +330,7 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         d, res, ym = _index_for(c["key"])
-        covered = bool(d is not None and d.exists() and index_covers_area(d, bbox, res))
+        covered = bool(d is not None and d.exists() and index_covers_area(d, bbox))
         if d is None or not d.exists():
             row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)

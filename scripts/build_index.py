@@ -18,14 +18,15 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     bbox = regions.resolve_bbox(a.region, tuple(a.bbox) if a.bbox else None)
     window = tuple(a.window) if a.window else regions.DEFAULT_ATL03_WINDOW
     from aicesat import planner
-    cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
-    hull = planner.cells_bbox(cells)     # search wider than asked: a boundary hex sticks out past the rectangle
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, hull, window)
+    fine = planner.coverage_cells(bbox)                  # the ground this build claims, at the claim resolution
+    ring = planner.search_polygon(fine)                  # densified convex hull of that ground -> the CMR shape
+    cells = planner.addressing_cells(fine, index.H3_RES)  # coarse partition keys the rows are filtered to
+    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window, polygon=ring)
     t0 = time.time()
-    out = index.ensure_index(granules, workers=a.workers, cells=cells)
+    out = index.ensure_index(granules, workers=a.workers, cells=fine)
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
-    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=cells)
-    print(json.dumps({"bbox": list(bbox), "cells_built": len(cov["cells"]), "window": list(window), "granules": len(granules), **out,
+    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=fine)
+    print(json.dumps({"bbox": list(bbox), "claim_cells_compacted": len(cov["cells"]), "search_vertices": len(ring), "window": list(window), "granules": len(granules), **out,
                       "wall_seconds": round(time.time() - t0, 1)}, indent=1))
     if out["failed"]:
         print(f"\n{len(out['failed'])} granule(s) did not index; re-run this command to retry just those.", file=sys.stderr)

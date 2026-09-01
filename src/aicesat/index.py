@@ -275,17 +275,21 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
     return out
 
 
+COVERAGE_RES = 9   # the resolution a build CLAIMS at. Addressing stays coarse (H3_RES / each collection's res):
+# that is about file layout and query pushdown. The claim is a different job — it says which ground a build actually
+# searched — and a coarse claim is a lie at the edges, because a coarse cell juts up to ~10 km past the drawn shape
+# and nothing searched out there. Claiming at res 9 (~200 m edge) makes the assertion match the selection, and cuts
+# the CMR search area ~10x, which is the dominant build cost. Stored COMPACTED (h3.compact_cells), so a solid region
+# collapses to a handful of parents: a 3,930-cell corridor stores as 1,188.
+
+
 def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None,
-                         cells=None) -> dict:
-    """Record WHICH CELLS an index was built over, in `_build.json` beside the granule parquets.
+                         cells=None, coverage_res: int = COVERAGE_RES) -> dict:
+    """Record WHICH GROUND an index was built over, as a compacted H3 cell set at `coverage_res`.
 
-    A cell set, not a rectangle. The rectangle was a claim about where CMR was searched, and it answered the wrong
-    question twice over: cells outside it still held rows (a granule's whole track was indexed), and hexes on its
-    edge held only part of their data. Coverage is now exact set membership — an area is buildable iff every cell it
-    touches was built — so "indexed" means the same thing to the Explore panel, the Lake view and the planner.
-
-    Cell sets from repeated builds are UNIONED: indexing a neighbouring region adds cells, never retracts them.
-    `bbox` is kept only as provenance (what was asked for); nothing reads it for coverage.
+    `cells` are the fine (claim-resolution) cells the build searched and indexed. Sets from repeated builds are
+    UNIONED: indexing a neighbouring region adds ground, never retracts it. `bbox` is provenance only — nothing
+    reads it for coverage.
     """
     import json
 
@@ -296,11 +300,23 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
     if mf.exists():
         try:
             prev = json.loads(mf.read_text())
-            have = {int(c) for c in (prev.get("cells") or [])}
+            have = {h3.int_to_str(int(c)) for c in (prev.get("cells") or [])}
         except Exception:
             log.warning("unreadable %s; replacing", mf)
-    have |= {int(c) for c in (cells or [])}
-    doc = {"cells": sorted(have), "res": res if res is not None else prev.get("res"),
+    # Union WITHOUT uncompacting: a coarse claim would explode into millions of ids, and covers_cells matches by
+    # ancestry, so a set holding mixed resolutions is answered correctly as it stands.
+    new = {h3.int_to_str(int(c)) if not isinstance(c, str) else c for c in (cells or [])}
+    by_res: dict[int, set] = {}
+    for c in have | new:
+        by_res.setdefault(h3.get_resolution(c), set()).add(c)
+    packed = sorted(c for r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
+    bounds = None
+    if packed:
+        bs = [h3.cell_to_boundary(c) for c in packed]
+        las = [la for b in bs for la, _ in b]; los = [lo for b in bs for _, lo in b]
+        bounds = [min(los), min(las), max(los), max(las)]
+    doc = {"cells": sorted(h3.str_to_int(c) for c in packed), "coverage_res": coverage_res, "bounds": bounds,
+           "res": res if res is not None else prev.get("res"),
            "window": list(window) if window else prev.get("window"),
            "target": n_granules if n_granules is not None else prev.get("target"),
            "requested": (list(prev.get("requested") or []) + [list(bbox)]) if bbox is not None else prev.get("requested")}
@@ -309,7 +325,7 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
 
 
 def manifest_cells(d) -> set:
-    """The cells an index was built over, or an empty set when it has no manifest."""
+    """The COMPACTED claim set (as int cell ids), or an empty set when the index has no manifest."""
     import json
 
     mf = pathlib.Path(d) / "_build.json"
@@ -319,6 +335,24 @@ def manifest_cells(d) -> set:
         return {int(c) for c in (json.loads(mf.read_text()).get("cells") or [])}
     except Exception:
         return set()
+
+
+def covers_cells(d, cells) -> bool:
+    """True if every cell in `cells` is inside the claim set — tested by walking UP to each ancestor.
+
+    The set is stored compacted, so a claimed res-9 cell may be represented by a res-6 parent. Uncompacting to
+    compare would materialise millions of ids for a large region; ancestor lookup is a handful of hashes per query
+    cell and never allocates."""
+    packed = manifest_cells(d)
+    if not packed:
+        return False
+    packed_str = {h3.int_to_str(c) for c in packed}
+    for c in cells:
+        s = h3.int_to_str(int(c)) if not isinstance(c, str) else c
+        r = h3.get_resolution(s)
+        if not any(h3.cell_to_parent(s, rr) in packed_str for rr in range(r, -1, -1)):
+            return False
+    return True
 
 
 def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:

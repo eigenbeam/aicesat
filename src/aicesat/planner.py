@@ -6,6 +6,7 @@ every chunk already materialized, so "missing" = set difference. A `force` flag 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -98,7 +99,8 @@ def _process_group(item) -> dict:
 def ensure(bbox, window, force: bool = False, threads: int = 8, polygon=None, group_parallel: int = 4) -> dict:
     """Make the lake sufficient for (bbox|polygon, window): index missing granules, fetch missing chunks, materialize."""
     cells = cells_for_bbox(bbox, polygon=polygon)
-    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
+    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox,
+                   fine_cells=coverage_cells(bbox, polygon))
 
 
 def ensure_cells(cells, window, force: bool = False, threads: int = 8, group_parallel: int = 4) -> dict:
@@ -106,7 +108,8 @@ def ensure_cells(cells, window, force: bool = False, threads: int = 8, group_par
     chunks by that bbox, keep only refs for the requested cells."""
     cells = sorted(int(c) for c in cells)
     bbox = cells_bbox(cells)
-    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox)
+    return _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox=bbox,
+                   fine_cells=coverage_cells(bbox))
 
 
 def _in_window(name: str, window) -> bool:
@@ -123,6 +126,92 @@ def _in_window(name: str, window) -> bool:
     return lo <= start <= hi
 
 
+CLAIM_MAX_CELLS = 60_000   # keep a claim (and the polyfill that tests it) bounded, whatever the area's size
+
+
+def claim_res(bbox, polygon=None) -> int:
+    """The finest claim resolution whose cell count stays under CLAIM_MAX_CELLS for this area.
+
+    Fixed at res 9 a 10x5 deg selection is 1.96M cells and 2.2 s to polyfill — paid per collection on every area
+    edit in the Explore panel. Estimated from the area (cheap and deterministic) rather than by polyfilling and
+    retrying, so the expensive case is never computed at all. A big region degrades to a coarser claim; even res 7
+    (1.4 km) is far finer than the res-5 addressing cell whose 10 km overhang started this."""
+    from . import index as atl03_index
+
+    w, s, e, n = bbox
+    km2 = abs(e - w) * 111.32 * math.cos(math.radians((s + n) / 2)) * abs(n - s) * 110.57
+    for r in range(atl03_index.COVERAGE_RES, 0, -1):
+        if km2 / h3.average_hexagon_area(r, unit="km^2") <= CLAIM_MAX_CELLS:
+            return r
+    return 1
+
+
+def coverage_cells(bbox, polygon=None, res: int | None = None) -> list:
+    """The cells a selection covers — the ground a build CLAIMS, and the shape it searches CMR over."""
+    return cells_for_bbox(bbox, res=res if res is not None else claim_res(bbox, polygon), polygon=polygon)
+
+
+def addressing_cells(fine_cells, res: int) -> list:
+    """The coarse cells that hold a claim's ground — the index/lake partition keys to filter rows by.
+
+    A coarse cell here may be only PARTLY claimed (its far side was never searched). That is fine and it is the
+    point: we index what the search found, and claim only the fine ground we actually covered."""
+    return sorted({h3.str_to_int(h3.cell_to_parent(h3.int_to_str(int(c)), res)) for c in fine_cells})
+
+
+def _convex_hull(points: list) -> list:
+    """Minimum-area convex polygon covering `points`, counter-clockwise (monotone chain)."""
+    pts = sorted(set(points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for q in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], q) <= 0:
+            lower.pop()
+        lower.append(q)
+    upper = []
+    for q in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], q) <= 0:
+            upper.pop()
+        upper.append(q)
+    return lower[:-1] + upper[:-1]
+
+
+MAX_SEARCH_EDGE_DEG = 0.25   # densify to this, so a great-circle edge bows < ~5 m (see search_polygon)
+
+
+def search_polygon(cells, max_edge_deg: float = MAX_SEARCH_EDGE_DEG) -> list:
+    """A closed CCW [(lon, lat), ...] ring to search CMR with: the convex hull of `cells`, densified.
+
+    Convex, so it is always ONE simple ring with no holes even when the cells are disjoint — the exact union outline
+    can be multi-ring, and CMR would need a query per ring. It costs a little over-search (measured: 688 granules vs
+    595 for the exact outline over one corridor) and saves the complexity.
+
+    Densified because CMR's polygon edges are GREAT-CIRCLE arcs, not straight lines in lon/lat. At 69N an arc between
+    two points at equal latitude bows poleward — INTO the polygon on a southern edge — by ~230 m across a 1.7 deg
+    span, which silently excluded 3 of 688 granules when measured. The bow grows with the square of the edge, so
+    capping each segment at 0.25 deg brings it under ~5 m. It cannot be avoided by using finer cells: a convex hull's
+    long sides span the SELECTION, and refining res 4 -> 7 left the longest edge at 1.4-2.2 deg throughout.
+    """
+    verts = [(lo, la) for c in cells for la, lo in h3.cell_to_boundary(h3.int_to_str(int(c)))]
+    hull = _convex_hull(verts)
+    if len(hull) < 3:
+        return []
+    ring = hull + [hull[0]]
+    out = []
+    for i in range(len(ring) - 1):
+        (x1, y1), (x2, y2) = ring[i], ring[i + 1]
+        n = max(1, int(math.ceil(max(abs(x2 - x1), abs(y2 - y1)) / max_edge_deg)))
+        for k in range(n):
+            out.append((round(x1 + (x2 - x1) * k / n, 5), round(y1 + (y2 - y1) * k / n, 5)))
+    out.append(out[0])
+    return out
+
+
 def cells_bbox(cells) -> tuple:
     """Bounding box of a cell set's OUTER boundary — always >= the bbox the cells were derived from.
 
@@ -135,15 +224,14 @@ def cells_bbox(cells) -> tuple:
     return (min(los), min(las), max(los), max(las))
 
 
-def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox) -> dict:
+def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fine_cells=None) -> dict:
     t0 = time.time()
     # The index IS the discovery layer, and it is a precondition: no CMR search and no index build happen here.
     # Discovery is paid once, offline (scripts/build_index.py), and a scene is assembled from the index entries whose
     # H3 cells match the area. An unindexed area is an error, not a slow success via a whole-granule fallback.
-    built = index.manifest_cells(index.ATL03_INDEX_DIR)
-    missing = {int(c) for c in cells} - built
-    if missing:
-        raise RuntimeError(f"ATL03 not indexed over {len(missing)} of the {len(cells)} H3 cells this area touches — "
+    fine = list(fine_cells if fine_cells is not None else coverage_cells(bbox))
+    if not index.covers_cells(index.ATL03_INDEX_DIR, fine):
+        raise RuntimeError(f"ATL03 not indexed over all {len(fine)} res-{index.COVERAGE_RES} cells this area covers — "
                            f"build the chunk index first "
                            f"(uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)})")
     refs = index.chunk_refs(cells, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through

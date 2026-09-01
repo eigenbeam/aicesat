@@ -26,7 +26,7 @@ def _index_covers(bbox, polygon=None) -> bool:
     `polygon` matters: a drawn shape's bounding box touches cells the shape itself never enters, so testing
     the box refused areas whose own cells are all indexed."""
     from . import index_glas
-    return coverage.index_covers_area(index_glas._index_dir(index_glas.GLAS_RES), bbox, index_glas.GLAS_RES, polygon)
+    return coverage.index_covers_area(index_glas._index_dir(index_glas.GLAS_RES), bbox, polygon)
 
 
 def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
