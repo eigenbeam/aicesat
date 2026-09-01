@@ -130,7 +130,7 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         # tells the client whether to fetch a slopes:<mission> part (ICESSN platelets).
         def _series_meta(s):   # drop bulk arrays and internal bookkeeping (keys starting with "_")
             m = {k: v for k, v in s.items() if k not in ("positions", "slopes") and not k.startswith("_")}
-            m["has_slopes"] = "slopes" in s
+            m["has_slopes"] = bool(s.get("has_slopes")) or cache.scene_array_len(scene_id, s.get("mission", ""), "slopes") > 0
             return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
                 "z0": doc["z0"], "labels": doc.get("labels"), "imagery_status": doc.get("imagery_status"),
@@ -139,15 +139,28 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
     if part == "surface":
         return _chunked(np.asarray([np.nan if v is None else v for v in doc["surface"]["z"]], dtype="f4"), chunk, chunk_bytes, "z")
-    if part.startswith("positions:"):
-        m = part.split(":", 1)[1]
-        arr = np.asarray(doc["series"][m]["positions"], dtype="f4").reshape(-1, 3)[:: max(1, int(stride))]
-        return _chunked(arr.ravel(), chunk, chunk_bytes, "xyz")
-    if part.startswith("slopes:"):
-        m = part.split(":", 1)[1]
-        # ICESSN platelet slopes [sn, we, ...] — 2 per point; strided in lock-step with positions so they stay aligned.
-        arr = np.asarray(doc["series"][m].get("slopes", []), dtype="f4").reshape(-1, 2)[:: max(1, int(stride))]
-        return _chunked(arr.ravel(), chunk, chunk_bytes, "sw")
+    if part.startswith("positions:") or part.startswith("slopes:"):
+        kind, m = part.split(":", 1)
+        if m not in doc["series"]:
+            raise KeyError(part)
+        _migrate_series_arrays(scene_id, doc, m)
+        # ICESSN platelet slopes are [sn, we, ...] — 2 per point, strided in lock-step with positions so they stay
+        # aligned. Both come from the binary sidecar: mmap-backed, so serving one chunk touches one chunk's bytes
+        # rather than materialising the whole array from a JSON list (see cache.scene_array_*).
+        per = 3 if kind == "positions" else 2
+        st = max(1, int(stride))
+        if st == 1:                       # the common case: hand back exactly the bytes this chunk covers
+            vals_per_chunk = (chunk_bytes // cache.ARRAY_DTYPE.itemsize) if chunk_bytes else None
+            total = cache.scene_array_len(scene_id, m, kind)
+            if vals_per_chunk:
+                piece = cache.scene_array_read(scene_id, m, kind, chunk * vals_per_chunk, vals_per_chunk)
+                n_chunks = max(1, -(-total // vals_per_chunk))
+                return {"name": "xyz" if per == 3 else "sw", "dtype": "float32", "n_values": int(total),
+                        "chunk": chunk, "n_chunks": n_chunks,
+                        "chunk_values": vals_per_chunk,
+                        "b64": base64.b64encode(np.ascontiguousarray(piece).tobytes()).decode("ascii")}
+        arr = cache.scene_array_read(scene_id, m, kind).reshape(-1, per)[::st]
+        return _chunked(np.ascontiguousarray(arr).ravel(), chunk, chunk_bytes, "xyz" if per == 3 else "sw")
     if part == "coreg":
         c = doc.get("coreg") or {}
         return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact")}
@@ -189,6 +202,29 @@ def _scene_for_read(scene_id: str):
     with _READ_MEMO_LOCK:
         _READ_MEMO["key"], _READ_MEMO["doc"] = key, doc
     return doc
+
+
+def _migrate_series_arrays(scene_id: str, doc: dict, mission: str) -> None:
+    """Move a pre-sidecar scene's bulk arrays out of the doc, once, on first read.
+
+    Scenes written before the sidecar carry positions/slopes as JSON lists. Rather than break them (or keep two read
+    paths forever), the first request that needs an array writes it out and rewrites the doc without it. Self-healing
+    and idempotent: after this the doc is metadata only, like a freshly built one."""
+    s = doc.get("series", {}).get(mission) or {}
+    moved = False
+    for kind, per in (("positions", 3), ("slopes", 2)):
+        vals = s.get(kind)
+        if vals and cache.scene_array_len(scene_id, mission, kind) == 0:
+            cache.scene_array_write(scene_id, mission, kind, np.asarray(vals, dtype="f4"))
+            moved = True
+        if kind in s:
+            if kind == "slopes":
+                s["has_slopes"] = True
+            del s[kind]
+            moved = True
+    if moved:
+        log.info("scene %s/%s: migrated bulk arrays out of the doc", scene_id, mission)
+        cache.save_scene(scene_id, doc)
 
 
 def _chunked(arr: np.ndarray, chunk: int, chunk_bytes: int, name: str) -> dict:

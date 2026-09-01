@@ -72,7 +72,8 @@ def to_local(frame: dict, lon, lat) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(x) - ox, np.asarray(y) - oy
 
 
-def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache_key: str, max_points: int = 300_000) -> dict:
+def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache_key: str, scene_id: str,
+           max_points: int = 300_000) -> dict:
     x, y = to_local(frame, arrays["lon"], arrays["lat"])
     z = np.asarray(arrays["h"], dtype="f8") - z0
     n = x.size
@@ -86,7 +87,6 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
         "n_extracted": int(n),
         "stride": int(stride),
         "cache_key": cache_key,
-        "positions": np.round(pos, 3).ravel().tolist(),  # flat [x,y,z,...] to keep JSON compact
         "meta": {k: v for k, v in meta.items() if k != "granules"},
         "granules": meta.get("granules", []),
     }
@@ -94,11 +94,15 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
     # (dz/dnorth, dz/deast; metres per metre). Carry them, strided in lock-step with positions, as a flat [sn,we,...]
     # array so the widget can render each platelet as a facet tilted to its own fitted plane. NaN (pre-slope cached
     # cells) is passed through — the widget treats it as a flat facet. Absent for missions without a plane fit.
+    # Bulk arrays go to the binary sidecar, never into the doc: see cache.scene_array_* for why.
+    cache.scene_array_write(scene_id, mission, "positions", np.round(pos, 3).ravel())
     if "sn_slope" in arrays and "we_slope" in arrays:
         sn = np.asarray(arrays["sn_slope"], "f8")[sel]
         we = np.asarray(arrays["we_slope"], "f8")[sel]
         slopes = np.column_stack([sn, we]).astype("f4")
-        out["slopes"] = np.where(np.isfinite(slopes), np.round(slopes, 5), 0.0).ravel().tolist()   # NaN -> 0 = flat facet
+        out["has_slopes"] = True
+        cache.scene_array_write(scene_id, mission, "slopes",
+                                np.where(np.isfinite(slopes), np.round(slopes, 5), 0.0).ravel())   # NaN -> 0 = flat facet
     return out
 
 
@@ -170,43 +174,48 @@ def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str
         arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
         cache.save(cache_key + "-clean", arrays, meta)
         cache_key = cache_key + "-clean"
-    doc["series"][mission] = series(doc["frame"], mission, arrays, meta, doc["z0"], cache_key)
+    doc["series"][mission] = series(doc["frame"], mission, arrays, meta, doc["z0"], cache_key, doc["scene_id"])
     return doc
 
 
 def append_partial(doc: dict, mission: str, arrays: dict) -> dict:
-    """Progressive-build helper: bake ONE streamed granule's partial points into `mission`'s series and extend its
-    position buffer, so the widget's poll paints a growing cloud during a cache-miss build. Baking mirrors series()
-    exactly (to_local + h - z0, f4, round to mm, flat [x,y,z,...]) but with NO stride — the partial is a small,
-    disposable preview that the finalize (add_series over the authoritative query_points arrays) REPLACES with the
-    full, strided series. Requires doc['z0'] (baking is height-relative); the caller buffers partials until z0 is
+    """Progressive-build helper: bake ONE streamed granule's partial points into `mission`'s series and APPEND them to
+    its position sidecar, so the widget's poll paints a growing cloud during a cache-miss build. Baking mirrors
+    series() exactly (to_local + h - z0, f4, round to mm, flat [x,y,z,...]) but with NO stride — the partial is a
+    small, disposable preview that the finalize (add_series over the authoritative query_points arrays) REPLACES with
+    the full, strided series. Requires doc['z0'] (baking is height-relative); the caller buffers partials until z0 is
     known and never invents one here. If the mission's series does not exist yet, a minimal one is created with the
-    same shape add_series produces so the client renders it immediately."""
+    same shape add_series produces so the client renders it immediately.
+
+    Appending, rather than growing a list inside the doc, is what keeps a streaming build linear in granules: the doc
+    used to carry every point as JSON and cache.save_scene re-serialised all of it on every granule that landed.
+    """
     if doc.get("z0") is None:
         return doc                                  # caller buffers until the DEM/first collection sets z0
+    sid = doc["scene_id"]
     lon = np.asarray(arrays["lon"], dtype="f8")
     if lon.size == 0 and mission not in doc["series"]:
         return doc                                  # nothing to paint yet -> don't materialise an empty series
     s = doc["series"].get(mission)
     if s is None:                                   # minimal series consistent with series() so the client can paint it
         s = {"mission": mission, "color": COLORS[mission], "n": 0, "n_extracted": 0, "stride": 1,
-             "cache_key": None, "positions": [], "meta": {"partial": True}, "granules": []}
+             "cache_key": None, "meta": {"partial": True}, "granules": []}
         doc["series"][mission] = s
     if lon.size:
         stride = s.get("_pv_stride", 1)
         sel = slice(None, None, stride) if stride > 1 else slice(None)
         x, y = to_local(doc["frame"], lon[sel], np.asarray(arrays["lat"], dtype="f8")[sel])
         z = np.asarray(arrays["h"], dtype="f8")[sel] - doc["z0"]
-        pos = np.round(np.column_stack([x, y, z]).astype("f4"), 3).ravel().tolist()
-        s["positions"].extend(pos)
+        pos = np.round(np.column_stack([x, y, z]).astype("f4"), 3).ravel()
+        n_vals = cache.scene_array_append(sid, mission, "positions", pos)
         # Stay under the cap by THINNING, never by truncating. Dropping late granules (the first design) made the
         # preview stop growing partway through a build: it showed only the granules that arrived first, so the scene
         # looked like it was missing data and progress appeared to stall. Halving the buffer and doubling the stride
         # keeps the preview bounded AND spatially representative of every granule seen so far.
-        while len(s["positions"]) // 3 > PARTIAL_PREVIEW_CAP:
-            kept = np.asarray(s["positions"], dtype="f4").reshape(-1, 3)[::2]
-            s["positions"] = kept.ravel().tolist()
+        while n_vals // 3 > PARTIAL_PREVIEW_CAP:
+            kept = cache.scene_array_read(sid, mission, "positions").reshape(-1, 3)[::2]
+            n_vals = cache.scene_array_write(sid, mission, "positions", kept.ravel())
             stride = s["_pv_stride"] = stride * 2
-        s["n"] = len(s["positions"]) // 3
+        s["n"] = n_vals // 3
         s["n_extracted"] = s["n"]
     return doc

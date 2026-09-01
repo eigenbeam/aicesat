@@ -100,9 +100,9 @@ def _await_imagery(scene_id, timeout=10.0):
     raise AssertionError(f"imagery still pending after {timeout}s")
 
 
-def _z_values(series):
-    """z components of a flat [x,y,z,...] positions list."""
-    return np.asarray(series["positions"], dtype="f8").reshape(-1, 3)[:, 2]
+def _z_values(series, scene_id):
+    """z components of the flat [x,y,z,...] positions, read from the scene's binary sidecar."""
+    return cache.scene_array_read(scene_id, series["mission"], "positions").astype("f8").reshape(-1, 3)[:, 2]
 
 
 def test_all_collections_final_doc(monkeypatch, tmp_path):
@@ -116,7 +116,7 @@ def test_all_collections_final_doc(monkeypatch, tmp_path):
     assert doc["z0"] == pytest.approx(float(np.median(SURFACE["z"])))
 
     # every series' z is relative to that one z0 (check via ICESSN, whose base height is well separated)
-    assert _z_values(doc["series"]["ICESSN"]).mean() == pytest.approx(ICESSN_A["h"].mean() - doc["z0"], abs=1e-2)
+    assert _z_values(doc["series"]["ICESSN"], doc["scene_id"]).mean() == pytest.approx(ICESSN_A["h"].mean() - doc["z0"], abs=1e-2)
 
     # surface + imagery attached and z0-independent for the surface (mock ignores z0)
     assert doc["surface"] == SURFACE

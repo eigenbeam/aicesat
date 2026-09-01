@@ -56,6 +56,63 @@ def scene_path(scene_id: str) -> Path:
     return SCENE_DIR / f"{scene_id}.json"
 
 
+# --- scene bulk arrays: a binary sidecar, not JSON in the doc ---------------------------------------------------
+# Positions used to live in the scene doc as a JSON list of floats. That made the doc scale with point count (real
+# scenes measured 14.7 and 19.0 MB), so cache.load_scene cost 120 ms and scene_part paid it once PER CHUNK REQUEST —
+# 117 ms per request of which 9 ms was the actual array work. Worse, append_partial re-serialised the whole growing
+# list on every streamed granule, making a build quadratic in granules.
+#
+# Each (scene, mission, kind) is now a flat little-endian float32 file that readers mmap and slice, and the streaming
+# build APPENDS to. The doc keeps only counts. The files live under SCENE_DIR/<scene_id>/, which delete_scene already
+# removes wholesale, so they are cleaned up with the scene.
+ARRAY_DTYPE = np.dtype("<f4")
+
+
+def scene_array_path(scene_id: str, mission: str, kind: str) -> Path:
+    safe = "".join(c for c in f"{mission}.{kind}" if c.isalnum() or c in "._-")
+    return SCENE_DIR / scene_id / f"{safe}.f32"
+
+
+def scene_array_len(scene_id: str, mission: str, kind: str) -> int:
+    p = scene_array_path(scene_id, mission, kind)
+    try:
+        return p.stat().st_size // ARRAY_DTYPE.itemsize
+    except OSError:
+        return 0
+
+
+def scene_array_write(scene_id: str, mission: str, kind: str, arr) -> int:
+    """Replace the array. Atomic: a poller mid-build must never mmap a half-written file."""
+    a = np.ascontiguousarray(arr, dtype=ARRAY_DTYPE)
+    p = scene_array_path(scene_id, mission, kind)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_bytes(a.tobytes())
+    os.replace(tmp, p)
+    return int(a.size)
+
+
+def scene_array_append(scene_id: str, mission: str, kind: str, arr) -> int:
+    """Append, returning the new element count. This is what makes a streaming build linear instead of quadratic."""
+    a = np.ascontiguousarray(arr, dtype=ARRAY_DTYPE)
+    p = scene_array_path(scene_id, mission, kind)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "ab") as f:
+        f.write(a.tobytes())
+    return scene_array_len(scene_id, mission, kind)
+
+
+def scene_array_read(scene_id: str, mission: str, kind: str, start: int = 0, count: int | None = None) -> np.ndarray:
+    """A slice of the array, memory-mapped — the whole point is not materialising the rest to serve one chunk."""
+    p = scene_array_path(scene_id, mission, kind)
+    n = scene_array_len(scene_id, mission, kind)
+    if not n or start >= n:
+        return np.empty(0, dtype=ARRAY_DTYPE)
+    stop = n if count is None else min(n, start + max(0, int(count)))
+    mm = np.memmap(p, dtype=ARRAY_DTYPE, mode="r", offset=start * ARRAY_DTYPE.itemsize, shape=(stop - start,))
+    return np.asarray(mm)
+
+
 def load_scene(scene_id: str) -> dict | None:
     p = scene_path(scene_id)
     return json.loads(p.read_text()) if p.exists() else None
