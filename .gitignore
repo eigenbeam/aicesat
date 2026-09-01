@@ -8,3 +8,5 @@ __pycache__/
 # personal screenshots
 /data/
 Screenshot*.png
+# browser-automation scratch (snapshots, console logs)
+.playwright-mcp/
