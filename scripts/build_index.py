@@ -15,6 +15,7 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     ap.add_argument("--window", nargs=2, metavar=("START", "END"), default=None)
     ap.add_argument("--workers", type=int, default=index.INDEX_WORKERS)
     a = ap.parse_args()
+    log = logging.getLogger("build_index")
     bbox = regions.resolve_bbox(a.region, tuple(a.bbox) if a.bbox else None)
     window = tuple(a.window) if a.window else regions.DEFAULT_ATL03_WINDOW
     from aicesat import planner
@@ -25,7 +26,11 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     t0 = time.time()
     out = index.ensure_index(granules, workers=a.workers, cells=fine)
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
-    cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=fine)
+    if out["failed"]:
+        log.warning("NOT claiming coverage: %d granule(s) did not index; re-run to finish", len(out["failed"]))
+        cov = {"cells": index.manifest_cells(index.ATL03_INDEX_DIR)}
+    else:
+        cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=fine)
     print(json.dumps({"bbox": list(bbox), "claim_cells_compacted": len(cov["cells"]), "search_vertices": len(ring), "window": list(window), "granules": len(granules), **out,
                       "wall_seconds": round(time.time() - t0, 1)}, indent=1))
     if out["failed"]:

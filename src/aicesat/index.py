@@ -214,7 +214,12 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
     tbl = tbl.replace_schema_metadata({"aicesat_index_version": INDEX_SCHEMA_VERSION, "h3_res": str(res),
                                        "built_at": datetime.now(timezone.utc).isoformat()})
     ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    pq.write_table(tbl, ATL03_INDEX_DIR / f"{name}.parquet")
+    # tmp-then-rename, like the other three builders. A direct write leaves a TRUNCATED parquet if the build is
+    # killed mid-write, and indexed_granules reads every file's schema — so the next run would die on the corpse of
+    # the last one instead of resuming.
+    tmp = ATL03_INDEX_DIR / f".{name}.parquet.tmp"
+    pq.write_table(tbl, tmp)
+    tmp.replace(ATL03_INDEX_DIR / f"{name}.parquet")
     log.info("indexed %s: %d (chunk,cell) rows, %d beams, %.1fs (%d geolocation range GETs, %.1f MB)", name, tbl.num_rows,
              len(set(rows["beam"])), time.time() - t0, reader.stats.requests, reader.stats.bytes / 1e6)
     return tbl
@@ -224,7 +229,15 @@ def indexed_granules() -> set[str]:
     """Granules with a current-schema index file; stale-schema files are deleted so they are rebuilt."""
     out, stale = set(), False
     for p in (ATL03_INDEX_DIR.glob("*.parquet") if ATL03_INDEX_DIR.exists() else []):
-        meta = pq.read_schema(p).metadata or {}
+        try:
+            meta = pq.read_schema(p).metadata or {}
+        except Exception as e:
+            # An unreadable file is a half-written one from a killed build. Treat it as stale and rebuild:
+            # letting the exception out would mean the next run dies on the previous run's corpse.
+            log.warning("index %s is unreadable (%s); rebuilding", p.name, e)
+            p.unlink(missing_ok=True)
+            stale = True
+            continue
         if meta.get(b"aicesat_index_version", b"").decode() == INDEX_SCHEMA_VERSION:
             out.add(p.stem)
         else:

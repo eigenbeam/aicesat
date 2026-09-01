@@ -50,8 +50,11 @@ def main():
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
     md = index_icessn._index_dir(res); md.mkdir(parents=True, exist_ok=True)
-    index.write_build_manifest(md, bbox, res, None, len(names), cells=fine)   # claims the fine ground
+    # The claim is stamped only AFTER the ground is actually indexed — see the end of this function. Stamping it
+    # here (which this did) meant an interrupted build left a claim covering granules it never got to, so coverage
+    # reported the whole region indexed and scenes over the unbuilt part came back quietly short.
     if not todo:
+        index.write_build_manifest(md, bbox, res, None, len(names), cells=fine)   # already complete: claim it
         log.info("nothing to do — index complete")
         log.info("coverage rollup: %s", coverage.build_manifest("ICESSN"))
         return
@@ -75,6 +78,11 @@ def main():
         except cf.TimeoutError:
             # Everything indexed so far is on disk; a re-run skips it and retries only what is left.
             log.error("TIMED OUT after %.1f min with %d/%d granules done — re-run to resume", budget / 60, ok + err, len(todo))
+    if err == 0 and ok == len(todo):
+        index.write_build_manifest(md, bbox, res, None, len(names), cells=fine)   # every granule landed: claim it
+    else:
+        log.warning("NOT claiming coverage: %d of %d granules did not index. Re-run to finish; the claim is only "
+                    "stamped once the ground behind it is complete.", len(todo) - ok, len(todo))
     log.info("DONE res %d: %d ok, %d err, %d rows in %.1fm -> %s",
              res, ok, err, rows, (time.time() - t0) / 60, index_icessn._index_dir(res))
     # The rollup belongs to whoever wrote the index. Doing it here means coverage queries and index_status

@@ -380,3 +380,40 @@ def test_a_schema_bump_drops_the_coverage_claim(tmp_path, monkeypatch):
     assert index.indexed_granules() == set(), "a stale file must not count as indexed"
     assert not (d / "g.h5.parquet").exists(), "and must be deleted, not left to serve old rows"
     assert not coverage.index_covers_area(d, bbox), "the claim must go with the rows that backed it"
+
+
+# --- restart safety: a killed build must resume, not corrupt or over-claim -------------------------------------------
+def test_a_truncated_parquet_is_rebuilt_not_fatal(tmp_path, monkeypatch):
+    """A build killed mid-write used to leave a half-written parquet, and indexed_granules read every file's schema
+    with no guard — so the next run died on the previous run's corpse instead of resuming."""
+    d = tmp_path / "atl03"
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", d)
+    d.mkdir(parents=True)
+    (d / "half.h5.parquet").write_bytes(b"PAR1 not really a parquet")
+
+    assert index.indexed_granules() == set()          # must not raise
+    assert not (d / "half.h5.parquet").exists(), "the corpse must be cleared so the granule rebuilds"
+
+
+def test_atl03_index_files_are_written_atomically():
+    """Every builder must write tmp-then-rename; a reader (or the next run's resume scan) must never see a partial."""
+    import inspect
+
+    src = inspect.getsource(index.build_granule_index)
+    assert ".parquet.tmp" in src and "replace(" in src, "ATL03 wrote its parquet in place"
+
+
+def test_builders_claim_coverage_only_after_the_ground_is_indexed():
+    """The claim asserts ground is fully indexed. Stamping it BEFORE the build meant an interrupted run claimed
+    granules it never got to, and coverage reported the whole region while scenes came back quietly short."""
+    import pathlib as _pl
+
+    for name in ("build_glas_index", "build_icessn_index", "build_atl06_index"):
+        src = _pl.Path(f"scripts/{name}.py").read_text()
+        stamp = src.index("if err == 0 and ok == len(todo):")
+        pool = src.index("ProcessPoolExecutor")
+        assert stamp > pool, f"{name}: the claim is stamped before the build runs"
+        assert "NOT claiming coverage" in src, f"{name}: an incomplete build must say it did not claim"
+    src = _pl.Path("scripts/build_index.py").read_text()
+    assert src.index("write_build_manifest") > src.index("ensure_index"), "ATL03 claims before it builds"
+    assert "NOT claiming coverage" in src

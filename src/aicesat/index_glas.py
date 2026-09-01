@@ -57,7 +57,15 @@ def indexed_glas_granules(res: int = GLAS_RES) -> set[str]:
     out, stale = set(), False
     d = _index_dir(res)
     for p in (d.glob("*.parquet") if d.exists() else []):
-        meta = pq.read_schema(p).metadata or {}
+        try:
+            meta = pq.read_schema(p).metadata or {}
+        except Exception as e:
+            # An unreadable file is a half-written one from a killed build. Treat it as stale and rebuild:
+            # letting the exception out would mean the next run dies on the previous run's corpse.
+            log.warning("index %s is unreadable (%s); rebuilding", p.name, e)
+            p.unlink(missing_ok=True)
+            stale = True
+            continue
         if meta.get(b"aicesat_glas_index_version", b"").decode() == GLAS_INDEX_VERSION:
             out.add(p.stem)
         else:
