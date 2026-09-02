@@ -162,11 +162,14 @@ def test_a_large_array_is_split_into_bounded_frames():
     """One 12 MB catch-up read must not become one 12 MB frame: the reader should be able to paint before it all
     lands, and a single write of that size is what stalls a slow client."""
     _scene()
-    n_vals = 3 * stream.MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize
+    n_vals = 3 * (stream.MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize)
     cache.scene_array_append("s1", "ATL06", "positions", np.ones(n_vals, dtype=cache.ARRAY_DTYPE))
     frames = _drive("s1", [])
     bulk = [p for k, _m, p in frames if k == stream.KIND_POSITIONS]
-    assert len(bulk) == 3 and max(len(p) for p in bulk) <= stream.MAX_PAYLOAD
+    # Not an exact frame count: frames are truncated to whole POINTS, so the payload is a little under MAX_PAYLOAD
+    # and the tail spills into one more frame. What matters is that each is bounded and nothing is lost.
+    assert len(bulk) >= 3
+    assert max(len(p) for p in bulk) <= stream.MAX_PAYLOAD
     assert _payloads(frames).size == n_vals
 
 
@@ -258,3 +261,31 @@ def test_the_dem_surface_rides_the_stream_once():
     assert "z" not in ctl[0], "the grid values belong in the binary frames, not the JSON control frame"
     z = _payloads(frames, stream.KIND_SURFACE)
     assert z.size == 6 and z[0] == 1.0 and np.isnan(z[2]), "nodata must survive as NaN"
+
+
+def test_a_frame_never_splits_a_point():
+    """MAX_PAYLOAD/4 is 262144 values, which is NOT divisible by 3. Splitting there ends a frame mid-point, so a
+    client that paints before the next frame lands holds a positions buffer whose length is not a multiple of 3 —
+    and reading xyz off it walks past the end into undefined. That produced NaN view bounds and an opaque
+    "@math.gl/web-mercator: assertion failed" in deck.gl. A frame must carry whole points."""
+    _scene()
+    per_frame = stream.MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize
+    assert per_frame % 3 != 0, "premise: the raw payload size does not divide into points"
+    n_vals = 3 * per_frame                                  # several frames' worth
+    cache.scene_array_append("s1", "ATL06", "positions", np.arange(n_vals, dtype=cache.ARRAY_DTYPE))
+    frames = _drive("s1", [])
+    sizes = [len(p) // 4 for k, _m, p in frames if k == stream.KIND_POSITIONS]
+    assert sizes, "no position frames"
+    assert all(s % 3 == 0 for s in sizes), f"frame value counts must be multiples of 3, got {sizes}"
+    assert sum(sizes) == n_vals, "and nothing may be lost to the rounding"
+
+
+def test_a_slopes_frame_never_splits_a_pair():
+    _scene(missions=("ICESSN",))
+    per_frame = stream.MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize
+    n_vals = 2 * per_frame + 6
+    cache.scene_array_append("s1", "ICESSN", "slopes", np.arange(n_vals, dtype=cache.ARRAY_DTYPE))
+    frames = _drive("s1", [])
+    sizes = [len(p) // 4 for k, _m, p in frames if k == stream.KIND_SLOPES]
+    assert all(s % 2 == 0 for s in sizes), f"slope frames must carry whole pairs, got {sizes}"
+    assert sum(sizes) == n_vals

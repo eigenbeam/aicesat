@@ -70,6 +70,13 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
   ok(g.view()[299] === 99, 'growable kept order across regrows');
   g.reset();
   ok(g.len === 0 && g.view().length === 0, 'reset empties without reallocating');
+
+  // a partial tuple must never be exposed: the renderer reads xyz triples and walking off the end gives NaN bounds
+  const h = growable(4);
+  h.push(Float32Array.from([1, 2, 3, 4, 5]));            // 5 values = one whole point plus two stragglers
+  ok(h.view(3).length === 3, `view(3) should hide the partial point, got ${h.view(3).length}`);
+  ok(h.view(2).length === 4, `view(2) rounds to pairs, got ${h.view(2).length}`);
+  ok(h.view().length === 5, 'view() with no multiple is unchanged');
 }
 
 // ---------------------------------------------------------------- 4. end to end through sceneStreamRun
@@ -133,6 +140,26 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
     ok(/[?&]limit=400000\b/.test(seen), `limit not sent to the server: ${seen}`);
     await fetchApi.sceneStreamRun('s1', () => {}, {}).done;
     ok(!/limit=/.test(seen), `uncapped stream must not send a limit: ${seen}`);
+  }
+
+  // ------------------------------------------------------------- 7. a partial point must never reach the renderer
+  // Covers the CALL SITE, not just growable.view(): the earlier version of this file tested the helper and passed
+  // while the call site was unguarded, which is exactly how the bug shipped.
+  {
+    const wire = Buffer.concat([
+      control({t: 'init'}),
+      control({t: 'mission', id: 1, name: 'ATL06'}),
+      frame(K_POSITIONS, 1, Buffer.from(Float32Array.from([1, 1, 1, 2, 2]).buffer)),   // 5 values: one point + 2
+      control({t: 'done'}),
+    ]);
+    global.fetch = async () => ({ok: true, body: {getReader() { let i = 0;
+      return {read: async () => (i >= wire.length ? {done: true} : {done: false, value: new Uint8Array(wire.subarray(i, (i += 4)))})}; }}});
+    const seen = [];
+    await fetchApi.sceneStreamRun('s1', st => seen.push(st), {paintMs: 0}).done;
+    const pos = seen[seen.length - 1].series.ATL06.positions;
+    ok(pos.length % 3 === 0, `positions must be a whole number of points, got length ${pos.length}`);
+    ok(pos.length === 3, `the trailing partial point must be withheld, got ${pos.length} values`);
+    ok(seen[seen.length - 1].series.ATL06.n_shown === 1, 'and the reported count matches what is exposed');
   }
 
   console.log(`ok — ${checks} checks`);

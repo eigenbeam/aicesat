@@ -56,7 +56,10 @@ window.AICESAT = window.AICESAT || {};
         this.buf.set(vals, this.len); this.len += vals.length;
       },
       reset() { this.len = 0; },
-      view() { return this.buf.subarray(0, this.len); }};
+      // `mult` truncates to a whole number of tuples (3 for xyz, 2 for a slope pair). The server already frames on
+      // whole points, but the renderer walks this buffer as tuples and reading a partial one off the end yields
+      // undefined -> NaN bounds -> an opaque deck.gl viewport assertion. Cheap to make structurally impossible.
+      view(mult = 1) { return this.buf.subarray(0, mult > 1 ? Math.floor(this.len / mult) * mult : this.len); }};
   }
 
   // Split a byte stream into frames. Payload is copied via slice() so the Float32Array view is 4-byte aligned —
@@ -93,8 +96,11 @@ window.AICESAT = window.AICESAT || {};
       dirty = false;
       const series = {};
       for (const m of missions.values()) {
-        series[m.name] = {positions: m.pos.view(), slopes: m.slopes.len ? m.slopes.view() : null,
-                          n_shown: m.pos.len / 3, n: m.pos.len / 3, color: m.color};
+        // view(3)/view(2): expose only WHOLE tuples. The server frames on whole points, but a paint can land between
+        // two frames, and the renderer walking a partial xyz off the end yields NaN bounds -> a deck.gl viewport
+        // assertion that names nothing near the cause. Two guards, because one of them is in another process.
+        const xyz = m.pos.view(3), sw = m.slopes.len ? m.slopes.view(2) : null;
+        series[m.name] = {positions: xyz, slopes: sw, n_shown: xyz.length / 3, n: xyz.length / 3, color: m.color};
       }
       // deck.gl's mesh wants a plain array with null for nodata, which is what the surface layer already expects.
       const surface = surfaceMeta && surfaceZ.len

@@ -275,6 +275,10 @@ function fitView() {
     for (let i = 0; i < p.length; i += 3) { minx = Math.min(minx, p[i]); maxx = Math.max(maxx, p[i]); miny = Math.min(miny, p[i + 1]); maxy = Math.max(maxy, p[i + 1]); minz = Math.min(minz, p[i + 2]); maxz = Math.max(maxz, p[i + 2]); }
   }
   if (!n) return false;
+  // Check the BOUNDS, not just the derived zoom. `span || 1` launders a NaN into a plausible 1 (NaN is falsy), so a
+  // finite zoom proves nothing — the NaN then rides in on `target` and deck.gl reports only
+  // "@math.gl/web-mercator: assertion failed", pointing nowhere near the cause.
+  if (![minx, maxx, miny, maxy, minz, maxz].every(Number.isFinite)) return false;
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const px = Math.min(root.clientWidth, root.clientHeight);

@@ -50,6 +50,11 @@ KIND_CONTROL, KIND_POSITIONS, KIND_SLOPES, KIND_SURFACE = 0, 1, 2, 3
 ARRAY_KINDS = {"positions": KIND_POSITIONS, "slopes": KIND_SLOPES}
 
 MAX_PAYLOAD = 1 << 20      # split a large catch-up read into ~1 MB frames so the reader can paint before it all lands
+# Values per point, per array kind. A frame is truncated to a MULTIPLE of this: MAX_PAYLOAD/4 is 262144 values, which
+# is not divisible by 3, so a naive split ends a positions frame mid-point. A client that paints between two frames
+# then holds a buffer whose length is not a multiple of 3 and reads xyz off the end into undefined — which surfaced
+# as NaN view bounds and an opaque "@math.gl/web-mercator: assertion failed" from deck.gl, not as anything nearby.
+VALUES_PER_POINT = {"positions": 3, "slopes": 2}
 POLL_S = 0.25              # sidecar re-stat interval while the build runs; cheap (one stat per mission per kind)
 MAX_WAIT_S = 1800.0        # hard stop, so a build that dies without ever setting a terminal status cannot pin a thread
 MAX_FINAL_SWEEPS = 4       # once the build is terminal the sidecars are static, so a sweep that keeps producing is a
@@ -163,9 +168,10 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
                 ino, total = _sidecar_state(scene_id, mission, kind)
                 if not ino:
                     continue
+                per_point = VALUES_PER_POINT[kind]
                 if limit is not None:
-                    # positions are 3 values per point, slopes 2 — the budget is in POINTS, so both stay aligned
-                    total = min(total, limit * (3 if kind == "positions" else 2))
+                    # the budget is in POINTS, so positions and slopes stay aligned with each other
+                    total = min(total, limit * per_point)
                 if inodes.get(key, ino) != ino:
                     # The file was replaced under us (preview thinning, or finalize swapping in the real series).
                     # Everything the client holds for this array is stale — say so and start it over.
@@ -176,7 +182,8 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
 
                 start = cursors.get(key, 0)
                 while start < total:
-                    count = min(total - start, MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize)
+                    room = (MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize) // per_point * per_point   # whole points only
+                    count = min(total - start, room)
                     piece = cache.scene_array_read(scene_id, mission, kind, start, count)
                     # Re-stat AFTER the read: a replacement mid-read would have handed us bytes from the new file at
                     # an offset that means nothing in it. Drop the piece; the next sweep sees the inode change and
