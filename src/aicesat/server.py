@@ -21,7 +21,7 @@ from pathlib import Path
 from mcp.server import MCPServer
 from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 
-from . import api, atl03, cache, coverage, geom, regions, scene, uibuild
+from . import api, atl03, cache, coverage, geom, regions, scene, stream, uibuild
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -108,6 +108,37 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self._write(body)
+
+    def _scene_stream(self, sid: str, qs: dict) -> None:
+        """PROTOTYPE push transport (see stream.py): the scene's point frames, written as they land.
+
+        No Content-Length and no chunked encoding — this handler speaks HTTP/1.0, so the body simply ends when the
+        connection closes. `fetch()` + `response.body.getReader()` reads that happily; the reader knows it is finished
+        from the terminal `done` control frame rather than from EOF, so a dropped connection is distinguishable from
+        a completed build and can be resumed with `?from=`.
+
+        The per-frame flush is belt-and-braces, not the mechanism: http.server's wfile is a _SocketWriter and already
+        writes straight through (removing the flush does not change the behaviour — measured, not assumed). What DOES
+        matter is that this loop writes each frame as the generator yields it; joining the frames and writing once at
+        the end passes every unit test and silently reverts the transport to a slow poll.
+        See test_frames_reach_the_client_before_the_build_finishes, which reads frames off a live socket.
+        """
+        if cache.load_scene(sid) is None and sid not in api._registry():
+            return self._json(404, {"error": "no such scene"})
+        cur = stream.parse_cursors(qs.get("from", [None])[0])
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("X-Accel-Buffering", "no")   # ask any proxy in front not to sit on frames
+        self.end_headers()
+        sent = 0
+        try:
+            for fr in stream.frames(sid, cur):
+                self.wfile.write(fr)
+                self.wfile.flush()
+                sent += len(fr)
+        except _CLIENT_GONE:
+            self.close_connection = True
+            log.debug("scene %s: client left after %d stream bytes", sid, sent)
 
     # -------- access-code gate (public beta). No-op when AICESAT_ACCESS_CODE is unset (owner's private process). --------
     def _authed(self) -> bool:
@@ -199,6 +230,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, api.jobs())
         if u.path == "/api/index_status":
             return self._json(200, api.index_status(qs.get("collection", ["ATL06"])[0]))
+        if u.path.startswith("/api/scene/") and u.path.endswith("/stream"):
+            return self._scene_stream(u.path.split("/")[3], qs)
         if u.path.startswith("/api/scene/") and u.path.endswith("/part"):
             sid = u.path.split("/")[3]
             try:

@@ -3,6 +3,9 @@
 # Needs inbound 80 (ACME challenge) + 443 open in the security group. Install: see deploy/README.md.
 
 REPLACE-ME.sslip.io {
-	encode zstd gzip
+	# The scene stream is a long-lived response of raw float32 frames. Compressing it buys nothing (f32 point data
+	# barely compresses) and `encode` can hold frames back, which defeats the point of streaming — so exclude it.
+	@nostream not path /api/scene/*/stream
+	encode @nostream zstd gzip
 	reverse_proxy 127.0.0.1:8768
 }

@@ -34,6 +34,108 @@ window.AICESAT = window.AICESAT || {};
     bench: () => j('/api/bench').catch(() => null),
     openLink: url => window.open(url, '_blank'),
   };
+  // ---- PROTOTYPE push transport (server: src/aicesat/stream.py) -------------------------------------------------
+  // A/B against the poll path above, which stays exactly as it was. One long-lived response carries every mission's
+  // points as raw f32 frames as they land: no polling, no seriesVersion, no chunk arithmetic, no base64, and no
+  // prefix — so DISPLAY_BUDGET and PARTIAL_PREVIEW_CAP have nothing to decide here. Frame layout is documented in
+  // stream.py; this is the same state machine, over a ReadableStream that splits frames at arbitrary byte offsets.
+  const FRAME_HEADER = 8;
+  const K_CONTROL = 0, K_POSITIONS = 1, K_SLOPES = 2;
+
+  // Growable f32 buffer. Doubling, because concatenating on every frame is quadratic in the frame count — the exact
+  // cost that pushed the pull transport into its incremental design in the first place.
+  function growable(initial = 1 << 16) {
+    return {buf: new Float32Array(initial), len: 0,
+      push(vals) {
+        if (this.len + vals.length > this.buf.length) {
+          let cap = this.buf.length || 1;
+          while (cap < this.len + vals.length) cap *= 2;
+          const next = new Float32Array(cap); next.set(this.buf.subarray(0, this.len)); this.buf = next;
+        }
+        this.buf.set(vals, this.len); this.len += vals.length;
+      },
+      reset() { this.len = 0; },
+      view() { return this.buf.subarray(0, this.len); }};
+  }
+
+  // Split a byte stream into frames. Payload is copied via slice() so the Float32Array view is 4-byte aligned —
+  // a frame can start at any offset in the accumulated bytes, and an unaligned view throws.
+  function frameSplitter(onFrame) {
+    let pend = new Uint8Array(0);
+    return bytes => {
+      const merged = new Uint8Array(pend.length + bytes.length);
+      merged.set(pend); merged.set(bytes, pend.length);
+      let off = 0;
+      const dv = new DataView(merged.buffer, merged.byteOffset, merged.byteLength);
+      while (off + FRAME_HEADER <= merged.length) {
+        const kind = dv.getUint8(off), mission = dv.getUint8(off + 1), n = dv.getUint32(off + 4, true);
+        if (off + FRAME_HEADER + n > merged.length) break;          // header seen, payload still in flight
+        onFrame(kind, mission, merged.slice(off + FRAME_HEADER, off + FRAME_HEADER + n));
+        off += FRAME_HEADER + n;
+      }
+      pend = merged.subarray(off);
+    };
+  }
+
+  // Open the stream for `id` and call onUpdate(series) as points land. `series` is {mission: {positions, slopes, n}},
+  // the same shape the renderer already consumes. Returns {done, stop, stats} — stats is what the A/B needs: bytes on
+  // the wire, frame count, and RESETS (each one a sidecar the writer replaced under us; see stream.py).
+  fetchApi.sceneStreamRun = function (id, onUpdate, opts = {}) {
+    const ctl = new AbortController();
+    const missions = new Map();                                     // id -> {name, pos, slopes}
+    const stats = {bytes: 0, frames: 0, resets: 0, t0: performance.now(), tFirst: null, tDone: null};
+    let dirty = false, timer = null;
+    const emit = () => {
+      timer = null;
+      if (!dirty) return;
+      dirty = false;
+      const series = {};
+      for (const m of missions.values()) {
+        series[m.name] = {positions: m.pos.view(), slopes: m.slopes.len ? m.slopes.view() : null,
+                          n_shown: m.pos.len / 3, n: m.pos.len / 3, color: m.color};
+      }
+      onUpdate(series, stats);
+    };
+    const touch = () => { dirty = true; if (timer == null) timer = setTimeout(emit, opts.paintMs || 100); };
+
+    const onFrame = (kind, mid, payload) => {
+      stats.frames++;
+      if (stats.tFirst == null && kind !== K_CONTROL) stats.tFirst = performance.now() - stats.t0;
+      if (kind === K_CONTROL) {
+        const msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg.t === 'mission') missions.set(msg.id, {name: msg.name, color: msg.color, pos: growable(), slopes: growable(1 << 10)});
+        else if (msg.t === 'reset') {
+          stats.resets++;
+          for (const m of missions.values()) if (m.name === msg.mission) (msg.kind === 'slopes' ? m.slopes : m.pos).reset();
+          touch();
+        } else if (msg.t === 'done') { stats.tDone = performance.now() - stats.t0; stats.cursors = msg.cursors; }
+        return;
+      }
+      const m = missions.get(mid);
+      if (!m) return;                                               // frame for a mission we never saw announced
+      (kind === K_SLOPES ? m.slopes : m.pos).push(new Float32Array(payload.buffer));
+      touch();
+    };
+
+    const done = (async () => {
+      const q = opts.from ? '?from=' + encodeURIComponent(opts.from) : '';
+      const res = await fetch(`/api/scene/${id}/stream${q}`, {signal: ctl.signal});
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      const reader = res.body.getReader(), feed = frameSplitter(onFrame);
+      for (;;) {
+        const {done: fin, value} = await reader.read();
+        if (fin) break;
+        stats.bytes += value.length;
+        feed(value);
+      }
+      if (timer != null) clearTimeout(timer);
+      dirty = true; emit();
+      return stats;
+    })();
+
+    return {done, stats, stop: () => ctl.abort()};
+  };
+
   // incremental poll: small `meta` + only the new position/slope chunks (see loadSceneInto)
   fetchApi.sceneUpdate = (prev, id) => loadSceneInto(prev, id, fetchApi.sceneMeta,
                                                      (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk));
