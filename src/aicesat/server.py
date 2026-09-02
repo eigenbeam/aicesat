@@ -110,7 +110,7 @@ class Handler(SimpleHTTPRequestHandler):
         self._write(body)
 
     def _scene_stream(self, sid: str, qs: dict) -> None:
-        """PROTOTYPE push transport (see stream.py): the scene's point frames, written as they land.
+        """The push transport (see stream.py): the scene's point and surface frames, written as they land.
 
         No Content-Length and no chunked encoding — this handler speaks HTTP/1.0, so the body simply ends when the
         connection closes. `fetch()` + `response.body.getReader()` reads that happily; the reader knows it is finished

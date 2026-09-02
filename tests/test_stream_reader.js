@@ -17,8 +17,8 @@ global.atob = b64 => Buffer.from(b64, 'base64').toString('binary');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'aicesat', 'ui', 'adapter.js'), 'utf8');
 eval(src.replace('AICESAT.ready = connectApp()',
-  'AICESAT.__test = {frameSplitter, growable, fetchApi, loadSceneInto, K_CONTROL, K_POSITIONS, K_SLOPES};\n  AICESAT.ready = connectApp()'));
-const {frameSplitter, growable, fetchApi, loadSceneInto, K_CONTROL, K_POSITIONS, K_SLOPES} = AICESAT.__test;
+  'AICESAT.__test = {frameSplitter, growable, fetchApi, K_CONTROL, K_POSITIONS, K_SLOPES, K_SURFACE};\n  AICESAT.ready = connectApp()'));
+const {frameSplitter, growable, fetchApi, K_CONTROL, K_POSITIONS, K_SLOPES, K_SURFACE} = AICESAT.__test;
 
 // --- encode frames exactly as stream.py does: <BBHI> header then payload
 function frame(kind, mission, payload) {
@@ -96,7 +96,7 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
   });
 
   const updates = [];
-  const handle = fetchApi.sceneStreamRun('s1', (series, stats) => updates.push({series, stats}), {paintMs: 0});
+  const handle = fetchApi.sceneStreamRun('s1', (state, stats) => updates.push({...state, stats}), {paintMs: 0});
   const stats = await handle.done;
 
   ok(stats.resets === 1, `resets counted: ${stats.resets}`);
@@ -107,21 +107,22 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
   ok(last.positions[0] === 5, 'replacement values, not the discarded preview');
   ok(last.slopes && last.slopes.length === 2, 'slopes arrived on their own kind');
 
-  // ------------------------------------------------------------- 5. ?stream=1 must not double-fetch the points
-  // Under the push transport the poll is given a budget of 0. If it still asked for position chunks, the two
-  // transports would fetch the same bytes over the same link and the A/B would measure their sum.
+  // ------------------------------------------------------------- 5. the DEM surface rides the same stream
   {
-    const calls = [];
-    const meta = {scene_id: 's1', frame: {}, series: {ATL06: {mission: 'ATL06', n: 500000, has_slopes: true}}, surface: null};
-    const getChunk = async (sid, part, chunk) => { calls.push(part); return {chunk, n_chunks: 1, chunk_values: 24000, b64: ''}; };
-    const {doc} = await loadSceneInto(null, 's1', async () => meta, getChunk, 0);
-    ok(calls.length === 0, `budget 0 issued ${calls.length} chunk request(s): ${calls.join(',')}`);
-    ok(doc.series.ATL06.n_shown === 0, 'no points from the poll');
-    ok(doc.series.ATL06.n === 500000, 'but the true total survives, so the legend stays honest');
-
-    const after = await loadSceneInto(null, 's1', async () => meta, getChunk);   // default budget: it DOES fetch
-    ok(calls.length > 0, 'sanity: the same call with the default budget does fetch');
-    void after;
+    const grid = {t: 'surface', x0: 0, y0: 0, cell: 100, nx: 3, ny: 2, source: 'ArcticDEM', n_values: 6};
+    const wire = Buffer.concat([
+      control({t: 'init'}),
+      control(grid),
+      frame(K_SURFACE, 0, Buffer.from(Float32Array.from([1, 2, NaN, 4, 5, 6]).buffer)),
+      control({t: 'done'}),
+    ]);
+    global.fetch = async () => ({ok: true, body: {getReader() { let i = 0;
+      return {read: async () => (i >= wire.length ? {done: true} : {done: false, value: new Uint8Array(wire.subarray(i, (i += 7)))})}; }}});
+    const seen = [];
+    await fetchApi.sceneStreamRun('s1', st => seen.push(st), {paintMs: 0}).done;
+    const surf = seen[seen.length - 1].surface;
+    ok(surf && surf.nx === 3 && surf.source === 'ArcticDEM', 'surface grid metadata arrived');
+    ok(surf.z.length === 6 && surf.z[0] === 1 && surf.z[2] === null, 'nodata becomes null for the mesh layer');
   }
 
   // ------------------------------------------------------------- 6. the budget is DECLARED in the request

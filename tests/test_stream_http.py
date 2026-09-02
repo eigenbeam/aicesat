@@ -135,4 +135,3 @@ def test_bench_transport_gate_token_matches_the_server():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.gate_token("hunter2") == server._gate_token("hunter2")
-    assert mod.DISPLAY_BUDGET == 400_000, "keep in step with ui/adapter.js"

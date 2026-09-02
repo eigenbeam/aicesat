@@ -1,17 +1,20 @@
-"""Prototype PUSH transport for a scene's bulk point arrays — the stage-1 half of the two-stage design.
+"""The PUSH transport: a scene's point arrays and DEM surface, streamed as they land. The only transport for them.
 
-Why this exists. The shipped transport is a PULL loop: the browser polls `meta`, diffs a `seriesVersion`, and fetches
-a bounded PREFIX of each mission's sidecar as base64 JSON chunks. Nearly every awkward part of that design exists to
-make "a prefix of a growing array" a fair sample of the whole — the shuffle at write time in scene.series, the
-power-of-2 thinning behind scene.PARTIAL_PREVIEW_CAP, adapter.js's DISPLAY_BUDGET, seriesVersion, and the chunk-resume
-arithmetic in fetchValuesFrom. Push the bytes as they land and not one of those questions has to be answered.
+What this replaced, and why. The old path was a PULL loop: the browser polled `meta`, diffed a `seriesVersion`, and
+fetched a bounded PREFIX of each mission's sidecar as base64 JSON chunks. Nearly every awkward part of that design
+existed to make "a prefix of a growing array" a fair sample of the whole — a seeded shuffle at write time, a
+power-of-2 thinning loop behind a preview cap, a client-side display budget, and chunk-resume arithmetic. Push the
+bytes as they land and not one of those questions has to be answered; all of it is deleted.
 
-This module is ADDITIVE and changes no existing behaviour: api.scene_part and the poll loop are untouched, so the two
-transports can be A/B'd against the same build on the box before anything is deleted. Measure before deleting.
+Measured before deleting, laptop -> box, at EQUAL point counts: 1.58s -> 0.62s, 18.07 -> 12.12 bytes per point,
+9 round-trips -> 1. The pull path was latency-bound; this one is bandwidth-bound.
+
+The MCP App transport cannot stream (tools/call is request/response), so it renders the DEM surface and metadata
+without point clouds, via the chunked parts that api.scene_part still serves for everything except points.
 
 ## Frame format (little-endian), header + payload:
 
-    u8  kind        0 = control (payload is UTF-8 JSON), 1 = positions (f32), 2 = slopes (f32)
+    u8  kind        0 = control (payload is UTF-8 JSON), 1 = positions (f32), 2 = slopes (f32), 3 = DEM surface (f32)
     u8  mission     index into the mission table built by the control frames; 0 on a control frame
     u16 flags       reserved, always 0
     u32 n_bytes     payload length in bytes
@@ -21,16 +24,16 @@ second HTTP request. Bulk arrays stay raw f32 — no base64, which is a third of
 
 ## The sidecar is NOT append-only, and that is the point of the `reset` frame
 
-`tail -f` would be sound if the sidecar only ever grew. It does not:
-  * scene.append_partial HALVES the preview whenever it crosses PARTIAL_PREVIEW_CAP (cache.scene_array_write), and
-  * scene.series REPLACES the preview wholesale with the finalized shuffled array at add_series.
-Both go through os.replace, so the path gets a NEW INODE while the client holds bytes from the old one. Size alone
-cannot detect it (a replacement can be larger than what we had already sent — classic ABA). So identity is the inode:
-when it changes, emit `{"t":"reset"}` for that mission and restart its cursor at zero.
+`tail -f` would be sound if the sidecar only ever grew. It grows all build long — and then, once, it is REPLACED:
+scene.series writes the finalized array over the streamed preview at add_series. That is not vestigial. The
+authoritative arrays are not always the same points: GLAS runs drop_glas_outliers in add_series and nowhere else, so
+its final series is a strict subset of what streamed. Whichever way, os.replace gives the path a NEW INODE while the
+client holds bytes from the old one, and size alone cannot detect it (a replacement can be LARGER than what we
+already sent — classic ABA). So identity is the inode: when it changes, emit `{"t":"reset"}` for that mission and
+restart its cursor at zero.
 
-That makes the prototype correct against today's writer. It is also the measurement worth taking: every reset is a
-sidecar rewrite the client had to throw away and refetch. In the target design — where the streamed points ARE the
-series, with no preview/finalize duality — the sidecar is append-only and resets go to zero. Count them.
+Expect at most one reset per mission per build, at its finalize. More than that means something is rewriting a
+sidecar it should not, and the count is on the `done` frame so a client can say so.
 """
 from __future__ import annotations
 
@@ -38,10 +41,12 @@ import json
 import struct
 import time
 
+import numpy as np
+
 from . import cache
 
 HEADER = struct.Struct("<BBHI")
-KIND_CONTROL, KIND_POSITIONS, KIND_SLOPES = 0, 1, 2
+KIND_CONTROL, KIND_POSITIONS, KIND_SLOPES, KIND_SURFACE = 0, 1, 2, 3
 ARRAY_KINDS = {"positions": KIND_POSITIONS, "slopes": KIND_SLOPES}
 
 MAX_PAYLOAD = 1 << 20      # split a large catch-up read into ~1 MB frames so the reader can paint before it all lands
@@ -119,6 +124,7 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
     mission_ids: dict[str, int] = {}
     started = now()
     final_sweeps = 0
+    surface_sent = False
 
     yield control({"t": "init", "scene_id": scene_id, "cursors": cursors})
 
@@ -127,6 +133,20 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
         sent = False
 
         doc = cache.load_scene(scene_id) or {}
+
+        # DEM surface: static once it lands, so send it exactly once. It rides the stream rather than a second
+        # request because it is the ONLY other bulk array the viewer needs — carrying it here is what lets the
+        # browser drop the chunked/base64 transport entirely. NaN marks a nodata cell, as it does on disk.
+        surf = doc.get("surface")
+        if surf and not surface_sent:
+            z = np.asarray([np.nan if v is None else v for v in (surf.get("z") or [])], dtype=cache.ARRAY_DTYPE)
+            yield control({"t": "surface", **{k: v for k, v in surf.items() if k != "z"}, "n_values": int(z.size)})
+            for off in range(0, z.size, MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize):
+                piece = z[off:off + MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize]
+                yield frame(KIND_SURFACE, 0, np.ascontiguousarray(piece).tobytes())
+            surface_sent = True
+            sent = True
+
         for mission in sorted(doc.get("series") or {}):
             if mission not in mission_ids:
                 # Missions appear as their legs land, so the table is built incrementally rather than declared up

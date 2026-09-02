@@ -241,3 +241,20 @@ def test_the_limit_keeps_slopes_aligned_with_positions():
 @pytest.mark.parametrize("spec,want", [("400000", 400_000), ("0", None), ("-5", None), ("abc", None), (None, None)])
 def test_parse_limit(spec, want):
     assert stream.parse_limit(spec) == want
+
+
+def test_the_dem_surface_rides_the_stream_once():
+    """The surface is the only other bulk array the viewer needs. Carrying it here is what lets the browser drop the
+    chunked/base64 transport entirely — so it must arrive, arrive complete, and arrive exactly once."""
+    doc = _scene()
+    doc["surface"] = {"x0": 0.0, "y0": 0.0, "cell": 100.0, "nx": 3, "ny": 2,
+                      "z": [1.0, 2.0, None, 4.0, 5.0, 6.0], "source": "ArcticDEM", "is_dem": True}
+    cache.save_scene("s1", doc)
+    frames = _drive("s1", [lambda: cache.scene_array_append("s1", "ATL06", "positions", _pts(3))])
+
+    ctl = [c for c in _controls(frames) if c["t"] == "surface"]
+    assert len(ctl) == 1, f"surface announced {len(ctl)} times"
+    assert ctl[0]["nx"] == 3 and ctl[0]["ny"] == 2 and ctl[0]["source"] == "ArcticDEM"
+    assert "z" not in ctl[0], "the grid values belong in the binary frames, not the JSON control frame"
+    z = _payloads(frames, stream.KIND_SURFACE)
+    assert z.size == 6 and z[0] == 1.0 and np.isnan(z[2]), "nodata must survive as NaN"

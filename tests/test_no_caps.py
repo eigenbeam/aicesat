@@ -163,6 +163,10 @@ def test_no_granule_slice_or_point_decimation_in_the_source():
         r"\bmax_candidates\b": "candidate-list truncation",
         r"\bmax_points\b": "display-stride cap on stored points (#25)",
         r"stride: int = ": "a stride parameter on the transport (#25)",
+        # Deleted with the pull transport. Both existed ONLY to make a PREFIX of a growing array a fair sample, and
+        # nothing takes a prefix any more: the stream delivers every point. If either comes back, so has a cap.
+        r"PARTIAL_PREVIEW_CAP": "the preview cap and its power-of-2 thinning loop",
+        r"_sample_order": "the write-time shuffle that existed only for prefix fetches",
     }
     def _enclosing_def(text: str, pos: int) -> str:
         before = text[:pos]

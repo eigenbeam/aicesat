@@ -34,13 +34,14 @@ window.AICESAT = window.AICESAT || {};
     bench: () => j('/api/bench').catch(() => null),
     openLink: url => window.open(url, '_blank'),
   };
-  // ---- PROTOTYPE push transport (server: src/aicesat/stream.py) -------------------------------------------------
-  // A/B against the poll path above, which stays exactly as it was. One long-lived response carries every mission's
-  // points as raw f32 frames as they land: no polling, no seriesVersion, no chunk arithmetic, no base64, and no
-  // prefix — so DISPLAY_BUDGET and PARTIAL_PREVIEW_CAP have nothing to decide here. Frame layout is documented in
-  // stream.py; this is the same state machine, over a ReadableStream that splits frames at arbitrary byte offsets.
+  // ---- push transport (server: src/aicesat/stream.py) -----------------------------------------------------------
+  // The only transport for bulk data. One long-lived response carries every mission's points AND the DEM surface as
+  // raw f32 frames as they land: no polling, no versioning, no chunk arithmetic, no base64, and no prefix — which is
+  // why the display budget, the preview cap and the write-time shuffle could all be deleted rather than tuned.
+  // Frame layout is documented in stream.py; this is the same state machine, over a ReadableStream that splits
+  // frames at arbitrary byte offsets.
   const FRAME_HEADER = 8;
-  const K_CONTROL = 0, K_POSITIONS = 1, K_SLOPES = 2;
+  const K_CONTROL = 0, K_POSITIONS = 1, K_SLOPES = 2, K_SURFACE = 3;
 
   // Growable f32 buffer. Doubling, because concatenating on every frame is quadratic in the frame count — the exact
   // cost that pushed the pull transport into its incremental design in the first place.
@@ -83,6 +84,7 @@ window.AICESAT = window.AICESAT || {};
   fetchApi.sceneStreamRun = function (id, onUpdate, opts = {}) {
     const ctl = new AbortController();
     const missions = new Map();                                     // id -> {name, pos, slopes}
+    let surfaceMeta = null; const surfaceZ = growable(1 << 14);      // the DEM grid rides the stream too
     const stats = {bytes: 0, frames: 0, resets: 0, t0: performance.now(), tFirst: null, tDone: null};
     let dirty = false, timer = null;
     const emit = () => {
@@ -94,7 +96,10 @@ window.AICESAT = window.AICESAT || {};
         series[m.name] = {positions: m.pos.view(), slopes: m.slopes.len ? m.slopes.view() : null,
                           n_shown: m.pos.len / 3, n: m.pos.len / 3, color: m.color};
       }
-      onUpdate(series, stats);
+      // deck.gl's mesh wants a plain array with null for nodata, which is what the surface layer already expects.
+      const surface = surfaceMeta && surfaceZ.len
+        ? {...surfaceMeta, z: Array.from(surfaceZ.view(), v => (Number.isFinite(v) ? v : null))} : null;
+      onUpdate({series, surface}, stats);
     };
     const touch = () => { dirty = true; if (timer == null) timer = setTimeout(emit, opts.paintMs || 100); };
 
@@ -104,6 +109,7 @@ window.AICESAT = window.AICESAT || {};
       if (kind === K_CONTROL) {
         const msg = JSON.parse(new TextDecoder().decode(payload));
         if (msg.t === 'mission') missions.set(msg.id, {name: msg.name, color: msg.color, pos: growable(), slopes: growable(1 << 10)});
+        else if (msg.t === 'surface') { surfaceMeta = msg; surfaceZ.reset(); touch(); }
         else if (msg.t === 'reset') {
           stats.resets++;
           for (const m of missions.values()) if (m.name === msg.mission) (msg.kind === 'slopes' ? m.slopes : m.pos).reset();
@@ -111,6 +117,7 @@ window.AICESAT = window.AICESAT || {};
         } else if (msg.t === 'done') { stats.tDone = performance.now() - stats.t0; stats.cursors = msg.cursors; }
         return;
       }
+      if (kind === K_SURFACE) { surfaceZ.push(new Float32Array(payload.buffer)); touch(); return; }
       const m = missions.get(mid);
       if (!m) return;                                               // frame for a mission we never saw announced
       (kind === K_SLOPES ? m.slopes : m.pos).push(new Float32Array(payload.buffer));
@@ -139,110 +146,34 @@ window.AICESAT = window.AICESAT || {};
     return {done, stats, stop: () => ctl.abort()};
   };
 
-  // incremental poll: small `meta` + only the new position/slope chunks (see loadSceneInto)
-  fetchApi.sceneUpdate = (prev, id, budget) => loadSceneInto(prev, id, fetchApi.sceneMeta,
-                                                     (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk), budget);
+  // Metadata poll. Points and surface come off the stream, so this is one small JSON request per tick.
+  fetchApi.sceneUpdate = async (prev, id) => {
+    const doc = await fetchApi.sceneMeta(id);
+    doc.series = doc.series || {};
+    doc.coreg = prev ? prev.coreg : null;
+    return {doc, changed: new Set(), meta: doc};
+  };
 
   // ---- base64 helpers
   const b64ToF32 = b64 => { const bin = atob(b64); const buf = new ArrayBuffer(bin.length); const u8 = new Uint8Array(buf); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return new Float32Array(buf); };
   const concatF32 = parts => { const n = parts.reduce((a, p) => a + p.length, 0); const out = new Float32Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
 
-  // ---- incremental scene loading -------------------------------------------------------------------------------
-  // A build streams: the scene grows granule by granule. Re-fetching the WHOLE doc on every poll re-ships millions of
-  // floats each tick (the doc is tens of MB) — quadratic in wall-clock and the dominant cost of a large build. Instead
-  // poll the small `meta` part (no positions/slopes/surface-z) and fetch only the bulk arrays that actually changed,
-  // appending onto client-side buffers. Shared by both transports; each supplies its own chunk fetcher.
+  // ---- scene loading ---------------------------------------------------------------------------------------------
+  // Points and the DEM surface arrive on the push stream (sceneStreamRun / src/aicesat/stream.py). What is left here
+  // is metadata: small, JSON, one request. The incremental chunk/base64 pull that used to live here — fetchValuesFrom,
+  // loadSceneInto, seriesVersion, DISPLAY_BUDGET — is gone along with the server parts it read.
   //
-  // Identity/versioning: a mission's preview (meta.partial, cache_key null) is REPLACED wholesale at finalize by the
-  // authoritative strided series. `seriesVersion` captures that transition (plus any stride change), so we append while
-  // the version holds and refetch once when it flips. Never trust n alone: finalize can shrink n (stride kicks in).
-  const seriesVersion = s => `${s.cache_key || 'partial'}|${s.stride || 1}|${!!(s.meta && s.meta.partial)}`;
-
-  // Fetch float32 values [fromValue, ...) of a chunked part. chunk_bytes is fixed server-side (96000 = 24000 floats),
-  // so we can start at the chunk containing fromValue and trim the remainder — only NEW data crosses the wire.
-  // Floats per chunk, LEARNED from the server: the HTTP route serves ~1 MB chunks while an MCP host needs small
-  // ones, so hard-coding it here made the two disagree the moment either changed. Only used to resume a partial
-  // fetch; `n_chunks` from the reply still drives the loop.
-  let CHUNK_FLOATS = 24000;
-  // Points per mission the viewer holds. The server now stores EVERY extracted point, in a shuffled order, so any
-  // prefix is a fair spatial sample of the whole — fetching the first N is the level-of-detail control, and the cap
-  // lives here (where the memory and the frame budget actually are) rather than in the stored scene.
-  const DISPLAY_BUDGET = 400000;
-  // `getChunk` MUST accept (part, chunkIndex). Passing a one-argument function here silently drops the index, so every
-  // request returns chunk 0 and the caller concatenates n_chunks copies of it — which corrupted the surface grid into
-  // a rolling-offset repeat and duplicated the point clouds.
-  // `toValue` (opt-in) stops the fetch once that many values are in hand. The stored order is shuffled, so stopping
-  // early yields a fair sample rather than one corner of the scene — this is the display cap, and it belongs here.
-  async function fetchValuesFrom(getChunk, part, fromValue, toValue) {
-    const startChunk = Math.floor(fromValue / CHUNK_FLOATS);
-    const parts = []; let n = startChunk + 1;
-    for (let c = startChunk; c < n; c++) {
+  // The MCP App transport cannot stream (tools/call is request/response), so it keeps a chunked reader, but only for
+  // the surface: it renders terrain and metadata, not point clouds.
+  async function fetchAllValues(getChunk, part) {
+    const parts = []; let n = 1;
+    for (let c = 0; c < n; c++) {
       const d = await getChunk(part, c);
-      if (d.chunk != null && d.chunk !== c) throw new Error(`scene_part ${part}: asked for chunk ${c}, got ${d.chunk}`);
-      if (d.chunk_values && d.chunk_values !== CHUNK_FLOATS) {   // server chunk size differs from our assumption
-        CHUNK_FLOATS = d.chunk_values;
-        if (fromValue > 0 && c === startChunk) return fetchValuesFrom(getChunk, part, fromValue);   // redo the maths
-      }
       n = d.n_chunks;
-      if (c >= n) break;                       // server has fewer chunks than expected (array shrank) -> stop
+      if (c >= n) break;
       parts.push(b64ToF32(d.b64));
-      if (toValue != null && (startChunk * CHUNK_FLOATS + parts.reduce((a, v) => a + v.length, 0)) >= toValue) break;
     }
-    let got = concatF32(parts);
-    const skip = fromValue - startChunk * CHUNK_FLOATS;   // trim the head of the first chunk
-    if (skip > 0) got = got.subarray(skip);
-    const room = toValue == null ? null : toValue - fromValue;
-    return room != null && got.length > room ? got.subarray(0, room) : got;
-  }
-
-  // Build/refresh a scene doc incrementally against `prev` (the last doc this view rendered, or null).
-  // Returns {doc, changed:Set<mission>} — `changed` lets the caller rebuild only the layers whose data moved.
-  async function loadSceneInto(prev, id, getMeta, getChunk, budget = DISPLAY_BUDGET) {
-    const meta = await getMeta(id);
-    const doc = {...meta, series: {}, coreg: prev ? prev.coreg : null, surface: prev ? prev.surface : null};
-    const changed = new Set();
-    for (const [m, s] of Object.entries(meta.series || {})) {
-      const old = prev && prev.series && prev.series[m];
-      const sameVersion = old && old._ver === seriesVersion(s);
-      const haveVals = sameVersion ? (old._pos ? old._pos.length : 0) : 0;
-      const shown = Math.min(s.n || 0, budget);
-      const wantVals = shown * 3;
-      let pos = sameVersion ? old._pos : null;
-      if (budget <= 0) {
-        // The push transport owns the point arrays; skip them entirely rather than issuing a zero-length fetch,
-        // which would still cost one round-trip per array per poll tick.
-        pos = new Float32Array(0);
-      } else if (wantVals > haveVals) {                            // grew (or first sight): fetch ONLY the new tail
-        const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, haveVals, wantVals);
-        pos = haveVals ? concatF32([pos, add]) : add;
-        changed.add(m);
-      } else if (!sameVersion) {
-        pos = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, 0, wantVals);
-        changed.add(m);
-      }
-      let slopes = sameVersion ? old._slopes : null;
-      if (s.has_slopes) {                                          // budget 0 -> wantS is 0, so this fetches nothing
-        const haveS = sameVersion && slopes ? slopes.length : 0, wantS = shown * 2;   // prefix-aligned with positions
-        if (wantS > haveS) {
-          const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'slopes:' + m, haveS, wantS);
-          slopes = haveS ? concatF32([slopes, add]) : add;
-          changed.add(m);
-        }
-      } else slopes = null;
-      const shownPos = pos || new Float32Array(0);
-      doc.series[m] = {...s, positions: shownPos, slopes: slopes || null,
-                       n_shown: shownPos.length / 3,          // what is actually on screen, which may be a sample of s.n
-                       _pos: shownPos, _slopes: slopes, _ver: seriesVersion(s)};
-    }
-    // surface z: static once it lands — fetch exactly once
-    if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
-      const z = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'surface', 0);
-      doc.surface = {...meta.surface, z: Array.from(z, v => Number.isFinite(v) ? v : null)};
-      changed.add('_surface');
-    } else if (meta.surface && prev && prev.surface) {
-      doc.surface = {...meta.surface, z: prev.surface.z};
-    } else if (!meta.surface) doc.surface = null;
-    return {doc, changed, meta};
+    return concatF32(parts);
   }
 
   function appApi(app) {
@@ -293,11 +224,22 @@ window.AICESAT = window.AICESAT || {};
       },
       scenePart: (id, part, chunk = 0) => call('ui_scene_part', {scene_id: id, part, chunk}),
       sceneMeta: id => call('ui_scene_part', {scene_id: id, part: 'meta'}),
-      // incremental poll (same contract as the fetch adapter): small meta + only the new chunks, plus the coreg/imagery
-      // legs this transport needs (imagery arrives as base64 bytes rather than a URL).
+      // Same contract as the fetch adapter, minus the point clouds. tools/call is request/response, so this transport
+      // CANNOT stream — and the point arrays are now stream-only. It therefore renders the DEM surface and the
+      // metadata, and no points. The surface is still chunk-fetched here because an MCP host caps a tool result.
       sceneUpdate: async function (prev, id) {
-        const r = await loadSceneInto(prev, id, this.sceneMeta, (sid, part, chunk) => this.scenePart(sid, part, chunk));
-        const meta = r.meta;
+        const meta = await this.sceneMeta(id);
+        const doc = {...meta, series: meta.series || {}, coreg: prev ? prev.coreg : null,
+                     surface: prev ? prev.surface : null};
+        const changed = new Set();
+        if (meta.surface && !(prev && prev.surface && prev.surface.z)) {
+          const z = await fetchAllValues((part, chunk) => this.scenePart(id, part, chunk), 'surface');
+          doc.surface = {...meta.surface, z: Array.from(z, v => (Number.isFinite(v) ? v : null))};
+          changed.add('_surface');
+        } else if (meta.surface && prev && prev.surface) {
+          doc.surface = {...meta.surface, z: prev.surface.z};
+        } else if (!meta.surface) doc.surface = null;
+        const r = {doc, changed, meta};
         if (meta.has_coreg && !(prev && prev.coreg)) {
           const c = await call('ui_scene_part', {scene_id: id, part: 'coreg'});
           const dh = await call('ui_scene_part', {scene_id: id, part: 'dh'});

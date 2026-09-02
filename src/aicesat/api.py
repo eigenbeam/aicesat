@@ -118,12 +118,16 @@ HTTP_CHUNK_BYTES = 1_000_000    # a browser has no such cap, and 23 sequential r
 
 
 def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: int = HTTP_CHUNK_BYTES) -> dict:
-    """Chunked access for hosts with small result limits. parts: meta | surface | imagery | coreg | positions:<MISSION>
-    (base64 float32 xyz, chunked) | dh (histogram data)."""
+    """Scene metadata and the non-point payloads. parts: meta | surface | imagery | coreg | dh.
+
+    Point arrays are NOT served here. They go out over the push stream (see stream.py), which is the only transport
+    for them — there is no chunked/base64 point path any more, and nothing takes a prefix of a series."""
     doc = _scene_for_read(scene_id)
     if doc is None:
         raise KeyError(scene_id)
     if part == "meta":
+        for _m in list(doc.get("series") or {}):
+            _migrate_series_arrays(scene_id, doc, _m)   # pre-sidecar scenes self-heal here now that no other read does
         # Everything EXCEPT the bulk arrays (positions, slopes) and surface z — those are fetched via their own chunked
         # parts and appended incrementally, so this stays small and is safe to poll repeatedly during a build. `has_slopes`
         # tells the client whether to fetch a slopes:<mission> part (ICESSN platelets).
@@ -138,23 +142,6 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
     if part == "surface":
         return _chunked(np.asarray([np.nan if v is None else v for v in doc["surface"]["z"]], dtype="f4"), chunk, chunk_bytes, "z")
-    if part.startswith("positions:") or part.startswith("slopes:"):
-        kind, m = part.split(":", 1)
-        if m not in doc["series"]:
-            raise KeyError(part)
-        _migrate_series_arrays(scene_id, doc, m)
-        # ICESSN platelet slopes are [sn, we, ...] — 2 per point, strided in lock-step with positions so they stay
-        # aligned. Both come from the binary sidecar: mmap-backed, so serving one chunk touches one chunk's bytes
-        # rather than materialising the whole array from a JSON list (see cache.scene_array_*).
-        # No stride: points are STORED shuffled, so a client that wants fewer simply stops fetching chunks. Striding
-        # here meant reading the whole array to discard most of it, on every request.
-        per = 3 if kind == "positions" else 2
-        vals_per_chunk = max(1, chunk_bytes // cache.ARRAY_DTYPE.itemsize)
-        total = cache.scene_array_len(scene_id, m, kind)
-        piece = cache.scene_array_read(scene_id, m, kind, chunk * vals_per_chunk, vals_per_chunk)
-        return {"name": "xyz" if per == 3 else "sw", "dtype": "float32", "n_values": int(total), "chunk": chunk,
-                "n_chunks": max(1, -(-total // vals_per_chunk)), "chunk_values": vals_per_chunk,
-                "b64": base64.b64encode(np.ascontiguousarray(piece).tobytes()).decode("ascii")}
     if part == "coreg":
         c = doc.get("coreg") or {}
         return {k: v for k, v in c.items() if k not in ("dh_native", "dh_coreg", "artifact")}

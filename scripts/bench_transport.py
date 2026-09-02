@@ -1,5 +1,18 @@
 #!/usr/bin/env python
-"""A/B the two scene transports against the SAME scene: the shipped PULL path vs the prototype PUSH path.
+"""Measure the scene push transport (src/aicesat/stream.py) end to end.
+
+RETIRED A/B, kept as the record that justified deleting the pull path. Laptop -> box, scene 3c84548964, at EQUAL
+point counts:
+
+    same point count   pull 1.58s   push 0.62s    2.6x
+    bytes/point        pull 18.07   push 12.12    1.49x (base64 was 4/3 of it)
+    round-trips        pull 9       push 1
+    uncapped push delivered 2,803,444 pts where the viewer had been showing 479,832 -- 17% of the scene
+
+Decomposed: ~86ms RTT, ~18.6 MB/s. Pull spent ~0.77s of its 1.58s waiting on round-trips; push spends its time moving
+bytes. Two numbers measured earlier in that work were harness artefacts and are NOT the result: 9.45x came from
+urllib opening a fresh TLS connection per pull request (a browser reuses one), and a capped run that read 0.78x came
+from contending with its own abandoned streams. The pull arm is gone from this script because the endpoint is gone.
 
     uv run python scripts/bench_transport.py --url https://44-241-137-16.sslip.io --code "$AICESAT_ACCESS_CODE" \
         --scene 3c84548964
@@ -8,17 +21,16 @@ Run it ON THE BOX (or against the box) — laptop timings are not evidence about
 transport, so the round-trip count dominates and the RTT is the whole experiment.
 
 What each column means:
-  wall        seconds from first request to last byte
-  bytes       what actually crossed the wire (base64 inflates the pull path by 4/3; the push path is raw f32)
-  requests    HTTP round-trips. The pull path is `meta` + ceil(values/chunk) SEQUENTIAL GETs per mission per array.
-  points      points actually delivered to the client
+  wall        seconds from the request to the terminal `done` frame
+  bytes       what actually crossed the wire (raw f32, no base64)
+  requests    HTTP round-trips (one, by construction)
+  points      points delivered to the client
   resets      push only: sidecars the writer replaced mid-stream, i.e. bytes the client had to throw away. On a
               FINISHED scene this must be 0; during a live build it counts the preview/finalize churn, which is the
               number that says how much the preview duality is costing (see stream.py).
 
-Scope: this replays an EXISTING, FINISHED scene through both transports — identical bytes at rest, only the
-delivery differs, which is the clean transport comparison. It does NOT measure time-to-first-paint during a live
-build; that needs a cold build per transport and belongs with bench_ingest_phases' cold-box discipline.
+Scope: an EXISTING, FINISHED scene. It does not measure time-to-first-paint during a live build; that needs a cold
+build and belongs with bench_ingest_phases' cold-box discipline.
 """
 from __future__ import annotations
 
@@ -81,35 +93,7 @@ class Client:
             pass
 
 
-# ----------------------------------------------------------------------------------- the shipped PULL transport
-DISPLAY_BUDGET = 400_000        # keep in step with ui/adapter.js; the pull path fetches at most this many points
-
-
-def pull(c: Client, scene: str) -> dict:
-    """Reproduce exactly what adapter.js does on a cold open: meta, then a bounded prefix of each array in
-    sequential ~1 MB chunks. Sequential is not a simplification — it is what the client does (fetchValuesFrom
-    awaits each chunk before asking for the next), and on a high-RTT link it is the whole cost."""
-    t0 = time.perf_counter()
-    meta = c.json(f"/api/scene/{scene}/part?part=meta")
-    points = 0
-    for mission, s in (meta.get("series") or {}).items():
-        shown = min(s.get("n") or 0, DISPLAY_BUDGET)
-        points += shown
-        for kind, per in (("positions", 3), ("slopes", 2)):
-            if kind == "slopes" and not s.get("has_slopes"):
-                continue
-            want = shown * per
-            got, chunk, n_chunks = 0, 0, 1
-            while got < want and chunk < n_chunks:
-                d = c.json(f"/api/scene/{scene}/part?part={kind}:{urllib.parse.quote(mission)}&chunk={chunk}")
-                n_chunks = d["n_chunks"]
-                got += len(base64.b64decode(d["b64"])) // 4
-                chunk += 1
-    return {"wall": time.perf_counter() - t0, "bytes": c.bytes, "requests": c.requests,
-            "points": points, "resets": 0, "first_points_s": None}
-
-
-# ------------------------------------------------------------------------------------ the prototype PUSH transport
+# ------------------------------------------------------------------------------------------- the push transport
 def push(c: Client, scene: str, cap: int | None = None) -> dict:
     """`cap` is the per-mission point budget, sent as `?limit=` so the SERVER stops. It is the only way to compare
     the transports like for like: uncapped, push ships 5.8x the data, so its wall answers a different question."""
@@ -156,7 +140,6 @@ def main() -> int:
     ap.add_argument("--code", default="", help="access code (the beta gate); omit for a private/local process")
     ap.add_argument("--scene", required=True, help="an existing scene id")
     ap.add_argument("--repeat", type=int, default=3, help="runs per transport; the MEDIAN is reported")
-    ap.add_argument("--order", default="both", choices=("both", "pull", "push"))
     ap.add_argument("--cap", type=int, default=None,
                     help="stop the push path at N points. Use --cap <the pull row's points> for the like-for-like "
                          "transport comparison, with the display-budget question held constant.")
@@ -164,43 +147,24 @@ def main() -> int:
 
     print(f"scene {a.scene} via {a.url}   (median of {a.repeat})\n")
     print(f"{'':<6} {'wall':>8} {'wire':>12} {'reqs':>6}  {'points':>10}  {'1st pts':>8}  res")
-    out = {}
-    for name, fn in (("pull", pull), ("push", push)):
-        if a.order != "both" and a.order != name:
-            continue
-        runs = []
-        for _ in range(a.repeat):
-            try:
-                c = Client(a.url, a.code)
-                runs.append(fn(c, a.scene, a.cap) if name == "push" else fn(c, a.scene))
-                c.close()
-            except Exception as e:
-                print(f"{name}: {type(e).__name__}: {e}", file=sys.stderr)
-                return 1
-        runs.sort(key=lambda r: r["wall"])
-        out[name] = runs[len(runs) // 2]
-        show(name, out[name])
-
-    if "pull" in out and "push" in out:
-        p, q = out["pull"], out["push"]
-        # NORMALISE. The two transports do not deliver the same thing: pull stops at DISPLAY_BUDGET, push delivers
-        # everything. Comparing raw totals reads as "push used 4x the bytes" when it in fact moved 6x the points more
-        # cheaply per point. Ratios of totals across different workloads are not a result, they are a category error.
-        pb, qb = p["bytes"] / max(p["points"], 1), q["bytes"] / max(q["points"], 1)
-        pt, qt = p["wall"] / max(p["points"], 1), q["wall"] / max(q["points"], 1)
-        print(f"\ndelivered      pull {p['points']:>10,} pts     push {q['points']:>10,} pts"
-              f"   ({q['points']/max(p['points'], 1):.1f}x, pull is capped at DISPLAY_BUDGET per mission)")
-        print(f"bytes/point    pull {pb:>10.2f}      push {qb:>10.2f}      {pb/max(qb, 1e-9):.2f}x smaller"
-              f"   (base64 is 4/3 of it)")
-        print(f"per 1M points  pull {pt*1e6:>10.2f}s     push {qt*1e6:>10.2f}s     {pt/max(qt, 1e-9):.2f}x faster")
-        print(f"round-trips    pull {p['requests']:>10}      push {q['requests']:>10}")
-        rtt = p["requests"] - q["requests"]
-        print(f"\nRTT SENSITIVITY: push saves {rtt} round-trips. That is worth ~{rtt} x RTT to a real client and "
-              f"NOTHING on loopback.\nIf you ran this on the box against the box, the wall column is not evidence "
-              f"about a browser — re-run it from the client's actual network position.")
-        if q["resets"]:
-            print(f"NOTE: {q['resets']} reset(s) on a finished scene — the sidecar was rewritten mid-stream, "
-                  f"which should not happen once a build is terminal. Investigate before trusting the wall time.")
+    runs = []
+    for _ in range(a.repeat):
+        try:
+            c = Client(a.url, a.code)
+            runs.append(push(c, a.scene, a.cap))
+            c.close()
+        except Exception as e:
+            print(f"push: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+    runs.sort(key=lambda r: r["wall"])
+    r = runs[len(runs) // 2]
+    show("push", r)
+    print(f"\nbytes/point {r['bytes'] / max(r['points'], 1):.2f}   "
+          f"per 1M points {r['wall'] / max(r['points'], 1) * 1e6:.2f}s   "
+          f"throughput {r['bytes'] / 1e6 / max(r['wall'], 1e-9):.1f} MB/s")
+    if r["resets"]:
+        print(f"\nNOTE: {r['resets']} reset(s) on a FINISHED scene. Expect one per mission at its finalize during a\n"
+              f"build and none afterwards; more than that means a sidecar is being rewritten when it should not be.")
     return 0
 
 
