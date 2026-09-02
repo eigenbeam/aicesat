@@ -10573,6 +10573,7 @@ function cloudLayers() {
   for (const [m, s] of Object.entries(scene.series)) {
     if (visible[m] === false) continue;   // per-mission show/hide (legend toggles)
     const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
+    if (!src || !src.length) continue;    // announced by the metadata poll, not yet delivered by the stream
     const paired = (coreg && coreg.pair_display_indices && coreg.pair_display_indices[m]) ? new Set(coreg.pair_display_indices[m]) : null;
     if (paired && SHOW_PAIRS) {  // co-located shots: a thin pale ring UNDER the point (subtle marker, not a blob)
       out.push(new deck.ScatterplotLayer({
@@ -10602,7 +10603,11 @@ function cloudLayers() {
 
 // ---------------------------------------------------------------- surface (depth cue)
 function surfaceLayers() {
-  const g = scene.surface; if (!g) return [];
+  // `z` arrives on the stream, but the grid metadata arrives on the metadata poll — so there is a window where the
+  // surface exists and its values do not. surfaceExtent() has always guarded this; this did not, and indexing the
+  // absent z threw inside render() and killed the poll loop. The scene doc is now assembled from two sources with
+  // different arrival times: every consumer of a bulk array must tolerate it not being there yet.
+  const g = scene.surface; if (!g || !g.z) return [];
   const img = SHOW_IMAGERY && scene.imagery;
   if (!SHOW_SURFACE && !img) return [];   // nothing to draw — imagery needs the mesh to drape on, so it keeps the mesh alive
   const {x0, y0, cell, nx, ny, z} = g;
@@ -10721,12 +10726,18 @@ function fitView() {
     n += p.length;
     for (let i = 0; i < p.length; i += 3) { minx = Math.min(minx, p[i]); maxx = Math.max(maxx, p[i]); miny = Math.min(miny, p[i + 1]); maxy = Math.max(maxy, p[i + 1]); minz = Math.min(minz, p[i + 2]); maxz = Math.max(maxz, p[i + 2]); }
   }
-  if (!n) return;
+  if (!n) return false;
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
-  const zoom = Math.log2(Math.min(root.clientWidth, root.clientHeight) / (span * 1.25));
+  const px = Math.min(root.clientWidth, root.clientHeight);
+  const zoom = Math.log2(px / (span * 1.25));
+  // The stream paints within ~100 ms of the view opening, which can be before the canvas has been laid out. px of 0
+  // makes zoom -Infinity, and deck.gl answers that with an opaque "@math.gl/web-mercator: assertion failed". Report
+  // the miss so the caller leaves didFit alone and tries again on the next frame of data.
+  if (!Number.isFinite(zoom)) return false;
   curZoom = zoom;   // seed the LOD zoom so the first render picks dots-vs-platelets correctly before any interaction
   deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], rotationX: 35, rotationOrbit: -25, zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
+  return true;
 }
 
 // ---------------------------------------------------------------- histograms / readouts
@@ -10864,7 +10875,7 @@ function applyDoc(doc) {
   $('demOn').checked = SHOW_SURFACE;
   $('imagery').checked = SHOW_IMAGERY;
   const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
-  if (!didFit && hasPositions) { fitView(); didFit = true; }   // frame the data once, on the first series to arrive
+  if (!didFit && hasPositions && fitView()) didFit = true;   // frame the data once, on the first series to arrive
   render(); updateLabels(); updateStats();
   const sig = keys.slice().sort().join(',');
   if (sig !== lastSeriesSig) { lastSeriesSig = sig; if (keys.length) initTimeSeries(); }   // reset TS UI only when the mission set changes
