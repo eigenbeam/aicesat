@@ -9611,6 +9611,10 @@ window.AICESAT = window.AICESAT || {};
     let surfaceMeta = null; const surfaceZ = growable(1 << 14);      // the DEM grid rides the stream too
     const stats = {bytes: 0, frames: 0, resets: 0, t0: performance.now(), tFirst: null, tDone: null};
     let dirty = false, timer = null;
+    // Everything handed to onUpdate is CACHED BY IDENTITY, because the renderer memoises on identity: a new object
+    // for unchanged data means a full GPU re-upload. Rebuilding these per paint is what made a 51 MB scene take ~15s
+    // in the browser while curl fetched the same bytes in 3s — the time went on repeated re-uploads, not the wire.
+    let surfaceCache = null, surfaceLen = -1;
     const emit = () => {
       timer = null;
       if (!dirty) return;
@@ -9620,15 +9624,39 @@ window.AICESAT = window.AICESAT || {};
         // view(3)/view(2): expose only WHOLE tuples. The server frames on whole points, but a paint can land between
         // two frames, and the renderer walking a partial xyz off the end yields NaN bounds -> a deck.gl viewport
         // assertion that names nothing near the cause. Two guards, because one of them is in another process.
-        const xyz = m.pos.view(3), sw = m.slopes.len ? m.slopes.view(2) : null;
-        series[m.name] = {positions: xyz, slopes: sw, n_shown: xyz.length / 3, n: xyz.length / 3, color: m.color};
+        // Reuse the previous view when the buffer has not grown: a mission that finished early (GLAS lands 2.6% into
+        // the stream) must not be re-uploaded on every paint for the remaining 97%.
+        if (m.len !== m.pos.len || m.slen !== m.slopes.len) {
+          m.len = m.pos.len; m.slen = m.slopes.len;
+          const xyz = m.pos.view(3), sw = m.slopes.len ? m.slopes.view(2) : null;
+          m.series = {positions: xyz, slopes: sw, n_shown: xyz.length / 3, n: xyz.length / 3, color: m.color};
+        }
+        series[m.name] = m.series;
       }
-      // deck.gl's mesh wants a plain array with null for nodata, which is what the surface layer already expects.
-      const surface = surfaceMeta && surfaceZ.len
-        ? {...surfaceMeta, z: Array.from(surfaceZ.view(), v => (Number.isFinite(v) ? v : null))} : null;
-      onUpdate({series, surface}, stats);
+      // deck.gl's mesh wants a plain array with null for nodata. Building it walks ~100k cells, so do it only when
+      // surface bytes actually arrived — otherwise the mesh memo downstream can never hit.
+      if (surfaceMeta && surfaceZ.len && surfaceLen !== surfaceZ.len) {
+        surfaceLen = surfaceZ.len;
+        surfaceCache = {...surfaceMeta, z: Array.from(surfaceZ.view(), v => (Number.isFinite(v) ? v : null))};
+      }
+      lastPainted = totalPoints();
+      lastPaintAt = performance.now();
+      onUpdate({series, surface: surfaceCache}, stats);
     };
-    const touch = () => { dirty = true; if (timer == null) timer = setTimeout(emit, opts.paintMs || 100); };
+    // Back off as the buffer grows. A fixed cadence re-uploads the WHOLE growing buffer every tick, so the work is
+    // quadratic in stream duration: ~125 paints averaging 25 MB for a 4.1M-point mission. Repainting on GROWTH
+    // instead makes it logarithmic (~17 paints), while keeping paints frequent and cheap early on when they matter
+    // most for perceived progress. The time floor still guarantees progress if growth is slow.
+    const totalPoints = () => { let n = 0; for (const m of missions.values()) n += m.pos.len / 3; return n; };
+    let lastPainted = 0, lastPaintAt = 0;
+    const GROWTH = 1.25, MAX_QUIET_MS = 2000;
+    const touch = () => {
+      dirty = true;
+      if (timer != null) return;
+      const n = totalPoints();
+      const due = n >= lastPainted * GROWTH || performance.now() - lastPaintAt >= MAX_QUIET_MS;
+      timer = setTimeout(emit, due ? (opts.paintMs != null ? opts.paintMs : 100) : MAX_QUIET_MS);
+    };
 
     const onFrame = (kind, mid, payload) => {
       stats.frames++;
