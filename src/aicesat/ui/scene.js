@@ -116,6 +116,22 @@ function plateletLayer(m, s) {
   });
 }
 
+// Layer-data memos. deck.gl compares props.data / props.mesh BY IDENTITY, so handing it a fresh object literal on
+// every render invalidates every attribute and re-uploads the whole buffer to the GPU — tens of MB for a 2.7M-point
+// scene. render() runs on any poll tick (imagery polls every 2.5s until it resolves), so without these the scene
+// visibly rebuilt itself after it had finished loading. Keyed on exactly the inputs the buffers depend on.
+const _cloudData = new Map();      // mission -> {src, data}
+let _meshMemo = null;              // {z, zexag, imgKey, mesh}
+function clearLayerMemos() { _cloudData.clear(); _meshMemo = null; }
+
+function cloudData(m, src) {
+  const prev = _cloudData.get(m);
+  if (prev && prev.src === src) return prev.data;
+  const data = {length: src.length / 3, attributes: {getPosition: {value: src, size: 3}}};
+  _cloudData.set(m, {src, data});
+  return data;
+}
+
 function cloudLayers() {
   const out = [];
   for (const [m, s] of Object.entries(scene.series)) {
@@ -139,7 +155,7 @@ function cloudLayers() {
     // changing it costs no re-upload and no re-walk of the buffer.
     out.push(new deck.ScatterplotLayer({
       id: 'pc-' + m,
-      data: {length: src.length / 3, attributes: {getPosition: {value: src, size: 3}}},
+      data: cloudData(m, src),
       modelMatrix: zExagMatrix(),
       getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
       radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
@@ -161,6 +177,20 @@ function surfaceLayers() {
   const {x0, y0, cell, nx, ny, z} = g;
   const P = (i, j) => [x0 + i * cell, y0 + j * cell, z[j * nx + i] * Z_EXAG];
   const layers = [];
+  // The mesh bakes Z_EXAG into its vertices and texCoords into the imagery extent, so those two join `z` in the key.
+  const imgKey = img ? `${img.x0},${img.y0},${img.x1},${img.y1}` : '';
+  const memoHit = _meshMemo && _meshMemo.z === z && _meshMemo.zexag === Z_EXAG && _meshMemo.imgKey === imgKey;
+  if (meshOk && memoHit) {
+    const meshProps = {
+      id: 'surface-mesh' + (img ? '-img' : ''), data: [{}], mesh: _meshMemo.mesh,
+      getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [76, 84, 100, 205],
+      material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
+      updateTriggers: {getPosition: Z_EXAG},
+    };
+    if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);
+    else meshProps.parameters = {depthWriteEnabled: false};
+    return [new SimpleMeshLayer(meshProps)];
+  }
   if (meshOk) {
     const vid = new Int32Array(nx * ny).fill(-1); const pos = []; let nv = 0;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (z[j * nx + i] != null) { vid[j * nx + i] = nv++; pos.push(...P(i, j)); }
@@ -189,9 +219,10 @@ function surfaceLayers() {
         texCoords[t + 1] = 1 - (pos[q + 1] - ex.y0) / (ex.y1 - ex.y0);
       }
       const attrs = {positions: {value: positions, size: 3}, normals: {value: normals, size: 3}, texCoords: {value: texCoords, size: 2}};
+      _meshMemo = {z, zexag: Z_EXAG, imgKey, mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}}};
       const meshProps = {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
-        mesh: {attributes: attrs, indices: {value: new Uint32Array(idx)}},
+        mesh: _meshMemo.mesh,
         getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [76, 84, 100, 205],   // charcoal hillshade so the mission colours pop (was light blue-grey)
         material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         updateTriggers: {getPosition: Z_EXAG},
@@ -738,7 +769,7 @@ this.open = async (id, query) => {
   if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
   STREAM_BUDGET = parseInt(params.get('budget') || '0', 10) || 0;
   if (id !== sceneId) {
-    stopPoll(); stopStream();
+    stopPoll(); stopStream(); clearLayerMemos();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
