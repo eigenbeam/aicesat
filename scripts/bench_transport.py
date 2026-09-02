@@ -156,12 +156,21 @@ def main() -> int:
 
     if "pull" in out and "push" in out:
         p, q = out["pull"], out["push"]
-        print(f"\npush/pull:  wall {p['wall']/max(q['wall'], 1e-9):.2f}x faster   "
-              f"wire {p['bytes']/max(q['bytes'], 1):.2f}x smaller   "
-              f"requests {p['requests']} -> {q['requests']}")
-        if q["points"] > p["points"]:
-            print(f"and it delivered {q['points']-p['points']:,} MORE points "
-                  f"({q['points']:,} vs the pull path's DISPLAY_BUDGET-capped {p['points']:,})")
+        # NORMALISE. The two transports do not deliver the same thing: pull stops at DISPLAY_BUDGET, push delivers
+        # everything. Comparing raw totals reads as "push used 4x the bytes" when it in fact moved 6x the points more
+        # cheaply per point. Ratios of totals across different workloads are not a result, they are a category error.
+        pb, qb = p["bytes"] / max(p["points"], 1), q["bytes"] / max(q["points"], 1)
+        pt, qt = p["wall"] / max(p["points"], 1), q["wall"] / max(q["points"], 1)
+        print(f"\ndelivered      pull {p['points']:>10,} pts     push {q['points']:>10,} pts"
+              f"   ({q['points']/max(p['points'], 1):.1f}x, pull is capped at DISPLAY_BUDGET per mission)")
+        print(f"bytes/point    pull {pb:>10.2f}      push {qb:>10.2f}      {pb/max(qb, 1e-9):.2f}x smaller"
+              f"   (base64 is 4/3 of it)")
+        print(f"per 1M points  pull {pt*1e6:>10.2f}s     push {qt*1e6:>10.2f}s     {pt/max(qt, 1e-9):.2f}x faster")
+        print(f"round-trips    pull {p['requests']:>10}      push {q['requests']:>10}")
+        rtt = p["requests"] - q["requests"]
+        print(f"\nRTT SENSITIVITY: push saves {rtt} round-trips. That is worth ~{rtt} x RTT to a real client and "
+              f"NOTHING on loopback.\nIf you ran this on the box against the box, the wall column is not evidence "
+              f"about a browser — re-run it from the client's actual network position.")
         if q["resets"]:
             print(f"NOTE: {q['resets']} reset(s) on a finished scene — the sidecar was rewritten mid-stream, "
                   f"which should not happen once a build is terminal. Investigate before trusting the wall time.")
