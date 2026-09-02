@@ -289,3 +289,24 @@ def test_a_slopes_frame_never_splits_a_pair():
     sizes = [len(p) // 4 for k, _m, p in frames if k == stream.KIND_SLOPES]
     assert all(s % 2 == 0 for s in sizes), f"slope frames must carry whole pairs, got {sizes}"
     assert sum(sizes) == n_vals
+
+
+def test_missions_are_interleaved_not_drained_one_at_a_time():
+    """A sweep used to drain each mission's whole array before starting the next, and missions are visited in sorted
+    order — so ATL06 (millions of points, tens of MB) went out in full before GLAS (22k) and ICESSN (71k) got a
+    single byte. On a real scene the two small missions, which are the entire point of a cross-mission view, appeared
+    only after ICESat-2 had finished. They cost about 1 MB between them; they should land almost immediately."""
+    doc = _scene(missions=("ATL06", "GLAS"))
+    per_frame = (stream.MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize) // 3 * 3
+    cache.scene_array_append("s1", "ATL06", "positions", np.ones(per_frame * 6, dtype=cache.ARRAY_DTYPE))
+    cache.scene_array_append("s1", "GLAS", "positions", np.full(30, 2.0, dtype=cache.ARRAY_DTYPE))
+    cache.save_scene("s1", doc)
+
+    frames = _drive("s1", [])
+    ids = {c["name"]: c["id"] for c in _controls(frames) if c["t"] == "mission"}
+    order = [m for k, m, _p in frames if k == stream.KIND_POSITIONS]
+    glas_done = max(i for i, m in enumerate(order) if m == ids["GLAS"])
+    atl_done = max(i for i, m in enumerate(order) if m == ids["ATL06"])
+    assert glas_done < atl_done, "the small mission must not wait for the large one to finish"
+    # and it should be near the very front, not merely before the end
+    assert glas_done <= 2, f"GLAS finished at frame {glas_done} of {len(order)}; expected it in the first pass"

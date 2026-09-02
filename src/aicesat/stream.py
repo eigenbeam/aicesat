@@ -152,10 +152,12 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
             surface_sent = True
             sent = True
 
+        # Announce any new missions, then collect the outstanding work. Missions appear as their legs land, so the
+        # table is built incrementally rather than declared up front. Ids are assigned once and never reused: the
+        # reader indexes its buffers by them.
+        work = []
         for mission in sorted(doc.get("series") or {}):
             if mission not in mission_ids:
-                # Missions appear as their legs land, so the table is built incrementally rather than declared up
-                # front. Ids are assigned once and never reused: the reader indexes its buffers by them.
                 mission_ids[mission] = len(mission_ids) + 1
                 series = doc["series"][mission]
                 yield control({"t": "mission", "id": mission_ids[mission], "name": mission,
@@ -173,29 +175,36 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
                     # the budget is in POINTS, so positions and slopes stay aligned with each other
                     total = min(total, limit * per_point)
                 if inodes.get(key, ino) != ino:
-                    # The file was replaced under us (preview thinning, or finalize swapping in the real series).
-                    # Everything the client holds for this array is stale — say so and start it over.
+                    # The file was replaced under us (finalize swapping in the authoritative series). Everything the
+                    # client holds for this array is stale — say so and start it over.
                     yield control({"t": "reset", "mission": mission, "kind": kind})
                     cursors[key] = 0
                     sent = True
                 inodes[key] = ino
+                if cursors.get(key, 0) < total:
+                    work.append([mission, mid, kind, frame_kind, ino, total, per_point, key])
 
+        # ROUND-ROBIN, one frame per array per pass. Draining each array in turn meant the small missions waited out
+        # the large one: sorted() visits ATL06 first, and on a real scene that is tens of MB, so GLAS (22k points) and
+        # ICESSN (71k) — about 1 MB between them, and the whole reason the view is cross-mission — did not appear
+        # until ICESat-2 had finished. Interleaved, they complete in the first pass or two.
+        while work:
+            still = []
+            for item in work:
+                mission, mid, kind, frame_kind, ino, total, per_point, key = item
                 start = cursors.get(key, 0)
-                while start < total:
-                    room = (MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize) // per_point * per_point   # whole points only
-                    count = min(total - start, room)
-                    piece = cache.scene_array_read(scene_id, mission, kind, start, count)
-                    # Re-stat AFTER the read: a replacement mid-read would have handed us bytes from the new file at
-                    # an offset that means nothing in it. Drop the piece; the next sweep sees the inode change and
-                    # emits the reset.
-                    if _sidecar_state(scene_id, mission, kind)[0] != ino:
-                        break
-                    if piece.size == 0:
-                        break
-                    yield frame(frame_kind, mid, piece.tobytes())
-                    start += int(piece.size)
-                    cursors[key] = start
-                    sent = True
+                room = (MAX_PAYLOAD // cache.ARRAY_DTYPE.itemsize) // per_point * per_point   # whole points only
+                piece = cache.scene_array_read(scene_id, mission, kind, start, min(total - start, room))
+                # Re-stat AFTER the read: a replacement mid-read would have handed us bytes from the new file at an
+                # offset that means nothing in it. Drop the piece; the next sweep sees the inode change and resets.
+                if _sidecar_state(scene_id, mission, kind)[0] != ino or piece.size == 0:
+                    continue
+                yield frame(frame_kind, mid, piece.tobytes())
+                cursors[key] = start + int(piece.size)
+                sent = True
+                if cursors[key] < total:
+                    still.append(item)
+            work = still
 
         if done:
             # Terminal status is observed BEFORE the sweep, so this sweep saw everything the build wrote — but keep
