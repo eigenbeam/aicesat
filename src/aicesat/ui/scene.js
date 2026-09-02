@@ -353,6 +353,47 @@ function updateLabels() {
 let pollTimer = null, sceneReady = false, didFit = false, lastSeriesSig = '', schemaRefreshed = false;
 function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
 
+// ---------------------------------------------------------------- PROTOTYPE push transport, behind ?stream=1
+// A/B switch, not a migration. With it on, the point arrays come from one long-lived response (adapter.sceneStreamRun)
+// and the ordinary poll keeps doing everything else — status, progress log, DEM surface, imagery, coreg — with its
+// point budget set to 0 so the two transports never fetch the same bytes. Off, nothing in this file behaves
+// differently. `?budget=N` caps the stream (declared to the server); omit it to see the whole scene.
+let STREAM_ON = false, STREAM_BUDGET = 0, streamHandle = null, streamStats = null;
+const streamed = new Map();                       // mission -> the series object the stream last produced
+
+function stopStream() {
+  if (streamHandle) { streamHandle.stop(); streamHandle = null; }
+  streamed.clear(); streamStats = null;
+}
+
+/** Graft the streamed point arrays onto a polled doc. Returns a NEW doc; never mutates the one passed in. */
+function mergeStreamed(doc) {
+  if (!doc || !streamed.size) return doc;
+  const series = {...doc.series};
+  for (const [m, s] of streamed) {
+    // `n` stays the server's true count from meta, so the legend still reads "shown of total" honestly; the stream
+    // only supplies what is actually on screen.
+    const base = series[m] || {mission: m, color: s.color, n: s.n, meta: {}, granules: []};
+    series[m] = {...base, positions: s.positions, slopes: s.slopes || null, n_shown: s.n_shown};
+  }
+  return {...doc, series};
+}
+
+function startStream(id) {
+  stopStream();
+  if (!api.sceneStreamRun) { console.warn('[aicesat] ?stream=1 ignored: this transport cannot stream'); return; }
+  streamHandle = api.sceneStreamRun(id, (series, stats) => {
+    if (sceneId !== id) return;                   // navigated away mid-stream
+    for (const [m, s] of Object.entries(series)) streamed.set(m, s);
+    streamStats = stats;
+    if (scene) applyDoc(mergeStreamed(scene));    // repaint with what has landed so far
+  }, {paintMs: 120, limit: STREAM_BUDGET || undefined});
+  streamHandle.done
+    .then(st => console.log('[aicesat] stream done', {ms: Math.round(st.tDone), MB: (st.bytes / 1e6).toFixed(2),
+                                                     frames: st.frames, resets: st.resets}))
+    .catch(e => { if (e.name !== 'AbortError') console.warn('[aicesat] stream failed', e); });
+}
+
 function applyDoc(doc) {
   if (!doc) return;
   scene = doc;
@@ -481,9 +522,10 @@ async function pollUntilReady() {
   let doc = null;
   // Incremental: fetch the small `meta` part and only the position/slope chunks that actually grew, appending onto the
   // buffers we already hold. Re-fetching the whole doc each tick re-shipped millions of floats per poll.
-  try { const up = await api.sceneUpdate(scene, myId); doc = up.doc; } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
+  // budget 0 under ?stream=1: the poll still brings meta, DEM surface, imagery and progress, but not one point.
+  try { const up = await api.sceneUpdate(scene, myId, STREAM_ON ? 0 : undefined); doc = up.doc; } catch (e) { doc = null; }   // 404 in the first instant, before the shell is persisted
   if (sceneId !== myId) return;
-  if (doc) applyDoc(doc);
+  if (doc) applyDoc(STREAM_ON ? mergeStreamed(doc) : doc);
   const ld = $('progress');
   if (status === 'loading') {
     if (!buildStart) buildStart = Date.now();
@@ -671,23 +713,27 @@ this.open = async (id, query) => {
   root.classList.add('on');
   params = new URLSearchParams(query || '');
   if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
+  STREAM_ON = params.get('stream') === '1';
+  STREAM_BUDGET = parseInt(params.get('budget') || '0', 10) || 0;
   if (id !== sceneId) {
-    stopPoll();
+    stopPoll(); stopStream();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them
     Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
     const ld = $('progress'); if (ld) ld.hidden = false;
+    if (STREAM_ON) { console.log('[aicesat] transport: PUSH (?stream=1)' + (STREAM_BUDGET ? ` budget ${STREAM_BUDGET}` : ' uncapped')); startStream(id); }
     await pollUntilReady();   // paints the shell + whatever is ready now; keeps polling if the build is still running
     loadBench();
   } else if (!sceneReady && !pollTimer) {
+    if (STREAM_ON && !streamHandle) startStream(id);   // came back to a still-building scene -> reopen the stream
     await pollUntilReady();   // came back to a still-building scene -> resume progressive polling
   } else {
     deckgl.redraw && deckgl.redraw(true);
   }
 };
-this.hide = () => { root.classList.remove('on'); stopPoll(); };
+this.hide = () => { root.classList.remove('on'); stopPoll(); stopStream(); };
 
   }
 };

@@ -118,7 +118,10 @@ window.AICESAT = window.AICESAT || {};
     };
 
     const done = (async () => {
-      const q = opts.from ? '?from=' + encodeURIComponent(opts.from) : '';
+      const qs = [];
+      if (opts.from) qs.push('from=' + encodeURIComponent(opts.from));
+      if (opts.limit) qs.push('limit=' + (opts.limit | 0));      // DECLARED: stopping the read does not stop the server
+      const q = qs.length ? '?' + qs.join('&') : '';
       const res = await fetch(`/api/scene/${id}/stream${q}`, {signal: ctl.signal});
       if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
       const reader = res.body.getReader(), feed = frameSplitter(onFrame);
@@ -137,8 +140,8 @@ window.AICESAT = window.AICESAT || {};
   };
 
   // incremental poll: small `meta` + only the new position/slope chunks (see loadSceneInto)
-  fetchApi.sceneUpdate = (prev, id) => loadSceneInto(prev, id, fetchApi.sceneMeta,
-                                                     (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk));
+  fetchApi.sceneUpdate = (prev, id, budget) => loadSceneInto(prev, id, fetchApi.sceneMeta,
+                                                     (sid, part, chunk) => fetchApi.scenePart(sid, part, chunk), budget);
 
   // ---- base64 helpers
   const b64ToF32 = b64 => { const bin = atob(b64); const buf = new ArrayBuffer(bin.length); const u8 = new Uint8Array(buf); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return new Float32Array(buf); };
@@ -194,7 +197,7 @@ window.AICESAT = window.AICESAT || {};
 
   // Build/refresh a scene doc incrementally against `prev` (the last doc this view rendered, or null).
   // Returns {doc, changed:Set<mission>} — `changed` lets the caller rebuild only the layers whose data moved.
-  async function loadSceneInto(prev, id, getMeta, getChunk) {
+  async function loadSceneInto(prev, id, getMeta, getChunk, budget = DISPLAY_BUDGET) {
     const meta = await getMeta(id);
     const doc = {...meta, series: {}, coreg: prev ? prev.coreg : null, surface: prev ? prev.surface : null};
     const changed = new Set();
@@ -202,10 +205,14 @@ window.AICESAT = window.AICESAT || {};
       const old = prev && prev.series && prev.series[m];
       const sameVersion = old && old._ver === seriesVersion(s);
       const haveVals = sameVersion ? (old._pos ? old._pos.length : 0) : 0;
-      const shown = Math.min(s.n || 0, DISPLAY_BUDGET);
+      const shown = Math.min(s.n || 0, budget);
       const wantVals = shown * 3;
       let pos = sameVersion ? old._pos : null;
-      if (wantVals > haveVals) {                                   // grew (or first sight): fetch ONLY the new tail
+      if (budget <= 0) {
+        // The push transport owns the point arrays; skip them entirely rather than issuing a zero-length fetch,
+        // which would still cost one round-trip per array per poll tick.
+        pos = new Float32Array(0);
+      } else if (wantVals > haveVals) {                            // grew (or first sight): fetch ONLY the new tail
         const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'positions:' + m, haveVals, wantVals);
         pos = haveVals ? concatF32([pos, add]) : add;
         changed.add(m);
@@ -214,7 +221,7 @@ window.AICESAT = window.AICESAT || {};
         changed.add(m);
       }
       let slopes = sameVersion ? old._slopes : null;
-      if (s.has_slopes) {
+      if (s.has_slopes) {                                          // budget 0 -> wantS is 0, so this fetches nothing
         const haveS = sameVersion && slopes ? slopes.length : 0, wantS = shown * 2;   // prefix-aligned with positions
         if (wantS > haveS) {
           const add = await fetchValuesFrom((p, c) => getChunk(id, p, c), 'slopes:' + m, haveS, wantS);

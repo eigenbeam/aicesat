@@ -17,8 +17,8 @@ global.atob = b64 => Buffer.from(b64, 'base64').toString('binary');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'aicesat', 'ui', 'adapter.js'), 'utf8');
 eval(src.replace('AICESAT.ready = connectApp()',
-  'AICESAT.__test = {frameSplitter, growable, fetchApi, K_CONTROL, K_POSITIONS, K_SLOPES};\n  AICESAT.ready = connectApp()'));
-const {frameSplitter, growable, fetchApi, K_CONTROL, K_POSITIONS, K_SLOPES} = AICESAT.__test;
+  'AICESAT.__test = {frameSplitter, growable, fetchApi, loadSceneInto, K_CONTROL, K_POSITIONS, K_SLOPES};\n  AICESAT.ready = connectApp()'));
+const {frameSplitter, growable, fetchApi, loadSceneInto, K_CONTROL, K_POSITIONS, K_SLOPES} = AICESAT.__test;
 
 // --- encode frames exactly as stream.py does: <BBHI> header then payload
 function frame(kind, mission, payload) {
@@ -106,6 +106,33 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
   ok(last.positions.length === 3, `after reset the client holds only the replacement (${last.positions.length})`);
   ok(last.positions[0] === 5, 'replacement values, not the discarded preview');
   ok(last.slopes && last.slopes.length === 2, 'slopes arrived on their own kind');
+
+  // ------------------------------------------------------------- 5. ?stream=1 must not double-fetch the points
+  // Under the push transport the poll is given a budget of 0. If it still asked for position chunks, the two
+  // transports would fetch the same bytes over the same link and the A/B would measure their sum.
+  {
+    const calls = [];
+    const meta = {scene_id: 's1', frame: {}, series: {ATL06: {mission: 'ATL06', n: 500000, has_slopes: true}}, surface: null};
+    const getChunk = async (sid, part, chunk) => { calls.push(part); return {chunk, n_chunks: 1, chunk_values: 24000, b64: ''}; };
+    const {doc} = await loadSceneInto(null, 's1', async () => meta, getChunk, 0);
+    ok(calls.length === 0, `budget 0 issued ${calls.length} chunk request(s): ${calls.join(',')}`);
+    ok(doc.series.ATL06.n_shown === 0, 'no points from the poll');
+    ok(doc.series.ATL06.n === 500000, 'but the true total survives, so the legend stays honest');
+
+    const after = await loadSceneInto(null, 's1', async () => meta, getChunk);   // default budget: it DOES fetch
+    ok(calls.length > 0, 'sanity: the same call with the default budget does fetch');
+    void after;
+  }
+
+  // ------------------------------------------------------------- 6. the budget is DECLARED in the request
+  {
+    let seen = null;
+    global.fetch = async (url) => { seen = url; return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}}; };
+    await fetchApi.sceneStreamRun('s1', () => {}, {limit: 400000}).done;
+    ok(/[?&]limit=400000\b/.test(seen), `limit not sent to the server: ${seen}`);
+    await fetchApi.sceneStreamRun('s1', () => {}, {}).done;
+    ok(!/limit=/.test(seen), `uncapped stream must not send a limit: ${seen}`);
+  }
 
   console.log(`ok — ${checks} checks`);
 })().catch(e => { console.error(e); process.exit(1); });
