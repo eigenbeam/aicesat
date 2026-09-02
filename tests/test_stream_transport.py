@@ -211,3 +211,33 @@ def test_the_stream_terminates_even_if_the_sidecar_keeps_changing_after_done():
     last = _controls(got)[-1]
     assert last["t"] == "done" and last["drained"] is False, "a churning sidecar must not hold the stream open"
     assert n["i"] <= stream.MAX_FINAL_SWEEPS + 2, f"{n['i']} sweeps after done"
+
+
+def test_a_declared_limit_stops_the_server_rather_than_the_client():
+    """A client with a display budget must be able to SAY so. Relying on it to hang up does not stop the server —
+    behind a reverse proxy the origin keeps producing into the proxy's buffer — so the budget belongs in the request."""
+    _scene()
+    cache.scene_array_append("s1", "ATL06", "positions", _pts(100, 1.0))
+    frames = _drive("s1", [], cursors=None)
+    assert _payloads(frames).size == 300, "unlimited baseline"
+
+    frames = list(stream.frames("s1", limit=25, is_done=lambda: True, sleep=lambda _s: None))
+    decoded = [f for fr in frames for f in stream.iter_frames(fr)]
+    assert _payloads(decoded).size == 75, "25 points = 75 values, and not one value more"
+
+
+def test_the_limit_keeps_slopes_aligned_with_positions():
+    """Slopes are 2 values per point, positions 3. A limit expressed in BYTES or VALUES would silently misalign them
+    and tilt every platelet against the wrong point."""
+    _scene(missions=("ICESSN",))
+    cache.scene_array_append("s1", "ICESSN", "positions", _pts(50))
+    cache.scene_array_append("s1", "ICESSN", "slopes", np.full(100, 0.5, dtype=cache.ARRAY_DTYPE))
+    frames = [f for fr in stream.frames("s1", limit=10, is_done=lambda: True, sleep=lambda _s: None)
+              for f in stream.iter_frames(fr)]
+    assert _payloads(frames, stream.KIND_POSITIONS).size == 30
+    assert _payloads(frames, stream.KIND_SLOPES).size == 20
+
+
+@pytest.mark.parametrize("spec,want", [("400000", 400_000), ("0", None), ("-5", None), ("abc", None), (None, None)])
+def test_parse_limit(spec, want):
+    assert stream.parse_limit(spec) == want

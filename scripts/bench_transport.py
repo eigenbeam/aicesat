@@ -26,12 +26,12 @@ import argparse
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import struct
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 HEADER = struct.Struct("<BBHI")
 K_CONTROL, K_POSITIONS, K_SLOPES = 0, 1, 2
@@ -44,23 +44,41 @@ def gate_token(code: str) -> str:
 
 
 class Client:
+    """ONE kept-alive connection for every request, because that is what the browser does.
+
+    urllib opens a fresh TCP+TLS connection per call. Benchmarking the pull path that way charges it a full handshake
+    (~3 RTT plus cert work) for each of its sequential chunk GETs, when a browser pays roughly one RTT per chunk over
+    an already-open HTTP/2 connection to Caddy. That inflated the pull wall by seconds and flattered the push path.
+    The round-trip COUNT is the honest variable here; the handshake count is an artefact of the harness."""
+
     def __init__(self, base: str, code: str = ""):
-        self.base = base.rstrip("/")
-        self.cookie = f"aicesat_gate={gate_token(code)}" if code else ""
+        u = urllib.parse.urlsplit(base.rstrip("/"))
+        self.host, self.scheme, self.prefix = u.netloc, u.scheme, u.path
+        self.conn = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(
+            u.netloc, timeout=300)
+        self.headers = {"Cookie": f"aicesat_gate={gate_token(code)}"} if code else {}
         self.requests = 0
         self.bytes = 0
 
-    def open(self, path: str, timeout: float = 300.0):
-        req = urllib.request.Request(self.base + path)
-        if self.cookie:
-            req.add_header("Cookie", self.cookie)
+    def open(self, path: str):
         self.requests += 1
-        return urllib.request.urlopen(req, timeout=timeout)
+        self.conn.request("GET", self.prefix + path, headers=self.headers)
+        r = self.conn.getresponse()
+        if r.status != 200:
+            body = r.read()
+            raise RuntimeError(f"HTTP {r.status} for {path}: {body[:200]!r}")
+        return r
 
     def json(self, path: str):
-        raw = self.open(path).read()
+        raw = self.open(path).read()          # must be fully read, or the connection cannot be reused
         self.bytes += len(raw)
         return json.loads(raw)
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------------------- the shipped PULL transport
@@ -92,9 +110,13 @@ def pull(c: Client, scene: str) -> dict:
 
 
 # ------------------------------------------------------------------------------------ the prototype PUSH transport
-def push(c: Client, scene: str) -> dict:
+def push(c: Client, scene: str, cap: int | None = None) -> dict:
+    """`cap` is the per-mission point budget, sent as `?limit=` so the SERVER stops. It is the only way to compare
+    the transports like for like: uncapped, push ships 5.8x the data, so its wall answers a different question."""
     t0 = time.perf_counter()
-    resp = c.open(f"/api/scene/{scene}/stream")
+    # DECLARE the budget. Stopping client-side does not stop the server (the proxy keeps draining the origin), so a
+    # client-side cap both wastes box work and contaminates the next run by contending with the abandoned stream.
+    resp = c.open(f"/api/scene/{scene}/stream" + (f"?limit={cap}" if cap else ""))
     buf, vals, resets, first = b"", 0, 0, None
     total = 0
     while True:
@@ -135,6 +157,9 @@ def main() -> int:
     ap.add_argument("--scene", required=True, help="an existing scene id")
     ap.add_argument("--repeat", type=int, default=3, help="runs per transport; the MEDIAN is reported")
     ap.add_argument("--order", default="both", choices=("both", "pull", "push"))
+    ap.add_argument("--cap", type=int, default=None,
+                    help="stop the push path at N points. Use --cap <the pull row's points> for the like-for-like "
+                         "transport comparison, with the display-budget question held constant.")
     a = ap.parse_args()
 
     print(f"scene {a.scene} via {a.url}   (median of {a.repeat})\n")
@@ -146,7 +171,9 @@ def main() -> int:
         runs = []
         for _ in range(a.repeat):
             try:
-                runs.append(fn(Client(a.url, a.code), a.scene))
+                c = Client(a.url, a.code)
+                runs.append(fn(c, a.scene, a.cap) if name == "push" else fn(c, a.scene))
+                c.close()
             except Exception as e:
                 print(f"{name}: {type(e).__name__}: {e}", file=sys.stderr)
                 return 1

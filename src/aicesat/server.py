@@ -126,13 +126,14 @@ class Handler(SimpleHTTPRequestHandler):
         if cache.load_scene(sid) is None and sid not in api._registry():
             return self._json(404, {"error": "no such scene"})
         cur = stream.parse_cursors(qs.get("from", [None])[0])
+        lim = stream.parse_limit(qs.get("limit", [None])[0])
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("X-Accel-Buffering", "no")   # ask any proxy in front not to sit on frames
         self.end_headers()
         sent = 0
         try:
-            for fr in stream.frames(sid, cur):
+            for fr in stream.frames(sid, cur, limit=lim):
                 self.wfile.write(fr)
                 self.wfile.flush()
                 sent += len(fr)

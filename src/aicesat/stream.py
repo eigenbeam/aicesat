@@ -96,13 +96,19 @@ def scene_is_done(scene_id: str) -> bool:
     return rec.get("status") in ("ready", "error")
 
 
-def frames(scene_id: str, cursors: dict[str, int] | None = None, *, is_done=None, poll_s: float = POLL_S,
+def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int | None = None, is_done=None,
+           poll_s: float = POLL_S,
            max_wait_s: float = MAX_WAIT_S, sleep=time.sleep, now=time.monotonic):
     """Yield the scene's point frames as they land, then a terminal `done` control frame.
 
     `cursors` resumes a dropped connection or a page reload: {"ATL06:positions": n_values_already_held}. Anything the
     client already has is not re-sent — the same job seriesVersion + chunk arithmetic does in the pull transport, but
     as one integer per array rather than a state machine.
+
+    `limit` is the client's per-mission point budget, DECLARED rather than enforced by hanging up. A client that just
+    stops reading does not stop the server: with a reverse proxy in front, the origin keeps draining into the proxy's
+    buffer and produces the whole scene for a client that wanted a sixth of it. Measured — it is what made a capped
+    A/B run 4x slower than it should have been, by contending with its own abandoned streams.
 
     Ends only when `is_done()` reports terminal AND a full sweep produced nothing new, so points written between the
     last sweep and the status flip are never dropped.
@@ -137,6 +143,9 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, is_done=None
                 ino, total = _sidecar_state(scene_id, mission, kind)
                 if not ino:
                     continue
+                if limit is not None:
+                    # positions are 3 values per point, slopes 2 — the budget is in POINTS, so both stay aligned
+                    total = min(total, limit * (3 if kind == "positions" else 2))
                 if inodes.get(key, ino) != ino:
                     # The file was replaced under us (preview thinning, or finalize swapping in the real series).
                     # Everything the client holds for this array is stale — say so and start it over.
@@ -175,6 +184,13 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, is_done=None
             return
         if not sent:
             sleep(poll_s)
+
+
+def parse_limit(spec: str | None) -> int | None:
+    """`?limit=400000` -> 400000. Junk means no limit: a bad budget must degrade to "send everything", never to a
+    failed stream."""
+    spec = (spec or "").strip()
+    return int(spec) if spec.isdigit() and int(spec) > 0 else None
 
 
 def parse_cursors(spec: str | None) -> dict[str, int]:
