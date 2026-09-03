@@ -186,7 +186,7 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     # which never had the branch.
     tbl = index_mod.typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
-                                       "built_at": datetime.now(timezone.utc).isoformat()})
+                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells)})
     d = _index_dir(res)
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".{name}.parquet.tmp"

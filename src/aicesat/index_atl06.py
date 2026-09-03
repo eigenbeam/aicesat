@@ -167,7 +167,7 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
 
     tbl = index_mod.typed_table(rows)
     tbl = tbl.replace_schema_metadata({"aicesat_atl06_index_version": ATL06_INDEX_VERSION, "h3_res": str(res),
-                                       "built_at": datetime.now(timezone.utc).isoformat()})
+                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells)})
     d = _index_dir(res)
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".{name}.parquet.tmp"

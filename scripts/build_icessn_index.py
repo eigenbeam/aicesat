@@ -45,11 +45,22 @@ def main():
     log.info("enumerating ILATM2 granules over %s (full record) ...", bbox)
     granules = coverage.search(coverage.ICESSN_SHORT_NAME, coverage.ICESSN_VERSION, bbox, None, polygon=ring)
     names = {coverage.granule_name(g): g for g in granules}
+    md0 = index_icessn._index_dir(res); md0.mkdir(parents=True, exist_ok=True)
     done = index_icessn.indexed_icessn_granules(res)
-    todo = [g for n, g in names.items() if n not in done]
+    # Which ground is genuinely NEW? A granule's rows are filtered to the cells its build asked for, so a granule
+    # indexed for a smaller bbox holds nothing outside it. Skipping by NAME therefore left the added ring unindexed
+    # while the claim was extended over it — a silent short scene, not an error. So:
+    #   * re-running the SAME area -> `needed` is empty -> nothing is re-indexed (the resume path is unchanged)
+    #   * ENLARGING it -> only granules that cannot PROVE they cover the new ground are rebuilt
+    # Files are never deleted: a rebuild overwrites one granule atomically, so an interrupt leaves the old one intact.
+    needed = index.unclaimed_cells(md0, fine)
+    todo = [g for n, g in names.items()
+            if n not in done or not index.granule_proves(md0 / f"{n}.parquet", needed)]
+    if needed:
+        log.info("new ground: %d of %d coverage cells are not yet claimed", len(needed), len(fine))
     log.info("res %d: %d granules found, %d already indexed, %d to build (workers=%d)",
              res, len(names), len(done & set(names)), len(todo), workers)
-    md = index_icessn._index_dir(res); md.mkdir(parents=True, exist_ok=True)
+    md = md0
     # The claim is stamped only AFTER the ground is actually indexed — see the end of this function. Stamping it
     # here (which this did) meant an interrupted build left a claim covering granules it never got to, so coverage
     # reported the whole region indexed and scenes over the unbuilt part came back quietly short.

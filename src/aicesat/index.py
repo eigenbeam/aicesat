@@ -8,6 +8,7 @@ The same chunk appears under every cell it touches (§5.3) — the residual lat/
 from __future__ import annotations
 
 import logging
+import json
 import pathlib
 import re
 import time
@@ -383,22 +384,86 @@ def manifest_cells(d) -> set:
         return set()
 
 
-def covers_cells(d, cells) -> bool:
-    """True if every cell in `cells` is inside the claim set — tested by walking UP to each ancestor.
+def _as_str(c) -> str:
+    return c if isinstance(c, str) else h3.int_to_str(int(c))
+
+
+def cells_within(packed_str: set[str], cells) -> bool:
+    """True if every cell in `cells` lies inside the compacted set `packed_str`, by walking UP to each ancestor.
 
     The set is stored compacted, so a claimed res-9 cell may be represented by a res-6 parent. Uncompacting to
     compare would materialise millions of ids for a large region; ancestor lookup is a handful of hashes per query
     cell and never allocates."""
-    packed = manifest_cells(d)
-    if not packed:
+    if not packed_str:
         return False
-    packed_str = {h3.int_to_str(c) for c in packed}
     for c in cells:
-        s = h3.int_to_str(int(c)) if not isinstance(c, str) else c
+        s = _as_str(c)
         r = h3.get_resolution(s)
         if not any(h3.cell_to_parent(s, rr) in packed_str for rr in range(r, -1, -1)):
             return False
     return True
+
+
+def covers_cells(d, cells) -> bool:
+    """True if every cell in `cells` is inside the index's coverage claim."""
+    packed = manifest_cells(d)
+    return cells_within({h3.int_to_str(c) for c in packed} if packed else set(), cells)
+
+
+def unclaimed_cells(d, cells) -> list:
+    """The subset of `cells` the claim does NOT already cover — i.e. the genuinely new ground of a build.
+
+    This is what makes enlarging a bbox cheap AND correct. Re-running the SAME area yields an empty list, so nothing
+    is re-indexed; enlarging yields only the added ring, and only granules that cannot prove they cover it are
+    rebuilt."""
+    packed = manifest_cells(d)
+    ps = {h3.int_to_str(c) for c in packed} if packed else set()
+    return [c for c in cells if not cells_within(ps, [c])]
+
+
+# Per-granule provenance. A granule's rows are FILTERED to the cells the build asked for, but the file recorded only
+# a schema version — so a later, larger build skipped it by name and never wrote its rows for the added ground, while
+# the claim was extended over that ground anyway. Silent short scenes. Recording the filter set fixes the skip test.
+CELLS_KEY = "aicesat_index_cells"
+
+
+def cells_metadata(cells) -> dict:
+    """The metadata entry recording which cells a granule's rows were filtered to. Compacted, so a whole-region
+    build stores a handful of ids rather than millions."""
+    # len(), not truthiness: `cells` arrives as a numpy array from the index builders, and `not array` raises
+    # ValueError on anything but a scalar. A caught-by-test detail, not a hypothetical.
+    if cells is None or len(cells) == 0:
+        return {}
+    ss = sorted({_as_str(c) for c in cells})
+    by_res: dict[int, set] = {}
+    for c in ss:
+        by_res.setdefault(h3.get_resolution(c), set()).add(c)
+    packed = sorted(c for _r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
+    return {CELLS_KEY: json.dumps(packed)}
+
+
+def granule_cells(path) -> set[str] | None:
+    """The cell set a granule file was built for, or None if it predates this record (unknown provenance)."""
+    try:
+        meta = pq.read_schema(path).metadata or {}
+    except Exception:
+        return None
+    raw = meta.get(CELLS_KEY.encode())
+    if not raw:
+        return None
+    try:
+        return set(json.loads(raw))
+    except Exception:
+        return None
+
+
+def granule_proves(path, needed) -> bool:
+    """True if this granule file demonstrably already covers `needed`. Unknown provenance answers False: a file that
+    cannot prove its coverage must be rebuilt rather than trusted, which is the whole point."""
+    if needed is None or len(needed) == 0:
+        return True                    # nothing new is being asked of it
+    rec = granule_cells(path)
+    return rec is not None and cells_within(rec, needed)
 
 
 def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:
