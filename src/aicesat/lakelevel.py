@@ -211,16 +211,27 @@ def _neighbours(key: int) -> list[int]:
     return [((gx + dx) << 32) + (gy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy)]
 
 
+MAX_WATER_FRAC = 0.25   # above this share of photons at the water elevation, a "margin" cell is really lake
+
+
 def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_M,
-           win_m: float = MARGIN_WIN_M, min_photons: int = MARGIN_MIN_PHOTONS) -> list[dict]:
+           win_m: float = MARGIN_WIN_M, min_photons: int = MARGIN_MIN_PHOTONS,
+           band_m: float = BAND_M, max_water_frac: float = MAX_WATER_FRAC) -> list[dict]:
     """Ground elevation in each cell ADJACENT to the water, as height above the water surface.
 
     Returns one row per margin cell, lowest first — the lowest ground is what the lake reaches first, so the minimum
     is the number the hazard argument turns on, not the mean. `bearing_deg` (0 = N, 90 = E) is measured from the
     sampled water's centroid, so a specific sector like "the northeastern margin" can be selected.
 
-    Rough ground has no razor-thin mode, so this uses a wider window than the water estimator and reports `spread_m`;
-    a cell with metres of relief inside it is a cell whose single "elevation" means little.
+    Rough ground has no razor-thin mode, so this uses a wider window than the water estimator. Dispersion is
+    reported as `p5_p95_m` over ALL the cell's photons — deliberately unbounded. The obvious choice, the spread
+    inside the mode window, saturates at 2*win_m and read 3-4 m for every cell on the first real run, water and rock
+    alike: a diagnostic that cannot vary is not a diagnostic.
+
+    Cells whose photons are largely AT the water elevation are dropped, not reported as very low ground. The mask
+    threshold is a hard edge on a soft boundary, so a cell can be mostly lake and still fall outside it; on Imja
+    seven such cells came back as "ground" 0.02-0.30 m BELOW the water, with crossing times of 3-5 years attached.
+    Dry ground cannot sit below the lake it borders, so that number was the lake measuring itself.
     """
     lon, lat, h = (np.asarray(x, dtype="f8") for x in (lon, lat, h))
     gx, gy = _grid(lon, lat, cell_m)
@@ -236,14 +247,19 @@ def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_
         n = int(m.sum())
         if n < min_photons:
             continue
-        s = surface_height(h[m], win_m=win_m, min_photons=min_photons, min_frac=0.05)
+        hm = h[m]
+        wfrac = float(np.mean(np.abs(hm - z_water) <= band_m))
+        if wfrac > max_water_frac:
+            continue                       # mostly lake: not margin ground
+        s = surface_height(hm, win_m=win_m, min_photons=min_photons, min_frac=0.05)
         if s is None:
             continue
         lo, la = float(np.median(lon[m])), float(np.median(lat[m]))
         dx = (lo - clon) * 111e3 * np.cos(np.radians(clat))
         dy = (la - clat) * 111e3
-        out.append({"lon": lo, "lat": la, "n_photons": n,
-                    "z_ground": s["z"], "above_water_m": s["z"] - z_water, "spread_m": s["spread_m"],
+        out.append({"lon": lo, "lat": la, "n_photons": n, "water_frac": wfrac,
+                    "z_ground": s["z"], "above_water_m": s["z"] - z_water,
+                    "p5_p95_m": float(np.subtract(*np.percentile(hm, [95, 5]))), "spread_m": s["spread_m"],
                     "bearing_deg": float(np.degrees(np.arctan2(dx, dy)) % 360.0),
                     "range_m": float(np.hypot(dx, dy))})
     out.sort(key=lambda r: r["above_water_m"])

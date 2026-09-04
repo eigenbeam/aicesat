@@ -313,3 +313,54 @@ def test_no_crossing_time_when_the_extrapolation_is_meaningless(above, rate):
     """Ground that is not sinking, or already below the water, has no 'time to crossing'. Returning a number there
     would read as a forecast of something that is not happening."""
     assert lakelevel.years_to_crossing(above, rate) is None
+
+
+def test_margin_drops_cells_that_are_really_lake():
+    """From the first real run: seven 'margin' cells came back 0.02-0.30 m BELOW the water, with 3-5 year crossing
+    times attached. Dry ground cannot sit below the lake it borders — those cells were water that missed the mask's
+    threshold, so the estimator measured the lake and called it shore."""
+    r = np.random.default_rng(11)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    z = 4967.0
+    # a water body, and one adjacent cell that is 90% water (a mask near-miss) plus a genuine shore cell
+    x = r.uniform(-250, 250, 20000); y = r.uniform(-250, 250, 20000)
+    lon = [lo0 + x / mx]; lat = [la0 + y / 111e3]; h = [r.normal(z, 0.06, x.size)]
+    # 0.40 is the gap that matters: BELOW water_mask's min_cell_frac (0.5) so it is not masked as water, but ABOVE
+    # margin's max_water_frac (0.25) so it must still be rejected as margin. A 0.9 cell would simply be masked and
+    # never reach margin() at all — which is how the first version of this test passed with the guard removed.
+    for cx, frac, up in ((350, 0.40, 0.0), (550, 0.0, 6.0)):    # near-miss water cell, then real shore
+        n = 3000
+        sx = cx + r.uniform(-45, 45, n); sy = r.uniform(-45, 45, n)
+        nw = int(n * frac)
+        hh = np.concatenate([r.normal(z, 0.06, nw), r.normal(z + up + 1.0, 0.5, n - nw)])
+        lon.append(lo0 + sx / mx); lat.append(la0 + sy / 111e3); h.append(hh)
+    lon, lat, h = np.concatenate(lon), np.concatenate(lat), np.concatenate(h)
+    water = lakelevel.water_mask(lon, lat, h, z)
+    rows = lakelevel.margin(lon, lat, h, z, water)
+    assert rows, "the genuine shore cell should survive"
+    assert all(r_["water_frac"] <= lakelevel.MAX_WATER_FRAC for r_ in rows), \
+        f"a water-dominated cell survived: {[round(r_['water_frac'], 2) for r_ in rows]}"
+    assert all(r_["above_water_m"] > 0 for r_ in rows), \
+        f"a below-water 'ground' survived: {[round(r_['above_water_m'], 2) for r_ in rows]}"
+
+
+def test_the_dispersion_metric_is_not_capped_by_the_mode_window():
+    """spread_m is bounded by 2*win_m and read 3-4 m for every cell on the real run — water and rock alike. p5_p95_m
+    is computed over all the cell's photons so it can actually discriminate."""
+    r = np.random.default_rng(12)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    z = 4967.0
+    x = r.uniform(-250, 250, 20000); y = r.uniform(-250, 250, 20000)
+    n = 3000
+    sx = 350 + r.uniform(-45, 45, n)
+    rough = r.normal(z + 20, 9.0, n)                              # ~30 m of relief in one cell
+    lon = np.concatenate([lo0 + x / mx, lo0 + sx / mx])
+    lat = np.concatenate([la0 + y / 111e3, la0 + r.uniform(-45, 45, n) / 111e3])
+    h = np.concatenate([r.normal(z, 0.06, x.size), rough])
+    rows = lakelevel.margin(lon, lat, h, z, lakelevel.water_mask(lon, lat, h, z))
+    assert rows, "no margin cell"
+    rr = rows[0]
+    assert rr["spread_m"] <= 2 * lakelevel.MARGIN_WIN_M + 1e-6, "premise: spread_m is capped by the window"
+    assert rr["p5_p95_m"] > 10.0, f"p5_p95 should see the real relief, got {rr['p5_p95_m']:.1f} m"

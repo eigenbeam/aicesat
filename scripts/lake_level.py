@@ -156,12 +156,12 @@ def main() -> int:
                   + f"; water at {z_w:.3f} m")
             # lon/lat FIRST: bearing is measured from the SAMPLED water centroid (the cells beams happened to
             # cross), not the lake's true centre, so it carries an unknown offset. Coordinates can be mapped.
-            print(f"{'lon':>9} {'lat':>8} {'bearing':>8} {'above water':>12} {'spread':>8} {'photons':>8}"
+            print(f"{'lon':>9} {'lat':>8} {'bearing':>8} {'above water':>12} {'p5-p95':>8} {'water%':>7} {'photons':>8}"
                   + ("   yrs to crossing" if a.subsidence else ""))
             for r in sel[:20]:
                 y = lakelevel.years_to_crossing(r["above_water_m"], a.subsidence) if a.subsidence else None
                 print(f"{r['lon']:9.4f} {r['lat']:8.4f} {r['bearing_deg']:8.0f} {r['above_water_m']:11.2f} m "
-                      f"{r['spread_m']:7.1f} m {r['n_photons']:8,}"
+                      f"{r['p5_p95_m']:7.1f} m {100*r['water_frac']:6.0f}% {r['n_photons']:8,}"
                       + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")))
             if sel:
                 lo = sel[0]
@@ -171,8 +171,9 @@ def main() -> int:
                     print(f"at {a.subsidence*100:+.1f} cm/yr it reaches the water in "
                           + (f"~{y:.0f} years" if y else "never (not sinking)") + ", IF the rate holds and the")
                     print("water level stays put — this series bounds the water term, it does not fix it.")
-                print("spread_m is the height range inside a cell: a large value means one 'elevation' is a poor")
-                print("summary of that cell, so treat its crossing time as indicative only.")
+                print("p5-p95 is the height range inside a cell: a large value means one 'elevation' is a poor")
+                print("summary of that cell, so treat its crossing time as indicative only. Cells whose photons are")
+                print(f"more than {100*lakelevel.MAX_WATER_FRAC:.0f}% at the water elevation are dropped as lake, not reported as low ground.")
     if a.json:
         with open(a.json, "w") as f:
             json.dump({"bbox": list(bbox), "mask": how, "granules": glist, "margin": marg,
