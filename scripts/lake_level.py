@@ -7,6 +7,10 @@
     # 2. the level series — --auto-mask grows the water footprint from a small seed
     uv run python scripts/lake_level.py --bbox 86.90 27.88 86.95 27.92 --centre 86.925 27.899 --auto-mask
 
+    # 3. both sides of the gap: the ground beside the water, and when subsidence brings it down to the water
+    uv run python scripts/lake_level.py --bbox 86.90 27.88 86.95 27.92 --centre 86.925 27.899 --auto-mask \
+        --margin --bearing 0 90 --subsidence -0.130
+
 Run it where the index and lake live (the EC2 box), and with AICESAT_S3_DIRECT=1 so the fetch is in-region.
 
 Masks, best first:
@@ -50,6 +54,14 @@ def main() -> int:
     ap.add_argument("--min-conf", type=int, default=0,
                     help="ATL03 land-ice signal confidence floor (default 0: keep almost everything and let the "
                          "histogram mode discriminate; the land-ice classifier is not a judge of water)")
+    ap.add_argument("--margin", action="store_true",
+                    help="also measure the GROUND in the cells bordering the water, as height above the water "
+                         "surface — both sides of the gap from the same photons and the same datum")
+    ap.add_argument("--subsidence", type=float, default=None, metavar="M_PER_YR",
+                    help="a ground subsidence rate (NEGATIVE for sinking, e.g. -0.130 for Brencher et al. 2026) to "
+                         "turn each margin height into a time-to-crossing")
+    ap.add_argument("--bearing", nargs=2, type=float, default=None, metavar=("FROM", "TO"),
+                    help="restrict the margin report to a bearing sector, 0=N 90=E (e.g. 0 90 for the NE margin)")
     ap.add_argument("--json", help="write the full result here")
     a = ap.parse_args()
 
@@ -125,9 +137,40 @@ def main() -> int:
               + ", ".join(f"{r['bias_note']:+.2f}" for r in worst))
         print("  positive = subsurface/volume scattering (turbid or shallow water)")
         print("  negative = the mask is admitting ground ABOVE the water; tighten it or use --auto-mask")
+    marg = []
+    if a.margin:
+        if not a.auto_mask:
+            print("\n--margin needs --auto-mask (it works from the derived water cells)", file=sys.stderr)
+        else:
+            z_w = info["z_water"]
+            marg = lakelevel.margin(q["lon"], q["lat"], q["h"], z_w, keep)
+            sel = marg
+            if a.bearing:
+                f0, f1 = a.bearing
+                sel = [r for r in marg if (f0 <= r["bearing_deg"] <= f1 if f0 <= f1
+                                           else (r["bearing_deg"] >= f0 or r["bearing_deg"] <= f1))]
+            print(f"\nGROUND BESIDE THE WATER — {len(sel)} of {len(marg)} margin cells"
+                  + (f" in bearing {a.bearing[0]:.0f}-{a.bearing[1]:.0f} deg" if a.bearing else "")
+                  + f"; water at {z_w:.3f} m")
+            print(f"{'bearing':>8} {'above water':>12} {'spread':>8} {'photons':>8}"
+                  + ("   yrs to crossing" if a.subsidence else ""))
+            for r in sel[:12]:
+                y = lakelevel.years_to_crossing(r["above_water_m"], a.subsidence) if a.subsidence else None
+                print(f"{r['bearing_deg']:8.0f} {r['above_water_m']:11.2f} m {r['spread_m']:7.1f} m "
+                      f"{r['n_photons']:8,}" + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")))
+            if sel:
+                lo = sel[0]
+                print(f"\nlowest ground in this sector sits {lo['above_water_m']:.2f} m above the water surface.")
+                if a.subsidence:
+                    y = lakelevel.years_to_crossing(lo["above_water_m"], a.subsidence)
+                    print(f"at {a.subsidence*100:+.1f} cm/yr it reaches the water in "
+                          + (f"~{y:.0f} years" if y else "never (not sinking)") + ", IF the rate holds and the")
+                    print("water level stays put — this series bounds the water term, it does not fix it.")
+                print("spread_m is the height range inside a cell: a large value means one 'elevation' is a poor")
+                print("summary of that cell, so treat its crossing time as indicative only.")
     if a.json:
         with open(a.json, "w") as f:
-            json.dump({"bbox": list(bbox), "mask": how, "granules": glist,
+            json.dump({"bbox": list(bbox), "mask": how, "granules": glist, "margin": marg,
                        "passes": [{k: (str(v) if k == "t" else v) for k, v in r.items()} for r in rows],
                        "series": out}, f, indent=1)
         print(f"\nwrote {a.json}", file=sys.stderr)

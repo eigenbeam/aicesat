@@ -195,3 +195,68 @@ def find_water(lon, lat, h, seed_lon: float, seed_lat: float, seed_radius_m: flo
     info.update({"z_water": z, "seed_mad_m": s["mad"], "n_photons": int(m.sum()), "n_cells": n_cells,
                  "sampled_km2": n_cells * (cell_m / 1000.0) ** 2})
     return m, info
+
+
+# --- the ground beside the water ----------------------------------------------------------------------------------
+# Brencher et al. (2026) argue the NE moraine bordering Imja will subside BELOW the lake level, letting the lake
+# expand west and narrowing the dam. That argument is framed against "the current lake level", which their InSAR
+# cannot measure (open water decorrelates). Measuring the margin ground from the SAME photons as the water puts both
+# sides of the gap in one instrument and one datum (WGS84 ellipsoidal), so no cross-dataset registration is assumed.
+MARGIN_WIN_M = 2.0      # ground is rough: a wider window than water, or the mode test rejects every land cell
+MARGIN_MIN_PHOTONS = 40
+
+
+def _neighbours(key: int) -> list[int]:
+    gx, gy = key >> 32, key & 0xFFFFFFFF
+    return [((gx + dx) << 32) + (gy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy)]
+
+
+def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_M,
+           win_m: float = MARGIN_WIN_M, min_photons: int = MARGIN_MIN_PHOTONS) -> list[dict]:
+    """Ground elevation in each cell ADJACENT to the water, as height above the water surface.
+
+    Returns one row per margin cell, lowest first — the lowest ground is what the lake reaches first, so the minimum
+    is the number the hazard argument turns on, not the mean. `bearing_deg` (0 = N, 90 = E) is measured from the
+    sampled water's centroid, so a specific sector like "the northeastern margin" can be selected.
+
+    Rough ground has no razor-thin mode, so this uses a wider window than the water estimator and reports `spread_m`;
+    a cell with metres of relief inside it is a cell whose single "elevation" means little.
+    """
+    lon, lat, h = (np.asarray(x, dtype="f8") for x in (lon, lat, h))
+    gx, gy = _grid(lon, lat, cell_m)
+    keys = (gx.astype("i8") << 32) + gy.astype("i8")
+    wet = set(np.unique(keys[water]).tolist())
+    if not wet:
+        return []
+    clon, clat = float(np.median(lon[water])), float(np.median(lat[water]))
+    cand = {n for k in wet for n in _neighbours(k)} - wet
+    out = []
+    for k in cand:
+        m = keys == k
+        n = int(m.sum())
+        if n < min_photons:
+            continue
+        s = surface_height(h[m], win_m=win_m, min_photons=min_photons, min_frac=0.05)
+        if s is None:
+            continue
+        lo, la = float(np.median(lon[m])), float(np.median(lat[m]))
+        dx = (lo - clon) * 111e3 * np.cos(np.radians(clat))
+        dy = (la - clat) * 111e3
+        out.append({"lon": lo, "lat": la, "n_photons": n,
+                    "z_ground": s["z"], "above_water_m": s["z"] - z_water, "spread_m": s["spread_m"],
+                    "bearing_deg": float(np.degrees(np.arctan2(dx, dy)) % 360.0),
+                    "range_m": float(np.hypot(dx, dy))})
+    out.sort(key=lambda r: r["above_water_m"])
+    return out
+
+
+def years_to_crossing(above_water_m: float, subsidence_m_per_yr: float) -> float | None:
+    """How long until ground this far above the water reaches it, at a given subsidence rate.
+
+    Sign convention: `subsidence_m_per_yr` is NEGATIVE for sinking (as an InSAR vertical velocity is reported).
+    Returns None when the ground is not sinking or is already below the water — the linear extrapolation is only
+    meaningful in the one case, and returning a number for the others invites reading a rate into a non-event.
+    """
+    if subsidence_m_per_yr >= 0 or above_water_m <= 0:
+        return None
+    return float(above_water_m / -subsidence_m_per_yr)

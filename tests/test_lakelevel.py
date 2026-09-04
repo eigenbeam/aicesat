@@ -247,3 +247,69 @@ def test_sampled_km2_is_the_ground_the_beams_crossed_not_the_lake():
     lake_km2 = (2.0 * 2.0)                                        # the notional water body the lines cross
     assert info["sampled_km2"] < 0.4 * lake_km2, "sampled area must reflect the tracks, not the water body"
     assert info["n_cells"] >= 20, f"but it should still span the crossings, got {info['n_cells']} cells"
+
+
+# --- the ground beside the water ------------------------------------------------------------------------------
+def _lake_with_shore(z=4967.0, shore_heights=((0, 3.0), (90, 12.0), (180, 8.0), (270, 25.0)), seed=7):
+    """A lake with four shore sectors at different heights above the water, at known bearings (0=N, 90=E)."""
+    r = np.random.default_rng(seed)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    x = r.uniform(-400, 400, 30000); y = r.uniform(-400, 400, 30000)
+    inside = (np.abs(x) < 300) & (np.abs(y) < 300)
+    lon = [lo0 + x[inside] / mx]; lat = [la0 + y[inside] / 111e3]; h = [r.normal(z, 0.06, inside.sum())]
+    for bearing, up in shore_heights:                       # a shore block 450 m out along each bearing
+        b = np.radians(bearing)
+        cx, cy = 450 * np.sin(b), 450 * np.cos(b)
+        n = 4000
+        sx = cx + r.uniform(-120, 120, n); sy = cy + r.uniform(-120, 120, n)
+        lon.append(lo0 + sx / mx); lat.append(la0 + sy / 111e3)
+        h.append(r.normal(z + up, 0.5, n))                  # rough-ish ground
+    return np.concatenate(lon), np.concatenate(lat), np.concatenate(h), z
+
+
+def test_margin_reports_ground_height_above_the_water():
+    lon, lat, h, z = _lake_with_shore()
+    water = lakelevel.water_mask(lon, lat, h, z)
+    rows = lakelevel.margin(lon, lat, h, z, water)
+    assert rows, "no margin cells found"
+    assert rows == sorted(rows, key=lambda r: r["above_water_m"]), "lowest ground must come first"
+    lowest = rows[0]
+    assert 2.0 < lowest["above_water_m"] < 4.5, f"lowest shore is 3 m up, got {lowest['above_water_m']:.2f}"
+
+
+def test_margin_bearings_identify_the_sector():
+    """The paper's claim is about the NORTHEASTERN margin specifically, so a bearing per cell is what makes the
+    measurement answer their question rather than a generic one."""
+    lon, lat, h, z = _lake_with_shore(shore_heights=((45, 2.0), (225, 20.0)))
+    water = lakelevel.water_mask(lon, lat, h, z)
+    rows = lakelevel.margin(lon, lat, h, z, water)
+    ne = [r for r in rows if 20 <= r["bearing_deg"] <= 70]
+    sw = [r for r in rows if 200 <= r["bearing_deg"] <= 250]
+    assert ne and sw, f"bearings found: {sorted(round(r['bearing_deg']) for r in rows)}"
+    assert np.median([r["above_water_m"] for r in ne]) < np.median([r["above_water_m"] for r in sw]) - 10
+
+
+def test_margin_excludes_the_water_cells_themselves():
+    lon, lat, h, z = _lake_with_shore()
+    water = lakelevel.water_mask(lon, lat, h, z)
+    rows = lakelevel.margin(lon, lat, h, z, water)
+    assert all(r["above_water_m"] > 1.0 for r in rows), "a water cell leaked into the margin"
+
+
+def test_margin_is_empty_without_water():
+    lon, lat, h, _z = _lake_with_shore()
+    assert lakelevel.margin(lon, lat, h, 4967.0, np.zeros(lon.size, bool)) == []
+
+
+# --- time to crossing -----------------------------------------------------------------------------------------
+def test_years_to_crossing():
+    assert lakelevel.years_to_crossing(1.30, -0.130) == pytest.approx(10.0)
+    assert lakelevel.years_to_crossing(0.90, -0.130) == pytest.approx(6.92, abs=0.01)
+
+
+@pytest.mark.parametrize("above,rate", [(1.0, 0.0), (1.0, +0.05), (-0.5, -0.13), (0.0, -0.13)])
+def test_no_crossing_time_when_the_extrapolation_is_meaningless(above, rate):
+    """Ground that is not sinking, or already below the water, has no 'time to crossing'. Returning a number there
+    would read as a forecast of something that is not happening."""
+    assert lakelevel.years_to_crossing(above, rate) is None
