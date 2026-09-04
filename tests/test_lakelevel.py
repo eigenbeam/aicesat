@@ -397,3 +397,31 @@ def test_diagnostics_ignore_the_telemetry_noise_that_swamps_a_cell():
     rr = rows2[0]
     assert rr["relief_m"] < 10.0, f"relief should track the ground, got {rr['relief_m']:.0f} m"
     assert rr["p5_p95_all_m"] > 500.0, "the whole-cell range is still reported, so the noise stays visible"
+
+
+def test_a_pond_at_a_different_level_is_flagged_not_reported_as_low_ground():
+    """From the real run: four cells 0.65 m above Imja, flat to 0.2-0.3 m, ranked near the top with a 5-year
+    crossing time. water_frac cannot catch them — it asks whether photons sit at the MAIN lake's elevation, and a
+    separate pond sits at its own. Flatness catches a water body at any level; nothing on a moraine is flat to a few
+    decimetres over 100 m."""
+    r = np.random.default_rng(31)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    z = 4967.0
+    x = r.uniform(-250, 250, 20000); y = r.uniform(-250, 250, 20000)
+    lon, lat, h = [lo0 + x / mx], [la0 + y / 111e3], [r.normal(z, 0.06, x.size)]
+    # both must ABUT the water: margin cells are immediate neighbours of water cells, so a feature 550 m out never
+    # enters the margin at all. Opposite shores, same distance.
+    for cx, surf, sigma in ((350, z + 0.65, 0.06),      # a pond 65 cm above the lake: flat
+                            (-350, z + 6.0, 1.2)):      # real moraine: rough
+        n = 2500
+        sx = cx + r.uniform(-45, 45, n)
+        lon.append(lo0 + sx / mx); lat.append(la0 + r.uniform(-45, 45, n) / 111e3)
+        h.append(r.normal(surf, sigma, n))
+    lon, lat, h = np.concatenate(lon), np.concatenate(lat), np.concatenate(h)
+    rows = lakelevel.margin(lon, lat, h, z, lakelevel.water_mask(lon, lat, h, z))
+    pond = [r_ for r_ in rows if r_["above_water_m"] < 1.0]
+    rock = [r_ for r_ in rows if r_["above_water_m"] > 4.0]
+    assert pond and rock, f"expected both, got {[round(r_['above_water_m'], 2) for r_ in rows]}"
+    assert all(r_["flat_like_water"] for r_ in pond), "the pond must be flagged"
+    assert not any(r_["flat_like_water"] for r_ in rock), "rough moraine must not be flagged"

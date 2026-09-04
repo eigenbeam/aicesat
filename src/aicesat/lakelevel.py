@@ -213,6 +213,7 @@ def _neighbours(key: int) -> list[int]:
 
 MAX_WATER_FRAC = 0.25   # above this share of SIGNAL photons at the water elevation, a "margin" cell is really lake
 SIGNAL_M = 50.0         # photons within this of the mode are the surface neighbourhood; the rest is telemetry noise
+MIN_GROUND_RELIEF_M = 0.5   # below this a "margin" cell is too flat to be moraine — it is another water body
 
 
 def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_M,
@@ -269,9 +270,15 @@ def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_
         lo, la = float(np.median(lon[m])), float(np.median(lat[m]))
         dx = (lo - clon) * 111e3 * np.cos(np.radians(clat))
         dy = (la - clat) * 111e3
+        relief = float(np.subtract(*np.percentile(sig, [75, 25])))
         out.append({"lon": lo, "lat": la, "n_photons": n, "n_signal": int(sig.size), "water_frac": wfrac,
+                    # Nothing on a moraine is flat to a few decimetres over a 100 m cell. water_frac cannot catch a
+                    # SEPARATE pond, because it only asks whether photons sit at the MAIN lake's elevation — four
+                    # cells 0.65 m above Imja, flat to 0.2-0.3 m, sailed through it and ranked near the top with a
+                    # 5-year crossing time. Flatness is the test that catches a water body at any level.
+                    "flat_like_water": bool(relief < MIN_GROUND_RELIEF_M),
                     "z_ground": s["z"], "above_water_m": s["z"] - z_water,
-                    "relief_m": float(np.subtract(*np.percentile(sig, [75, 25]))),
+                    "relief_m": relief,
                     "p5_p95_all_m": float(np.subtract(*np.percentile(hm, [95, 5]))), "spread_m": s["spread_m"],
                     "bearing_deg": float(np.degrees(np.arctan2(dx, dy)) % 360.0),
                     "range_m": float(np.hypot(dx, dy))})

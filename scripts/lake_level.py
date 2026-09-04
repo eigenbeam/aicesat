@@ -160,12 +160,21 @@ def main() -> int:
                   + ("   yrs to crossing" if a.subsidence else ""))
             for r in sel[:20]:
                 y = lakelevel.years_to_crossing(r["above_water_m"], a.subsidence) if a.subsidence else None
+                flag = "  <- too flat for moraine: another water body" if r["flat_like_water"] else ""
                 print(f"{r['lon']:9.4f} {r['lat']:8.4f} {r['bearing_deg']:8.0f} {r['above_water_m']:11.2f} m "
                       f"{r['relief_m']:7.1f} m {100*r['water_frac']:6.0f}% {r['n_photons']:8,}"
-                      + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")))
-            if sel:
-                lo = sel[0]
-                print(f"\nlowest ground in this sector sits {lo['above_water_m']:.2f} m above the water surface.")
+                      + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")) + flag)
+            # The "lowest ground" claim must exclude cells that are not ground: another water body, or one whose
+            # own relief swamps the height being reported.
+            solid = [r for r in sel if not r["flat_like_water"] and r["above_water_m"] > 0
+                     and r["relief_m"] < r["above_water_m"]]
+            if len(solid) < len(sel):
+                print(f"\n{len(sel) - len(solid)} cell(s) excluded from the 'lowest ground' claim: too flat to be "
+                      f"moraine, at or below the water, or relief larger than the height reported.")
+            if solid:
+                lo = solid[0]
+                print(f"\nlowest DEFENSIBLE ground sits {lo['above_water_m']:.2f} m above the water surface "
+                      f"(lon {lo['lon']:.4f}, relief {lo['relief_m']:.1f} m, {lo['n_photons']:,} photons).")
                 if a.subsidence:
                     y = lakelevel.years_to_crossing(lo["above_water_m"], a.subsidence)
                     print(f"at {a.subsidence*100:+.1f} cm/yr it reaches the water in "
