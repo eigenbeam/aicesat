@@ -211,7 +211,8 @@ def _neighbours(key: int) -> list[int]:
     return [((gx + dx) << 32) + (gy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy)]
 
 
-MAX_WATER_FRAC = 0.25   # above this share of photons at the water elevation, a "margin" cell is really lake
+MAX_WATER_FRAC = 0.25   # above this share of SIGNAL photons at the water elevation, a "margin" cell is really lake
+SIGNAL_M = 50.0         # photons within this of the mode are the surface neighbourhood; the rest is telemetry noise
 
 
 def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_M,
@@ -223,10 +224,14 @@ def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_
     is the number the hazard argument turns on, not the mean. `bearing_deg` (0 = N, 90 = E) is measured from the
     sampled water's centroid, so a specific sector like "the northeastern margin" can be selected.
 
-    Rough ground has no razor-thin mode, so this uses a wider window than the water estimator. Dispersion is
-    reported as `p5_p95_m` over ALL the cell's photons — deliberately unbounded. The obvious choice, the spread
-    inside the mode window, saturates at 2*win_m and read 3-4 m for every cell on the first real run, water and rock
-    alike: a diagnostic that cannot vary is not a diagnostic.
+    Rough ground has no razor-thin mode, so this uses a wider window than the water estimator. `relief_m` is the
+    p5-p95 height range of the SURFACE NEIGHBOURHOOD (within SIGNAL_M of the mode) — two earlier attempts failed
+    here and both are worth remembering: the range inside the mode window saturates at 2*win_m and read 3-4 m for
+    every cell, and the range over ALL photons read ~1300 m because at low signal-confidence most of a cell is
+    background spread over the telemetry window. Even inside the neighbourhood a p5-p95 is pulled by the residual
+    noise in its tails (29 m for a cell whose ground spans 2 m), so the quartiles do the work: the surface is the
+    bulk of the band, and the middle 50% is it. `p5_p95_all_m` is kept in the output so the noise level stays
+    visible rather than hidden.
 
     Cells whose photons are largely AT the water elevation are dropped, not reported as very low ground. The mask
     threshold is a hard edge on a soft boundary, so a cell can be mostly lake and still fall outside it; on Imja
@@ -248,18 +253,26 @@ def margin(lon, lat, h, z_water: float, water: np.ndarray, cell_m: float = CELL_
         if n < min_photons:
             continue
         hm = h[m]
-        wfrac = float(np.mean(np.abs(hm - z_water) <= band_m))
-        if wfrac > max_water_frac:
-            continue                       # mostly lake: not margin ground
         s = surface_height(hm, win_m=win_m, min_photons=min_photons, min_frac=0.05)
         if s is None:
             continue
+        # Both diagnostics are computed over the SURFACE NEIGHBOURHOOD, not the whole cell. At min_conf 0 most of a
+        # cell's photons are background spread across the telemetry window: on Imja that made "height range inside a
+        # cell" read 1300 m, and diluted the water fraction of genuinely wet cells to 21-25% — just under the
+        # threshold meant to catch them. Measuring relative to the mode removes the noise from both.
+        sig = hm[np.abs(hm - s["mode"]) <= SIGNAL_M]
+        if sig.size < min_photons:
+            continue
+        wfrac = float(np.mean(np.abs(sig - z_water) <= band_m))
+        if wfrac > max_water_frac:
+            continue                       # mostly lake: not margin ground
         lo, la = float(np.median(lon[m])), float(np.median(lat[m]))
         dx = (lo - clon) * 111e3 * np.cos(np.radians(clat))
         dy = (la - clat) * 111e3
-        out.append({"lon": lo, "lat": la, "n_photons": n, "water_frac": wfrac,
+        out.append({"lon": lo, "lat": la, "n_photons": n, "n_signal": int(sig.size), "water_frac": wfrac,
                     "z_ground": s["z"], "above_water_m": s["z"] - z_water,
-                    "p5_p95_m": float(np.subtract(*np.percentile(hm, [95, 5]))), "spread_m": s["spread_m"],
+                    "relief_m": float(np.subtract(*np.percentile(sig, [75, 25]))),
+                    "p5_p95_all_m": float(np.subtract(*np.percentile(hm, [95, 5]))), "spread_m": s["spread_m"],
                     "bearing_deg": float(np.degrees(np.arctan2(dx, dy)) % 360.0),
                     "range_m": float(np.hypot(dx, dy))})
     out.sort(key=lambda r: r["above_water_m"])

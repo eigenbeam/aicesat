@@ -346,8 +346,7 @@ def test_margin_drops_cells_that_are_really_lake():
 
 
 def test_the_dispersion_metric_is_not_capped_by_the_mode_window():
-    """spread_m is bounded by 2*win_m and read 3-4 m for every cell on the real run — water and rock alike. p5_p95_m
-    is computed over all the cell's photons so it can actually discriminate."""
+    """spread_m is bounded by 2*win_m and read 3-4 m for every cell on the real run — water and rock alike."""
     r = np.random.default_rng(12)
     lo0, la0 = 86.925, 27.899
     mx = 111e3 * np.cos(np.radians(la0))
@@ -363,4 +362,38 @@ def test_the_dispersion_metric_is_not_capped_by_the_mode_window():
     assert rows, "no margin cell"
     rr = rows[0]
     assert rr["spread_m"] <= 2 * lakelevel.MARGIN_WIN_M + 1e-6, "premise: spread_m is capped by the window"
-    assert rr["p5_p95_m"] > 10.0, f"p5_p95 should see the real relief, got {rr['p5_p95_m']:.1f} m"
+    assert rr["relief_m"] > 5.0, f"relief should see the real relief (IQR of ~9 m sigma), got {rr['relief_m']:.1f} m"
+
+
+def test_diagnostics_ignore_the_telemetry_noise_that_swamps_a_cell():
+    """Third attempt at this metric, and the reason for each rejection is worth keeping. At min_conf 0 most photons
+    in a cell are background spread across the telemetry window: on the real run that made a whole-cell p5-p95 read
+    ~1300 m, and diluted the water fraction of genuinely wet cells to 21-25% — just under the 25% meant to reject
+    them. Both diagnostics are now measured against the surface neighbourhood."""
+    r = np.random.default_rng(21)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    z = 4967.0
+    x = r.uniform(-250, 250, 20000); y = r.uniform(-250, 250, 20000)
+    n = 2000
+    sx = 350 + r.uniform(-45, 45, n)
+    # a cell that is 40% water, 60% ground 5 m up -- and 6000 noise photons over a 1.5 km window on top
+    wet_ground = np.concatenate([r.normal(z, 0.06, int(n * 0.4)), r.normal(z + 5.0, 0.4, n - int(n * 0.4))])
+    noise = r.uniform(z - 700, z + 800, 6000)
+    hh = np.concatenate([wet_ground, noise])
+    sx = np.concatenate([sx, 350 + r.uniform(-45, 45, 6000)])
+    lon = np.concatenate([lo0 + x / mx, lo0 + sx / mx])
+    lat = np.concatenate([la0 + y / 111e3, la0 + r.uniform(-45, 45, sx.size) / 111e3])
+    h = np.concatenate([r.normal(z, 0.06, x.size), hh])
+    rows = lakelevel.margin(lon, lat, h, z, lakelevel.water_mask(lon, lat, h, z))
+    assert rows == [], "a 40%-water cell must be rejected even when noise dilutes its water fraction"
+
+    # the same cell without the wet part: kept, and its relief reflects the ground, not the 1.5 km noise window
+    lon2 = np.concatenate([lo0 + x / mx, lo0 + sx / mx])
+    lat2 = lat
+    h2 = np.concatenate([r.normal(z, 0.06, x.size), np.concatenate([r.normal(z + 5.0, 0.4, n), noise])])
+    rows2 = lakelevel.margin(lon2, lat2, h2, z, lakelevel.water_mask(lon2, lat2, h2, z))
+    assert rows2, "the dry cell should survive"
+    rr = rows2[0]
+    assert rr["relief_m"] < 10.0, f"relief should track the ground, got {rr['relief_m']:.0f} m"
+    assert rr["p5_p95_all_m"] > 500.0, "the whole-cell range is still reported, so the noise stays visible"
