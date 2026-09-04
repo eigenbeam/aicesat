@@ -148,3 +148,80 @@ def test_no_trend_is_reported_from_too_few_epochs():
 def test_empty_input_is_not_an_error():
     s = lakelevel.series([])
     assert s["n_passes"] == 0 and s["trend_m_per_yr"] is None
+
+
+# --- photon-derived water mask -------------------------------------------------------------------------------
+def _scene_photons(z=4967.0, lake_km=(2.8, 0.6), seed=1):
+    """A lake plus the mountain around it, in lon/lat. The lake is elongated — the shape a circle gets wrong."""
+    r = np.random.default_rng(seed)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    # water: an elongated patch, dense, flat
+    n_w = 40000
+    wx = r.uniform(-lake_km[0] / 2 * 1000, lake_km[0] / 2 * 1000, n_w)
+    wy = r.uniform(-lake_km[1] / 2 * 1000, lake_km[1] / 2 * 1000, n_w)
+    wh = r.normal(z, 0.06, n_w)
+    # terrain: everywhere in a 5 km box, sloping up away from the lake, plus noise photons
+    n_t = 60000
+    tx = r.uniform(-2500, 2500, n_t); ty = r.uniform(-2000, 2000, n_t)
+    th = z + 20 + 0.25 * np.abs(ty) + r.normal(0, 8.0, n_t)      # rises away from the lake axis, rough
+    x, y, h = np.concatenate([wx, tx]), np.concatenate([wy, ty]), np.concatenate([wh, th])
+    return lo0 + x / mx, la0 + y / 111e3, h, z
+
+
+def test_the_mask_finds_the_lake_from_a_small_off_centre_seed():
+    """The seed only has to LAND on the water, not contain it — a 300 m seed recovering a 2.8 km lake is the point."""
+    lon, lat, h, z = _scene_photons()
+    m, info = lakelevel.find_water(lon, lat, h, 86.925 - 0.008, 27.899, seed_radius_m=300)
+    assert m is not None, info
+    assert abs(info["z_water"] - z) < 0.05
+    # the recovered footprint should be a good fraction of a 2.8 x 0.6 km lake, not a 300 m circle
+    assert info["area_km2"] > 0.8, f"only recovered {info['area_km2']:.2f} km2"
+    assert info["n_photons"] > 20000
+
+
+def test_the_mask_excludes_terrain_that_merely_crosses_the_water_elevation():
+    """A hillside passing through the lake's elevation contributes in-band photons. Requiring them to DOMINATE the
+    cell is what keeps it out; without that the mask would smear up the valley walls."""
+    lon, lat, h, z = _scene_photons()
+    r = np.random.default_rng(2)
+    n = 4000                                             # a slope 1.5 km north, sweeping through z
+    lo0, la0 = 86.925, 27.899
+    sy = np.full(n, 1500.0) + r.normal(0, 50, n)
+    sh = z + r.uniform(-40, 40, n)                       # spans the water elevation but is nowhere flat
+    lon2 = np.concatenate([lon, np.full(n, lo0)])
+    lat2 = np.concatenate([lat, la0 + sy / 111e3])
+    h2 = np.concatenate([h, sh])
+    m, info = lakelevel.find_water(lon2, lat2, h2, lo0, la0, seed_radius_m=300)
+    picked_north = lat2[m] > la0 + 1000 / 111e3
+    assert picked_north.sum() == 0, f"{int(picked_north.sum())} photons from the crossing slope leaked into the mask"
+
+
+def test_find_water_reports_why_it_failed():
+    lon, lat, h, _ = _scene_photons()
+    m, info = lakelevel.find_water(lon, lat, h, 90.0, 30.0, seed_radius_m=200)   # seed nowhere near the data
+    assert m is None and "why" in info
+
+
+def test_the_mask_beats_a_circle_of_the_same_seed_radius():
+    """The comparison that motivated this: same seed, how much lake does each mask capture?"""
+    lon, lat, h, z = _scene_photons()
+    lo0, la0 = 86.925, 27.899
+    d = np.hypot((lon - lo0) * 111e3 * np.cos(np.radians(la0)), (lat - la0) * 111e3)
+    circle = d <= 400
+    m, _info = lakelevel.find_water(lon, lat, h, lo0, la0, seed_radius_m=400)
+    water = np.abs(h - z) < 0.5
+    assert (m & water).sum() > 3 * (circle & water).sum(), "the grown mask should capture far more of the lake"
+
+
+def test_the_mask_keeps_a_water_cell_whole_not_just_its_in_band_photons():
+    """The mask returns every photon of a qualifying cell. If it returned only the in-band ones, surface_height
+    would see a pre-filtered distribution: `frac` would be ~1 and `bias_note` ~0 for every pass, silently disabling
+    both quality diagnostics. Caught by mutation — the docstring claimed this and nothing checked it."""
+    lon, lat, h, z = _scene_photons()
+    m, _ = lakelevel.find_water(lon, lat, h, 86.925, 27.899, seed_radius_m=300)
+    inside = h[m]
+    out_of_band = np.abs(inside - z) > lakelevel.BAND_M
+    assert out_of_band.sum() > 0, "a water cell's noise and subsurface photons must survive the mask"
+    s = lakelevel.surface_height(inside)
+    assert s["frac"] < 1.0, "frac is meaningless if the mask pre-filters to the band"

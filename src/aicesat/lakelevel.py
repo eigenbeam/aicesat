@@ -125,3 +125,70 @@ def series(rows: list[dict]) -> dict:
         out.update({"trend_m_per_yr": float(slope), "resid_sd_m": float(resid.std(ddof=1)),
                     "span_yr": float(yr.max() - yr.min())})
     return out
+
+
+# --- photon-derived water mask -----------------------------------------------------------------------------------
+# A circle or a hand-drawn ring has to be guessed and then re-guessed. The photons already know where the water is:
+# a lake is the one surface in a mountain scene that is both DENSE and HORIZONTAL over hundreds of metres. So find
+# the water elevation from a seed, then grow the mask to every grid cell dominated by a flat population at that
+# elevation. On Imja a 400 m seed circle caught 2 crossings out of a 2.8 km lake; the constraint is epochs, and
+# epochs come from crossings.
+CELL_M = 100.0      # mask grid: finer than the lake, coarser than the ~0.7 m along-track photon spacing
+BAND_M = 0.5        # a photon is "at the water elevation" within this
+MIN_IN_BAND = 25    # photons in-band per cell before the cell can be called water
+MIN_CELL_FRAC = 0.5 # in-band photons must be this share of the cell's photons: excludes a hillside merely crossing z
+
+
+def _grid(lon, lat, cell_m=CELL_M):
+    lo0, la0 = float(np.median(lon)), float(np.median(lat))
+    mx = 111e3 * np.cos(np.radians(la0))
+    return (np.floor((lon - lo0) * mx / cell_m).astype("i8"),
+            np.floor((lat - la0) * 111e3 / cell_m).astype("i8"))
+
+
+def water_mask(lon, lat, h, z: float, cell_m: float = CELL_M, band_m: float = BAND_M,
+               min_in_band: int = MIN_IN_BAND, min_cell_frac: float = MIN_CELL_FRAC) -> np.ndarray:
+    """Boolean over the photons: True for those in a grid cell dominated by flat returns at elevation `z`.
+
+    Returns EVERY photon of a qualifying cell, not just the in-band ones — the per-pass estimator needs the full
+    height distribution of the water to judge its own noise and subsurface tail.
+
+    `min_cell_frac` is what keeps a hillside out. A slope crossing the lake's elevation contributes a few in-band
+    photons to a cell whose photons are mostly elsewhere in height; a water cell is in-band almost throughout.
+    """
+    lon, lat, h = (np.asarray(x, dtype="f8") for x in (lon, lat, h))
+    gx, gy = _grid(lon, lat, cell_m)
+    in_band = np.abs(h - z) <= band_m
+    keys = (gx.astype("i8") << 32) + gy.astype("i8")
+    uniq, inv = np.unique(keys, return_inverse=True)
+    total = np.bincount(inv, minlength=uniq.size)
+    band = np.bincount(inv, weights=in_band.astype("f8"), minlength=uniq.size)
+    good = (band >= min_in_band) & (band / np.maximum(total, 1) >= min_cell_frac)
+    return good[inv]
+
+
+def find_water(lon, lat, h, seed_lon: float, seed_lat: float, seed_radius_m: float = 400.0,
+               **kw) -> tuple[np.ndarray, dict] | tuple[None, dict]:
+    """Locate the water elevation from a seed neighbourhood, then grow a mask over the whole footprint.
+
+    The seed only has to land ON the lake — it does not have to contain it. That is the point: a small, confidently
+    placed seed beats a large guessed outline.
+    """
+    lon, lat, h = (np.asarray(x, dtype="f8") for x in (lon, lat, h))
+    d = np.hypot((lon - seed_lon) * 111e3 * np.cos(np.radians(seed_lat)), (lat - seed_lat) * 111e3)
+    near = d <= seed_radius_m
+    info = {"seed_photons": int(near.sum())}
+    if not near.any():
+        return None, info | {"why": "no photons within the seed radius"}
+    s = surface_height(h[near], **{k: v for k, v in kw.items() if k in ("bin_m", "win_m", "min_photons", "min_frac")})
+    if s is None:
+        return None, info | {"why": "no flat surface found in the seed neighbourhood"}
+    z = s["z"]
+    m = water_mask(lon, lat, h, z, **{k: v for k, v in kw.items()
+                                      if k in ("cell_m", "band_m", "min_in_band", "min_cell_frac")})
+    cell_m = kw.get("cell_m", CELL_M)
+    gx, gy = _grid(lon, lat, cell_m)
+    n_cells = len({(int(a), int(b)) for a, b in zip(gx[m], gy[m])}) if m.any() else 0
+    info.update({"z_water": z, "seed_mad_m": s["mad"], "n_photons": int(m.sum()), "n_cells": n_cells,
+                 "area_km2": n_cells * (cell_m / 1000.0) ** 2})
+    return m, info

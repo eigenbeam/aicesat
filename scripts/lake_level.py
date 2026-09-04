@@ -4,14 +4,17 @@
     # 1. index ATL03 over a TIGHT box around the lake (ATL03 granules are large; you only need the water)
     uv run python scripts/build_index.py --bbox 86.90 27.88 86.95 27.92 --workers 8
 
-    # 2. the level series
-    uv run python scripts/lake_level.py --bbox 86.90 27.88 86.95 27.92 --centre 86.925 27.899 --radius 400
+    # 2. the level series — --auto-mask grows the water footprint from a small seed
+    uv run python scripts/lake_level.py --bbox 86.90 27.88 86.95 27.92 --centre 86.925 27.899 --auto-mask
 
 Run it where the index and lake live (the EC2 box), and with AICESAT_S3_DIRECT=1 so the fetch is in-region.
 
-`--centre/--radius` is a quick circular water mask. `--polygon FILE` takes a GeoJSON-style [[lon,lat],...] ring if
-you have digitised the shoreline from the scene's Sentinel-2 imagery, which is the better mask — a circle over a
-2.8 x 0.6 km lake either clips the ends or swallows moraine.
+Masks, best first:
+  --auto-mask   find the water elevation from a --centre seed, then grow to every grid cell dominated by flat
+                returns at that elevation. The seed only has to LAND on the lake. On Imja a 400 m circle caught 2
+                crossings of a 2.8 km lake, and crossings are what epochs are made of.
+  --polygon     a digitised shoreline, if you have one
+  --centre/--radius  a plain circle: fine to sanity-check a spot, wrong for an elongated lake
 
 Why not ATL13: its inland-water mask reports nothing at Imja Tsho (0 segments within 800 m across 24 granules) even
 though ATL06 sees the surface on the same passes. Defining the mask here removes that dependency. See lakelevel.py
@@ -36,7 +39,13 @@ def main() -> int:
     ap.add_argument("--bbox", nargs=4, type=float, required=True, metavar=("W", "S", "E", "N"))
     ap.add_argument("--centre", nargs=2, type=float, metavar=("LON", "LAT"), help="circular water mask centre")
     ap.add_argument("--radius", type=float, default=400.0, help="circular mask radius in metres (default 400)")
-    ap.add_argument("--polygon", help="file with a [[lon,lat], ...] ring — preferred over --centre/--radius")
+    ap.add_argument("--polygon", help="file with a [[lon,lat], ...] ring")
+    ap.add_argument("--auto-mask", action="store_true",
+                    help="RECOMMENDED. Find the water elevation from a small --centre seed, then grow the mask to "
+                         "every grid cell dominated by flat returns at that elevation. The seed only has to LAND "
+                         "on the lake; it does not have to contain it.")
+    ap.add_argument("--seed-radius", type=float, default=300.0, help="seed radius for --auto-mask (default 300 m)")
+    ap.add_argument("--cell-m", type=float, default=None, help="mask grid size (default 100 m)")
     ap.add_argument("--window", nargs=2, default=["2018-10-01", "2027-01-01"], metavar=("START", "END"))
     ap.add_argument("--min-conf", type=int, default=0,
                     help="ATL03 land-ice signal confidence floor (default 0: keep almost everything and let the "
@@ -60,7 +69,21 @@ def main() -> int:
         return 1
 
     # --- water mask
-    if a.polygon:
+    if a.auto_mask:
+        if not a.centre:
+            print("--auto-mask needs --centre as the seed", file=sys.stderr)
+            return 2
+        kw = {"cell_m": a.cell_m} if a.cell_m else {}
+        keep, info = lakelevel.find_water(q["lon"], q["lat"], q["h"], a.centre[0], a.centre[1],
+                                          seed_radius_m=a.seed_radius, **kw)
+        if keep is None:
+            print(f"auto-mask failed: {info.get('why')} ({info})", file=sys.stderr)
+            return 1
+        how = (f"auto ({info['n_cells']} cells, {info['area_km2']:.2f} km2) at z={info['z_water']:.3f} m "
+               f"from a {a.seed_radius:.0f} m seed")
+        print(f"  water elevation {info['z_water']:.3f} m (seed MAD {info['seed_mad_m']*100:.1f} cm); "
+              f"mask {info['area_km2']:.2f} km2 over {info['n_cells']} cells", file=sys.stderr)
+    elif a.polygon:
         ring = json.load(open(a.polygon))
         ring = ring.get("coordinates", ring) if isinstance(ring, dict) else ring
         while isinstance(ring[0][0], (list, tuple)):
@@ -97,8 +120,10 @@ def main() -> int:
         print("too few epochs for a trend")
     worst = sorted(rows, key=lambda r: -abs(r["bias_note"]))[:3]
     if worst:
-        print("\nlargest subsurface/noise tails (mode minus whole-pass median, m): "
-              + ", ".join(f"{r['bias_note']:+.2f}" for r in worst) + "  — large values mean a suspect pass")
+        print("\nbias_note (mode minus whole-pass median, m): "
+              + ", ".join(f"{r['bias_note']:+.2f}" for r in worst))
+        print("  positive = subsurface/volume scattering (turbid or shallow water)")
+        print("  negative = the mask is admitting ground ABOVE the water; tighten it or use --auto-mask")
     if a.json:
         with open(a.json, "w") as f:
             json.dump({"bbox": list(bbox), "mask": how, "granules": glist,
