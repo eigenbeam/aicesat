@@ -61,7 +61,9 @@ def main() -> int:
                     help="a ground subsidence rate (NEGATIVE for sinking, e.g. -0.130 for Brencher et al. 2026) to "
                          "turn each margin height into a time-to-crossing")
     ap.add_argument("--bearing", nargs=2, type=float, default=None, metavar=("FROM", "TO"),
-                    help="restrict the margin report to a bearing sector, 0=N 90=E (e.g. 0 90 for the NE margin)")
+                    help="restrict the margin report to a bearing sector, 0=N 90=E, measured from the SAMPLED "
+                         "water centroid (not the lake's true centre — check the printed lon/lat on a map). NB for "
+                         "Imja the moraine DAM is at the lake's WEST end, so the dam margin is ~250-290, not 45.")
     ap.add_argument("--json", help="write the full result here")
     a = ap.parse_args()
 
@@ -152,12 +154,15 @@ def main() -> int:
             print(f"\nGROUND BESIDE THE WATER — {len(sel)} of {len(marg)} margin cells"
                   + (f" in bearing {a.bearing[0]:.0f}-{a.bearing[1]:.0f} deg" if a.bearing else "")
                   + f"; water at {z_w:.3f} m")
-            print(f"{'bearing':>8} {'above water':>12} {'spread':>8} {'photons':>8}"
+            # lon/lat FIRST: bearing is measured from the SAMPLED water centroid (the cells beams happened to
+            # cross), not the lake's true centre, so it carries an unknown offset. Coordinates can be mapped.
+            print(f"{'lon':>9} {'lat':>8} {'bearing':>8} {'above water':>12} {'spread':>8} {'photons':>8}"
                   + ("   yrs to crossing" if a.subsidence else ""))
-            for r in sel[:12]:
+            for r in sel[:20]:
                 y = lakelevel.years_to_crossing(r["above_water_m"], a.subsidence) if a.subsidence else None
-                print(f"{r['bearing_deg']:8.0f} {r['above_water_m']:11.2f} m {r['spread_m']:7.1f} m "
-                      f"{r['n_photons']:8,}" + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")))
+                print(f"{r['lon']:9.4f} {r['lat']:8.4f} {r['bearing_deg']:8.0f} {r['above_water_m']:11.2f} m "
+                      f"{r['spread_m']:7.1f} m {r['n_photons']:8,}"
+                      + (f"   {y:14.1f}" if y is not None else ("   {:>14}".format("-") if a.subsidence else "")))
             if sel:
                 lo = sel[0]
                 print(f"\nlowest ground in this sector sits {lo['above_water_m']:.2f} m above the water surface.")
