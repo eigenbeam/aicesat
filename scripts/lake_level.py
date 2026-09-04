@@ -79,10 +79,11 @@ def main() -> int:
         if keep is None:
             print(f"auto-mask failed: {info.get('why')} ({info})", file=sys.stderr)
             return 1
-        how = (f"auto ({info['n_cells']} cells, {info['area_km2']:.2f} km2) at z={info['z_water']:.3f} m "
-               f"from a {a.seed_radius:.0f} m seed")
+        how = (f"auto ({info['n_cells']} cells, {info['sampled_km2']:.2f} km2 sampled) at "
+               f"z={info['z_water']:.3f} m from a {a.seed_radius:.0f} m seed")
         print(f"  water elevation {info['z_water']:.3f} m (seed MAD {info['seed_mad_m']*100:.1f} cm); "
-              f"mask {info['area_km2']:.2f} km2 over {info['n_cells']} cells", file=sys.stderr)
+              f"{info['sampled_km2']:.2f} km2 SAMPLED over {info['n_cells']} cells — this is the ground the beams "
+              f"crossed, not the lake's area", file=sys.stderr)
     elif a.polygon:
         ring = json.load(open(a.polygon))
         ring = ring.get("coordinates", ring) if isinstance(ring, dict) else ring

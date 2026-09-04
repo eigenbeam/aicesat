@@ -189,6 +189,9 @@ def find_water(lon, lat, h, seed_lon: float, seed_lat: float, seed_radius_m: flo
     cell_m = kw.get("cell_m", CELL_M)
     gx, gy = _grid(lon, lat, cell_m)
     n_cells = len({(int(a), int(b)) for a, b in zip(gx[m], gy[m])}) if m.any() else 0
+    # SAMPLED area, not lake area. The mask is built FROM photons, so it can only cover ground a beam actually
+    # crossed — roughly (track length through the water) x cell_m, never the whole surface. On Imja this reads
+    # ~0.19 km2 against a lake of ~1.3 km2, and that is correct behaviour, not a truncated mask.
     info.update({"z_water": z, "seed_mad_m": s["mad"], "n_photons": int(m.sum()), "n_cells": n_cells,
-                 "area_km2": n_cells * (cell_m / 1000.0) ** 2})
+                 "sampled_km2": n_cells * (cell_m / 1000.0) ** 2})
     return m, info

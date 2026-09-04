@@ -170,13 +170,17 @@ def _scene_photons(z=4967.0, lake_km=(2.8, 0.6), seed=1):
 
 
 def test_the_mask_finds_the_lake_from_a_small_off_centre_seed():
-    """The seed only has to LAND on the water, not contain it — a 300 m seed recovering a 2.8 km lake is the point."""
+    """The seed only has to LAND on the water, not contain it — a 300 m seed recovering a 2.8 km lake is the point.
+
+    NB the synthetic scene here fills the lake with photons everywhere. Real ICESat-2 only samples the track lines,
+    so `sampled_km2` on real data is (track length through the water) x cell_m and is far smaller than the lake —
+    0.19 km2 against ~1.3 km2 on Imja. That is the sampling, not a truncated mask; see test below."""
     lon, lat, h, z = _scene_photons()
     m, info = lakelevel.find_water(lon, lat, h, 86.925 - 0.008, 27.899, seed_radius_m=300)
     assert m is not None, info
     assert abs(info["z_water"] - z) < 0.05
     # the recovered footprint should be a good fraction of a 2.8 x 0.6 km lake, not a 300 m circle
-    assert info["area_km2"] > 0.8, f"only recovered {info['area_km2']:.2f} km2"
+    assert info["sampled_km2"] > 0.8, f"only recovered {info['sampled_km2']:.2f} km2"
     assert info["n_photons"] > 20000
 
 
@@ -225,3 +229,21 @@ def test_the_mask_keeps_a_water_cell_whole_not_just_its_in_band_photons():
     assert out_of_band.sum() > 0, "a water cell's noise and subsurface photons must survive the mask"
     s = lakelevel.surface_height(inside)
     assert s["frac"] < 1.0, "frac is meaningless if the mask pre-filters to the band"
+
+
+def test_sampled_km2_is_the_ground_the_beams_crossed_not_the_lake():
+    """Real passes are lines, not coverage. Reporting the sampled area as if it were the lake's area invites the
+    reader to conclude the mask failed, when a 6-crossing sample of a 1.3 km2 lake SHOULD read ~0.2 km2."""
+    r = np.random.default_rng(3)
+    lo0, la0 = 86.925, 27.899
+    mx = 111e3 * np.cos(np.radians(la0))
+    lon, lat, h = [], [], []
+    for i, y in enumerate((-200.0, 0.0, 150.0)):                 # three track lines across a 2 km wide lake
+        x = np.linspace(-1000, 1000, 3000)
+        lon.append(lo0 + x / mx); lat.append(la0 + (y + r.normal(0, 3, x.size)) / 111e3)
+        h.append(r.normal(4967.0, 0.06, x.size))
+    lon, lat, h = np.concatenate(lon), np.concatenate(lat), np.concatenate(h)
+    _m, info = lakelevel.find_water(lon, lat, h, lo0, la0, seed_radius_m=300)
+    lake_km2 = (2.0 * 2.0)                                        # the notional water body the lines cross
+    assert info["sampled_km2"] < 0.4 * lake_km2, "sampled area must reflect the tracks, not the water body"
+    assert info["n_cells"] >= 20, f"but it should still span the crossings, got {info['n_cells']} cells"
