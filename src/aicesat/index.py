@@ -76,11 +76,24 @@ def typed_table(rows: dict) -> pa.Table:
     return pa.table({k: _col(k, v) for k, v in rows.items()})
 
 
-def cells_filter(cells) -> set | None:
-    """Normalise a build's cell set (ints/str/None) to a set of int cell ids, or None for 'index everything'."""
+def cells_filter(cells, res: int | None = None) -> set | None:
+    """Normalise a build's cell set (ints/str/None) to a set of int cell ids, or None for 'index everything'.
+
+    `res` (the resolution the ROWS are keyed at) turns a silent mistake into a loud one. Membership here is exact —
+    no ancestry walk — so a filter set at any other resolution matches nothing and the granule indexes 0 rows while
+    reporting success. That is precisely what happened: scripts/build_index.py passed the CLAIM cells, which equal
+    the addressing cells only for a large area. A small bbox claims finer (res 9 for ~5 km) than ATL03 addresses
+    (res 6), so every granule of a tight-box build silently produced nothing."""
     if cells is None:
         return None
-    return {int(c) if not isinstance(c, str) else h3.str_to_int(c) for c in cells}
+    out = {int(c) if not isinstance(c, str) else h3.str_to_int(c) for c in cells}
+    if res is not None and out:
+        got = {h3.get_resolution(h3.int_to_str(c)) for c in out}
+        if got != {res}:
+            raise ValueError(
+                f"cell filter is at resolution(s) {sorted(got)} but rows are keyed at res {res}; nothing could "
+                f"match. Pass planner.addressing_cells(fine, {res}), not the claim cells.")
+    return out
 
 
 def parse_granule_name(name: str) -> dict:
@@ -123,7 +136,7 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
     claimed to cover, each holding only the granules that happened to cross that region: rows that look like coverage
     and are incomplete by construction."""
     auth.login()
-    keep = cells_filter(cells)
+    keep = cells_filter(cells, res)
     from .coverage import granule_name
     url = granule.data_links()[0]
     name = granule_name(granule)

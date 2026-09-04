@@ -24,7 +24,10 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     cells = planner.addressing_cells(fine, index.H3_RES)  # coarse partition keys the rows are filtered to
     granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window, polygon=ring)
     t0 = time.time()
-    out = index.ensure_index(granules, workers=a.workers, cells=fine)
+    # ADDRESSING cells for the row filter (rows are keyed at index.H3_RES); the CLAIM stays at `fine` below.
+    # Passing `fine` here matched nothing whenever the claim resolution differed from H3_RES, i.e. on any
+    # bbox small enough to claim finer than res 6 — every granule indexed 0 rows and reported success.
+    out = index.ensure_index(granules, workers=a.workers, cells=cells)
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
     if out["failed"]:
         log.warning("NOT claiming coverage: %d granule(s) did not index; re-run to finish", len(out["failed"]))
