@@ -51,6 +51,7 @@ def survey(d, version: str, key: bytes) -> dict:
     if not d.exists():
         return {"exists": False}
     cur = old = bad = 0
+    empty = []
     for p in d.glob("*.parquet"):
         try:
             meta = pq.read_schema(p).metadata or {}
@@ -59,6 +60,16 @@ def survey(d, version: str, key: bytes) -> dict:
             continue
         if meta.get(key, b"").decode(errors="replace") == version:
             cur += 1
+            # A file at the current schema holding ZERO rows. The build wrote it, so a re-run SKIPS the granule --
+            # the index is permanently empty there while reporting the granule as done. This is what a cell filter
+            # at the wrong resolution produced: 42 granules, "0 (chunk,cell) rows" each, and a stamped claim.
+            # Not every empty file is a fault (a granule can genuinely miss the requested cells), which is why this
+            # is reported rather than silently cleaned, and why --fix is opt-in.
+            try:
+                if pq.ParquetFile(p).metadata.num_rows == 0:
+                    empty.append(p)
+            except Exception:
+                bad += 1
         else:
             old += 1
     doc = {}
@@ -68,7 +79,7 @@ def survey(d, version: str, key: bytes) -> dict:
             doc = json.loads(mf.read_text())
         except Exception as e:
             doc = {"_unreadable": str(e)}
-    return {"exists": True, "current": cur, "old_schema": old, "unreadable": bad,
+    return {"exists": True, "current": cur, "old_schema": old, "unreadable": bad, "empty": empty,
             "tmp": len(list(d.glob(".*.tmp"))), "target": doc.get("target"),
             "claim_cells": len(doc.get("cells") or []), "claimed": bool(doc.get("cells"))}
 
@@ -83,6 +94,9 @@ def verdict(s: dict) -> tuple[str, bool]:
         problems.append(f"{s['unreadable']} unreadable file(s) -- a killed build mid-write")
     if s["tmp"]:
         problems.append(f"{s['tmp']} leftover .tmp file(s)")
+    if s["empty"]:
+        problems.append(f"{len(s['empty'])} file(s) hold ZERO rows -- a re-run skips those granules, so the index "
+                        f"stays empty there ( --fix removes just these)")
 
     if target is None:
         return ("no claim stamped" + (f"; {'; '.join(problems)}" if problems else ""), False)
@@ -109,8 +123,17 @@ for label, d, version, key in COLLECTIONS:
         continue
     msg, unbacked = verdict(s)
     print(f"{label:<7} files={s['current']:>6} current  old={s['old_schema']:>4}  unreadable={s['unreadable']:>3}"
-          f"  target={s['target']}")
+          f"  empty={len(s['empty']):>4}  target={s['target']}")
     print(f"        {msg}")
+    if s["empty"]:
+        bad_any = True
+        if args.fix:
+            for p in s["empty"]:
+                p.unlink()
+            index.invalidate_claim(d, f"{len(s['empty'])} indexed granules held no rows")
+            print(f"        -> removed {len(s['empty'])} empty file(s) and dropped the claim; re-run the build")
+        else:
+            print(f"        -> e.g. {s['empty'][0].name}")
     if unbacked:
         bad_any = True
         if args.fix:

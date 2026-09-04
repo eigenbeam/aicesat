@@ -19,9 +19,16 @@ A lake's photon height distribution is NOT symmetric:
 The mean is meaningless here. A plain median is fine WHILE the surface spike is the majority of returns — medians
 are robust, and that is worth being honest about — but it fails once the subsurface tail outweighs the surface,
 which is exactly the turbid or shallow-water case. Anchoring on the histogram MODE and then medianing only the
-photons within a narrow window around it holds up in both regimes. `bias_note` in the output reports how far the whole-pass median sits below the mode, which
-is a direct read on how much subsurface return that pass had; a large gap is a reason to distrust the pass, not to
-correct it silently. Correcting refraction properly needs the water's optical properties and is out of scope.
+photons within a narrow window around it holds up in both regimes. `bias_note` (mode minus the whole-pass median) is TWO-SIDED, and the sign says which problem you have:
+
+    positive  most photons sit BELOW the surface mode -> a subsurface/volume-scattering tail, i.e. turbid or
+              shallow water. The estimate is probably still good; the pass is just murky.
+    negative  most photons sit ABOVE it -> the water mask is letting in higher ground (shoreline, moraine), so the
+              mode is the lake and the median is the land around it. Tighten the mask; the estimate may be fine but
+              the pass is not measuring only water.
+
+Either way a large magnitude is a reason to distrust the pass, not to correct it silently. Correcting refraction
+properly needs the water's optical properties and is out of scope.
 
 Heights are whatever the caller passes in. From lake.query_photons that is `native_height`, WGS84 ellipsoidal —
 the same datum as ATL06 h_li, so the two are directly comparable without a geoid step.

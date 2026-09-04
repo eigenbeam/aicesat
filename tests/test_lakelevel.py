@@ -49,6 +49,18 @@ def test_the_mode_beats_the_median_once_the_subsurface_tail_dominates():
     assert s["bias_note"] > 0.5, "bias_note must report the tail rather than hide it"
 
 
+def test_bias_note_goes_NEGATIVE_when_the_mask_lets_in_higher_ground():
+    """Observed on the first real run: a 400 m circle over a 2.8 x 0.6 km lake caught shoreline, and bias_note came
+    back -1.53 m. The sign is the diagnostic — negative means land above the water is in the mask, not a subsurface
+    tail — so it must not be documented or tested as one-sided."""
+    z = 4967.2
+    water = photons(z, n_surf=900, n_noise=200, n_sub=100)
+    shore = RNG.normal(z + 12.0, 4.0, 1200)                    # moraine standing above the lake
+    s = lakelevel.surface_height(np.concatenate([water, shore]))
+    assert abs(s["z"] - z) < 0.10, "the mode should still find the water"
+    assert s["bias_note"] < -0.5, f"expected a negative bias_note, got {s['bias_note']:+.2f}"
+
+
 def test_survives_mostly_noise():
     z = 5000.0
     s = lakelevel.surface_height(photons(z, n_surf=300, n_noise=1500, n_sub=100))
