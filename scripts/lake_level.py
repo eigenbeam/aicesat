@@ -180,8 +180,9 @@ def main() -> int:
                     print(f"at {a.subsidence*100:+.1f} cm/yr it reaches the water in "
                           + (f"~{y:.0f} years" if y else "never (not sinking)") + ", IF the rate holds and the")
                     print("water level stays put — this series bounds the water term, it does not fix it.")
-                print("relief is the p5-p95 height range of the SURFACE NEIGHBOURHOOD (not the whole cell, which at")
-                print("low signal-confidence is mostly telemetry noise): a large value means one 'elevation' is a poor")
+                print("relief is the INTERQUARTILE height range of the SURFACE NEIGHBOURHOOD (not the whole cell,")
+                print("which at low signal-confidence is mostly telemetry noise, and not p5-p95, which the residual")
+                print("noise tails still pull): a large value means one 'elevation' is a poor")
                 print("summary of that cell, so treat its crossing time as indicative only. Cells whose photons are")
                 print(f"more than {100*lakelevel.MAX_WATER_FRAC:.0f}% at the water elevation are dropped as lake, not reported as low ground.")
     if a.json:
