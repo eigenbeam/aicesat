@@ -1,0 +1,120 @@
+"""Water-surface height per ICESat-2 pass, from ATL03 photons over a lake polygon.
+
+Why this exists rather than using ATL13: ATL13 only reports where its inland-water mask finds a water body, and for
+Imja Tsho (27.899 N, 86.925 E) it reports nothing — 0 segments within 800 m across 24 granules, while ATL06 sees the
+same lake surface at 4966-4968 m on the same passes. Defining the water polygon ourselves removes that dependency.
+
+Why photons rather than ATL06: ATL06 aggregates 20 m land-ice segments, and its along-track slope fit is the wrong
+model for water. A pass over a 600 m wide lake yields thousands of ATL03 photons on a mirror-flat surface, where the
+return is a razor-thin mode that a histogram finds without any classifier.
+
+## The estimator, and the bias it does not pretend to remove
+
+A lake's photon height distribution is NOT symmetric:
+
+    noise ......  spread across the whole telemetry window, low density
+    SURFACE ####  a very dense, near-delta spike
+    subsurface ~  a tail BELOW the surface, from volume scattering and refraction in the water column
+
+The mean is meaningless here. A plain median is fine WHILE the surface spike is the majority of returns — medians
+are robust, and that is worth being honest about — but it fails once the subsurface tail outweighs the surface,
+which is exactly the turbid or shallow-water case. Anchoring on the histogram MODE and then medianing only the
+photons within a narrow window around it holds up in both regimes. `bias_note` in the output reports how far the whole-pass median sits below the mode, which
+is a direct read on how much subsurface return that pass had; a large gap is a reason to distrust the pass, not to
+correct it silently. Correcting refraction properly needs the water's optical properties and is out of scope.
+
+Heights are whatever the caller passes in. From lake.query_photons that is `native_height`, WGS84 ellipsoidal —
+the same datum as ATL06 h_li, so the two are directly comparable without a geoid step.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+BIN_M = 0.25        # histogram bin: finer than the surface spread, coarser than photon ranging precision (~3 cm)
+WIN_M = 0.75        # half-window around the mode that defines "on the surface"
+MIN_PHOTONS = 20    # below this a mode is not distinguishable from a noise cluster
+MIN_FRAC = 0.10     # the surface must hold this share of the pass's photons, else it is not a surface
+
+
+def surface_height(h: np.ndarray, bin_m: float = BIN_M, win_m: float = WIN_M,
+                   min_photons: int = MIN_PHOTONS, min_frac: float = MIN_FRAC) -> dict | None:
+    """One pass's water-surface height from its photon heights, or None if this pass has no usable surface.
+
+    Returns z (the estimate), n_surface, mad, frac (share of photons on the surface) and bias_note (mode minus the
+    whole-pass median — how much subsurface/noise tail this pass carried)."""
+    h = np.asarray(h, dtype="f8")
+    h = h[np.isfinite(h)]
+    if h.size < min_photons:
+        return None
+    lo, hi = np.percentile(h, [0.5, 99.5])          # trim the telemetry window's far noise before binning
+    if not np.isfinite([lo, hi]).all() or hi - lo < bin_m:
+        lo, hi = h.min(), h.max() + bin_m
+    edges = np.arange(lo, hi + bin_m, bin_m)
+    if edges.size < 3:
+        return None
+    counts, _ = np.histogram(h, bins=edges)
+    if not counts.any():
+        return None
+    peak = int(np.argmax(counts))
+    mode = 0.5 * (edges[peak] + edges[peak + 1])
+    sel = np.abs(h - mode) <= win_m
+    n_surf = int(sel.sum())
+    if n_surf < min_photons or n_surf / h.size < min_frac:
+        return None
+    z = float(np.median(h[sel]))
+    return {"z": z, "mode": float(mode), "n_surface": n_surf, "n_photons": int(h.size),
+            "frac": float(n_surf / h.size),
+            "mad": float(np.median(np.abs(h[sel] - z))),
+            "spread_m": float(h[sel].max() - h[sel].min()),
+            "bias_note": float(mode - np.median(h))}
+
+
+def passes(arrays: dict, **kw) -> list[dict]:
+    """Group photons into passes — one (granule, beam) crossing — and solve each for a water level.
+
+    A "pass" must be one granule AND one beam: the six beams cross the lake at different points and times within a
+    granule, so pooling them would average away exactly the per-crossing detail that makes a level series useful.
+    """
+    lon, lat, h, t = (np.asarray(arrays[k]) for k in ("lon", "lat", "h", "t"))
+    gi = np.asarray(arrays.get("granule_idx", np.zeros(h.size, "i2")))
+    bi = np.asarray(arrays.get("beam_idx", np.zeros(h.size, "i1")))
+    out = []
+    for key in sorted({(int(a), int(b)) for a, b in zip(gi, bi)}):
+        m = (gi == key[0]) & (bi == key[1])
+        s = surface_height(h[m], **kw)
+        if s is None:
+            continue
+        ts = t[m]
+        s.update({"granule_idx": key[0], "beam_idx": key[1],
+                  "t": ts[len(ts) // 2], "lon": float(np.median(lon[m])), "lat": float(np.median(lat[m]))})
+        out.append(s)
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
+def series(rows: list[dict]) -> dict:
+    """Collapse passes into a level time series and fit a trend.
+
+    Passes within the same day are averaged: the six beams of one overpass are not independent samples of the lake's
+    level, and counting them as six would shrink the reported uncertainty by ~sqrt(6) for free."""
+    if not rows:
+        return {"epochs": [], "n_passes": 0, "trend_m_per_yr": None}
+    day = {}
+    for r in rows:
+        d = np.datetime64(r["t"], "D")
+        day.setdefault(d, []).append(r)
+    epochs = []
+    for d in sorted(day):
+        zs = np.array([r["z"] for r in day[d]])
+        epochs.append({"date": str(d), "z": float(np.median(zs)), "n_passes": len(zs),
+                       "beam_spread_m": float(zs.max() - zs.min()) if zs.size > 1 else 0.0,
+                       "n_surface": int(sum(r["n_surface"] for r in day[d]))})
+    out = {"epochs": epochs, "n_passes": len(rows), "trend_m_per_yr": None, "resid_sd_m": None, "span_yr": None}
+    if len(epochs) >= 3:
+        yr = np.array([np.datetime64(e["date"]).astype("datetime64[D]").astype(int) / 365.25 for e in epochs])
+        z = np.array([e["z"] for e in epochs])
+        slope, icept = np.polyfit(yr, z, 1)
+        resid = z - (slope * yr + icept)
+        out.update({"trend_m_per_yr": float(slope), "resid_sd_m": float(resid.std(ddof=1)),
+                    "span_yr": float(yr.max() - yr.min())})
+    return out
