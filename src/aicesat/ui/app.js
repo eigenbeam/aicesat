@@ -18,6 +18,21 @@ AICESAT.showError = (msg) => {
 };
 AICESAT.clearError = () => { const el = document.getElementById('apperr'); if (el) el.hidden = true; };
 
+// The JSON payload of a tool result.
+//
+// Regression: this used to read `r.structuredContent` and nothing else, so it was ALWAYS empty and the app never
+// routed on a tool result — every tool landed on the default Explore view. The server's tools are annotated
+// `-> dict`, which is too loose for the SDK to derive an output schema from, and without an output schema it emits
+// no structuredContent at all; the payload arrives as a text content block instead. adapter.js's data plane has
+// always read both. Keep the structuredContent branch: it is what a schema-carrying tool would populate.
+AICESAT.toolPayload = r => {
+  const sc = r && r.structuredContent;
+  if (sc && typeof sc === 'object') return sc;
+  const t = ((r && r.content) || []).find(c => c && c.type === 'text' && typeof c.text === 'string');
+  if (!t) return null;
+  try { const v = JSON.parse(t.text); return v && typeof v === 'object' ? v : null; } catch (e) { return null; }
+};
+
 AICESAT.ready.then(api => {
   const U = AICESAT.util;
   const views = {};
@@ -40,6 +55,9 @@ AICESAT.ready.then(api => {
     if (current && current !== name) { AICESAT.clearError(); get(current).hide(); }
     document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
     const deep = name === 'scene' || name === 'ts';
+    // A deep view needs an id. '#scene' or '#ts' with nothing after it (typed by hand, or from a tool result
+    // that named a view but no scene) would otherwise call open('') and fail against the server.
+    if (deep && !r.arg) { location.hash = '#' + lastList; return; }
     $('topBack').hidden = !deep;
     $('crumb').textContent = deep ? '› ' + (name === 'ts' ? 'time series ' : 'scene ') + r.arg.split('?')[0] : '';
     const v = get(name);
@@ -70,7 +88,7 @@ AICESAT.ready.then(api => {
       reportSize();
     };
     // the tool result that launched this instance decides the first view
-    const onResult = r => { const sc = r && r.structuredContent; if (!sc) return; if (sc.view === 'ts' && sc.scene_id) location.hash = '#ts/' + sc.scene_id + (sc.select ? '?sel=' + sc.select : ''); else if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
+    const onResult = r => { const sc = AICESAT.toolPayload(r); if (!sc) return; if (sc.view === 'ts' && sc.scene_id) location.hash = '#ts/' + sc.scene_id + (sc.select ? '?sel=' + sc.select : ''); else if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
     AICESAT.onToolResult = onResult;
     (AICESAT.pendingToolResults || []).forEach(onResult);
     if (AICESAT.lastToolResult) onResult(AICESAT.lastToolResult);
