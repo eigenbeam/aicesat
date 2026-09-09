@@ -241,7 +241,9 @@ class App:
         t.add_column(style="grey62", no_wrap=True); t.add_column(no_wrap=True); t.add_column()
         for e in ents:
             style = {"WARNING": "yellow", "ERROR": "red"}.get(e["level"], "grey62")
-            t.add_row(e["t"][11:19] if len(e.get("t", "")) > 19 else "", Text(e["name"], style=style), e["msg"])
+            # logbuf stores record.created, a float epoch — not an ISO string.
+            t.add_row(time.strftime("%H:%M:%S", time.localtime(e["t"])), Text(e["name"], style=style),
+                      Text(e["msg"]))
         self.c.print(t)
 
     # ---------- index ----------

@@ -327,3 +327,43 @@ def test_index_verify_on_a_missing_directory_is_empty_not_an_error(tmp_path, mon
     monkeypatch.setattr(index_atl06, "ATL06_INDEX_DIR", tmp_path / "nothing")
     out, _ = ops.index_verify(5)
     assert out["files"] == 0 and out["current"] == 0
+
+
+# --- the log pane ---------------------------------------------------------------------------------------------
+
+def test_log_renders_logbuf_entries(monkeypatch):
+    """logbuf stores record.created — a float epoch, not an ISO string. Formatting it as a string raised
+    TypeError: object of type 'float' has no len(), the moment the buffer was not empty."""
+    import time as _time
+
+    from aicesat import logbuf
+    monkeypatch.setattr(logbuf, "entries", lambda after: {"seq": 2, "entries": [
+        {"seq": 1, "t": _time.time(), "level": "INFO", "name": "lake", "msg": "wrote 3 cells"},
+        {"seq": 2, "t": _time.time(), "level": "WARNING", "name": "access", "msg": "retrying"},
+    ]})
+    a = _app()
+    a.cmd_log([])
+    out = a.c.file.getvalue()
+    assert "wrote 3 cells" in out and "retrying" in out
+    assert "lake" in out and "access" in out
+
+
+def test_log_says_so_when_the_buffer_is_empty(monkeypatch):
+    from aicesat import logbuf
+    monkeypatch.setattr(logbuf, "entries", lambda after: {"seq": 0, "entries": []})
+    a = _app()
+    a.cmd_log([])
+    assert "log buffer empty" in a.c.file.getvalue()
+
+
+def test_log_message_is_not_parsed_as_markup(monkeypatch):
+    """Log messages are data. A library message containing [something] must not be eaten as a Rich style tag."""
+    import time as _time
+
+    from aicesat import logbuf
+    monkeypatch.setattr(logbuf, "entries", lambda after: {"seq": 1, "entries": [
+        {"seq": 1, "t": _time.time(), "level": "INFO", "name": "index", "msg": "cells [1, 2, 3] done"},
+    ]})
+    a = _app()
+    a.cmd_log([])
+    assert "[1, 2, 3]" in a.c.file.getvalue()

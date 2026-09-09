@@ -29,13 +29,18 @@ def main() -> int:
 
     # The library logs at INFO on a dozen loggers. In a REPL that would scribble over the prompt, so it goes to the
     # ring buffer (readable with `log`) and only reaches stderr when asked for.
-    logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(levelname)s %(name)s: %(message)s")
+    # The pipeline loggers sit at INFO so logbuf's ring buffer fills (that is what `log` reads). Records still
+    # PROPAGATE to the root handler, and a logger's level does not gate its ancestors' handlers — so the terminal
+    # is kept quiet by raising the HANDLER's level, not the loggers'. -v lowers it and shows the same stream live.
+    for h in logging.getLogger().handlers:
+        h.setLevel(logging.INFO if a.verbose else logging.WARNING)
     # ERROR, not WARNING: urllib3 warns on every recycled connection ("Connection pool is full"), which is normal
     # for the fetch pool and would scribble over the prompt for the length of a build.
     for noisy in ("fsspec", "urllib3", "earthaccess", "botocore", "aiobotocore", "s3transfer"):
         logging.getLogger(noisy).setLevel(logging.ERROR)
-    logging.getLogger("aicesat").setLevel(logging.INFO if a.verbose else logging.WARNING)
+    logging.getLogger("aicesat").setLevel(logging.INFO)
 
     from rich.console import Console
 
