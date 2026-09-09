@@ -395,3 +395,34 @@ def test_index_cell_accepts_the_integer_form_too(monkeypatch):
     a = _app()
     a.cmd_index_cell([str(h3.str_to_int(cell))])
     assert cell in a.c.file.getvalue()
+
+
+# --- help stays in step with the command table ----------------------------------------------------------------
+
+def _help_names() -> set[str]:
+    """The command each HELP row documents: its leading words, before the first [flag] or <arg>."""
+    out = set()
+    for name, _ in app_mod.HELP:
+        words = []
+        for w in name.split():
+            if w.startswith(("[", "<", "--")):
+                break
+            words.append(w)
+        if words:
+            out.add(" ".join(words))
+    return out
+
+
+def _handler_names() -> set[str]:
+    return {n[len("cmd_"):].replace("_", " ") for n in dir(app_mod.App) if n.startswith("cmd_")}
+
+
+def test_every_command_is_documented():
+    undocumented = _handler_names() - _help_names() - {"help"}
+    assert not undocumented, f"commands with no help row: {sorted(undocumented)}"
+
+
+def test_every_help_row_has_a_handler():
+    #  `quit` is handled by the REPL loop itself, not by a cmd_ method.
+    dangling = _help_names() - _handler_names() - {"quit"}
+    assert not dangling, f"help rows with no handler: {sorted(dangling)}"

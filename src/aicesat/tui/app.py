@@ -24,7 +24,7 @@ Type [bold cyan]help[/bold cyan] for commands, [bold cyan]quit[/bold cyan] to le
 
 HELP = [
     ("region [name]", "show or set the working region (bbox comes from it)"),
-    ("bbox W S E N", "set the working bbox directly"),
+    ("bbox <W> <S> <E> <N>", "set the working bbox directly"),
     ("window [A B|none]", "set or clear the time window (YYYY-MM-DD)"),
     ("", ""),
     ("build [--workers N]", "build the index over the working bbox — resumable, hits NASA"),
