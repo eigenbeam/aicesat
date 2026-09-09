@@ -213,13 +213,14 @@ def chunk_map(bbox, window=None, res: int = 5, granule: str | None = None,
         by_gb: dict[tuple[str, str], list[dict]] = {}
         for r in rows:
             by_gb.setdefault((r["granule"], r["beam"]), []).append(r)
-        if granule:                      # substring match, so a partial granule id is enough to type
-            cand = [k for k in by_gb if granule in k[0] and (beam is None or k[1] == beam)]
-            if not cand:
-                raise ValueError(f"no granule matching {granule!r} touches this box "
-                                 f"({len({k[0] for k in by_gb})} granules do)")
-        else:                            # the busiest granule+beam: the most interesting byte map to look at
-            cand = list(by_gb)
+        # substring match on the granule, so a partial id is enough to type; either filter may be given alone.
+        cand = [k for k in by_gb
+                if (granule is None or granule in k[0]) and (beam is None or k[1] == beam)]
+        if not cand:
+            what = " and ".join(x for x in (f"granule matching {granule!r}" if granule else "",
+                                            f"beam {beam!r}" if beam else "") if x)
+            raise ValueError(f"no {what} over this box ({len({k[0] for k in by_gb})} granules, "
+                             f"beams {', '.join(sorted({k[1] for k in by_gb}))} do)")
         gb = max(cand, key=lambda k: len({r["chunk_index"] for r in by_gb[k]}))
         sel = by_gb[gb]
         p[2] = f"{gb[0]} · {gb[1]}"

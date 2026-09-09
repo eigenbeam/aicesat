@@ -312,7 +312,7 @@ class App:
     def cmd_index_cell(self, args) -> None:
         if not args:
             raise ValueError("index cell needs an h3 cell id")
-        want = args[0]
+        want = ops.as_cell_str(args[0])     # accepts the integer form `lake cells` prints, too
         data, t = ops.index_overview(self.res)
         t.title = f"index cell {want}"
         hit = next((c for c in data["status"]["cells"] if c["h"] == want), None)

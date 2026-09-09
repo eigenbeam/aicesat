@@ -131,10 +131,26 @@ def test_chunk_map_scopes_ranges_to_one_granule(monkeypatch):
     assert set(k[0] for k in data["chunk_cells"]) == {"a.h5"}
 
 
+def test_chunk_map_filters_on_beam_alone(monkeypatch):
+    """Either filter may be given by itself; --beam used to be ignored unless --granule came with it."""
+    from aicesat import index_atl06
+    rows = [_row("a.h5", "gt1l", 0, 0), _row("a.h5", "gt3r", 0, 500), _row("a.h5", "gt3r", 1, 900)]
+    monkeypatch.setattr(index_atl06, "plan_bbox", lambda *a, **k: _fake_plan(rows))
+    data, _ = ops.chunk_map((0, 0, 1, 1), beam="gt1l")
+    assert data["beam"] == "gt1l" and data["chunks"] == 1
+
+
+def test_chunk_map_rejects_a_beam_that_does_not_touch_the_box(monkeypatch):
+    from aicesat import index_atl06
+    monkeypatch.setattr(index_atl06, "plan_bbox", lambda *a, **k: _fake_plan([_row("a.h5", "gt1l", 0, 0)]))
+    with pytest.raises(ValueError, match="beam 'gt9z'"):
+        ops.chunk_map((0, 0, 1, 1), beam="gt9z")
+
+
 def test_chunk_map_rejects_a_granule_that_does_not_touch_the_box(monkeypatch):
     from aicesat import index_atl06
     monkeypatch.setattr(index_atl06, "plan_bbox", lambda *a, **k: _fake_plan([_row("a.h5", "gt1l", 0, 0)]))
-    with pytest.raises(ValueError, match="no granule matching"):
+    with pytest.raises(ValueError, match="granule matching 'nope'"):
         ops.chunk_map((0, 0, 1, 1), granule="nope")
 
 
@@ -367,3 +383,15 @@ def test_log_message_is_not_parsed_as_markup(monkeypatch):
     a = _app()
     a.cmd_log([])
     assert "[1, 2, 3]" in a.c.file.getvalue()
+
+
+def test_index_cell_accepts_the_integer_form_too(monkeypatch):
+    """`index cells` prints hex, `lake cells` prints integers, and both name a cell in the same index."""
+    import h3
+    cell = h3.latlng_to_cell(69.2, -50.0, 5)
+    monkeypatch.setattr(ops, "index_overview", lambda res: (
+        {"status": {"collection": "ATL06", "cells": [{"h": cell, "g": 5, "e": 3, "sp": 1.0, "y0": 2019, "y1": 2020}]}},
+        ops.Timing("index")))
+    a = _app()
+    a.cmd_index_cell([str(h3.str_to_int(cell))])
+    assert cell in a.c.file.getvalue()
