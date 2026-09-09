@@ -331,6 +331,14 @@ def _open_meta() -> duckdb.DuckDBPyConnection:
     con.execute("""CREATE TABLE IF NOT EXISTS coverage_cells (
         mission VARCHAR, granule VARCHAR, beam VARCHAR, chunk_index INTEGER, h3_cell UBIGINT, ingested_at TIMESTAMP,
         PRIMARY KEY (mission, granule, beam, chunk_index, h3_cell))""")
+    # Per-cell file rollup (see _file_stats). Deliberately NOT derived from coverage_cells: that table records what
+    # was FETCHED, including cells a chunk covered but wrote nothing to (index_atl06 marks every wanted cell so an
+    # all-fill cell is not re-fetched forever), so it over-counts files by ~4% on the deployed lake. This one records
+    # what is MATERIALIZED, keyed on the directory mtime that proves it is still true.
+    con.execute("""CREATE TABLE IF NOT EXISTS lake_cell_stats (
+        mission VARCHAR, h3_cell UBIGINT, dir_mtime_ns HUGEINT, rows_known BOOLEAN,
+        files INTEGER, n_rows BIGINT, n_bytes BIGINT, granules VARCHAR[], beams VARCHAR[],
+        PRIMARY KEY (mission, h3_cell))""")
     # one-time migration from the list-valued table
     if con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'coverage'").fetchone()[0]:
         con.execute("""INSERT OR IGNORE INTO coverage_cells
@@ -650,8 +658,62 @@ def _scan_cell(cdir, cell: int, with_rows: bool) -> dict | None:
             "chunks": 0, "first_ingested": None, "last_ingested": None}
 
 
+def _fresh(ent, mt: int, with_rows: bool) -> bool:
+    """Is a cached/persisted rollup still usable for this directory at this mtime?"""
+    return ent is not None and ent["mt"] == mt and (ent["rows_known"] or not with_rows)
+
+
+def _load_persisted_stats(mission: str, want: dict[int, int]) -> dict[int, dict]:
+    """Rollups from meta.duckdb for `want` ({cell: dir mtime_ns}), keeping only those whose mtime still matches."""
+    if not META_DB.exists() or not want:
+        return {}
+    cells = list(want)
+    with meta_db() as con:
+        rows = con.execute(
+            "SELECT h3_cell, dir_mtime_ns, rows_known, files, n_rows, n_bytes, granules, beams FROM lake_cell_stats "
+            "WHERE mission = ? AND h3_cell IN (" + ",".join("?" * len(cells)) + ")", [mission, *cells]).fetchall()
+    out = {}
+    for cell, mt, rows_known, files, n_rows, n_bytes, granules, beams in rows:
+        cell, mt = int(cell), int(mt)
+        if want.get(cell) != mt:
+            continue                       # the directory moved while we were down; rescan it
+        out[cell] = {"mt": mt, "rows_known": bool(rows_known),
+                     "s": {"cell": cell, "files": int(files), "rows": int(n_rows), "bytes": int(n_bytes),
+                           "granules": list(granules or []), "beams": list(beams or []),
+                           "chunks": 0, "first_ingested": None, "last_ingested": None}}
+    return out
+
+
+def _persist_stats(mission: str, upserts: dict[int, dict], live: list[int]) -> None:
+    """Write back the rollups we just scanned and drop rows for cells that are no longer on disk."""
+    with meta_db() as con:
+        if upserts:
+            con.executemany(
+                "INSERT OR REPLACE INTO lake_cell_stats "
+                "(mission, h3_cell, dir_mtime_ns, rows_known, files, n_rows, n_bytes, granules, beams) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [[mission, cell, e["mt"], e["rows_known"], e["s"]["files"], e["s"]["rows"], e["s"]["bytes"],
+                  e["s"]["granules"], e["s"]["beams"]] for cell, e in upserts.items()])
+        con.execute("DELETE FROM lake_cell_stats WHERE mission = ?" +
+                    (" AND h3_cell NOT IN (" + ",".join("?" * len(live)) + ")" if live else ""), [mission, *live])
+
+
+def _forget_persisted_stats(mission: str) -> None:
+    """Drop a mission's persisted rollups (tests, and anything that wants to force an honest full walk)."""
+    _STATS_CACHE.pop(mission, None)
+    if META_DB.exists():
+        with meta_db() as con:
+            con.execute("DELETE FROM lake_cell_stats WHERE mission = ?", [mission])
+
+
 def _file_stats(mission: str, with_rows: bool) -> dict[int, dict]:
     """Per-cell file totals for a mission, rescanning only the cell directories that changed since the last call.
+
+    Three tiers, each cheaper than the one below it: the in-process memo, the rollup persisted in meta.duckdb, then
+    an actual walk of the cell directory. The persisted tier is what makes the FIRST call after a restart cheap —
+    without it a redeploy costs a full walk (10.6 s for mission=ATL06 on the box, ~30 s in practice because the same
+    page load also triggers four cold index_status scans). meta.duckdb is opened only when something actually
+    changed, so the steady-state poll touches no database at all.
 
     The lock means concurrent pollers wait for one scan rather than each running their own — without it the first
     cold scan is still duplicated N ways. Returned dicts are copies: cell_stats decorates them with provenance and
@@ -662,21 +724,34 @@ def _file_stats(mission: str, with_rows: bool) -> dict[int, dict]:
         return out
     with _stats_lock(mission):
         cache = _STATS_CACHE.setdefault(mission, {})
+        dirs: dict[int, tuple] = {}
         for cdir in LAKE_DIR.glob(f"mission={mission}/h3_cell=*"):
             try:
-                cell, mt = int(cdir.name.split("=")[1]), cdir.stat().st_mtime_ns
+                dirs[int(cdir.name.split("=")[1])] = (cdir, cdir.stat().st_mtime_ns)
             except (ValueError, OSError):
                 continue
+
+        miss = {c: mt for c, (_d, mt) in dirs.items() if not _fresh(cache.get(c), mt, with_rows)}
+        if miss:                                        # tier 2: the rollup that outlived the last process
+            cache.update(_load_persisted_stats(mission, miss))
+
+        upserts: dict[int, dict] = {}
+        for cell, (cdir, mt) in dirs.items():
             ent = cache.get(cell)
-            if ent is None or ent["mt"] != mt or (with_rows and not ent["rows_known"]):
+            if not _fresh(ent, mt, with_rows):           # tier 3: walk it
                 s = _scan_cell(cdir, cell, with_rows)
                 if s is None:
                     cache.pop(cell, None)
                     continue
                 ent = cache[cell] = {"mt": mt, "rows_known": with_rows, "s": s}
+                upserts[cell] = ent
             out[cell] = {**ent["s"], "granules": list(ent["s"]["granules"]), "beams": list(ent["s"]["beams"])}
-        for gone in set(cache) - set(out):     # evicted, or the whole lake reset
+
+        stale = set(cache) - set(out)                    # evicted, or the whole lake reset
+        for gone in stale:
             del cache[gone]
+        if upserts or stale:
+            _persist_stats(mission, upserts, sorted(out))
     return out
 
 
