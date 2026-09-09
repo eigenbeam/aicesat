@@ -426,3 +426,41 @@ def test_every_help_row_has_a_handler():
     #  `quit` is handled by the REPL loop itself, not by a cmd_ method.
     dangling = _help_names() - _handler_names() - {"quit"}
     assert not dangling, f"help rows with no handler: {sorted(dangling)}"
+
+
+# --- logging wiring -------------------------------------------------------------------------------------------
+
+def test_setup_logging_fills_the_ring_buffer_while_keeping_the_terminal_quiet():
+    """The bug this replaced: silencing the terminal by setting the `aicesat` logger to WARNING also stopped INFO
+    reaching logbuf's handler, so `log` was permanently empty."""
+    import logging
+
+    from aicesat import logbuf
+    from aicesat import tui as tui_pkg
+
+    logbuf.install()
+    tui_pkg.setup_logging(verbose=False)
+    before = logbuf.entries(0)["seq"]
+    logging.getLogger("aicesat.lake").info("a message only the buffer should see")
+    after = logbuf.entries(before)["entries"]
+    assert [e["msg"] for e in after] == ["a message only the buffer should see"]
+    assert all(h.level == logging.WARNING for h in logging.getLogger().handlers)
+    assert logging.getLogger("aicesat.lake").level <= logging.INFO
+
+
+def test_setup_logging_verbose_lowers_the_handler_not_the_loggers():
+    import logging
+
+    from aicesat import tui as tui_pkg
+    tui_pkg.setup_logging(verbose=True)
+    assert all(h.level == logging.INFO for h in logging.getLogger().handlers)
+    tui_pkg.setup_logging(verbose=False)          # leave the suite as it was found
+
+
+def test_setup_logging_silences_the_connection_pool_chatter():
+    """urllib3 warns on every recycled connection; over a build that covers the prompt."""
+    import logging
+
+    from aicesat import tui as tui_pkg
+    tui_pkg.setup_logging(verbose=False)
+    assert logging.getLogger("urllib3").level == logging.ERROR
