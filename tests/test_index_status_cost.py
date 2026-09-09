@@ -72,3 +72,17 @@ def test_a_new_granule_is_picked_up(idx, monkeypatch):
     after = api.index_status("ATL06")
     assert after["granules"] == 2, "the directory-mtime gate hid a newly indexed granule"
     assert len(after["cells"]) == 2
+
+
+def test_index_status_cells_are_in_a_stable_order(idx):
+    """DuckDB's parallel hash aggregate orders groups arbitrarily and differently between identical calls, so
+    without an ORDER BY the same index produced a differently-ordered `cells` list on every scan that missed the
+    mtime gate — a response that never compares equal to itself, for the map, the MCP tool and the TUI alike."""
+    for i in range(12):
+        _granule(idx, f"ATL06_2020011500000{i % 10}_1176060{i % 10}_007_01",
+                 [600000000000000000 + j for j in range(i, i + 4)])
+    first = [c["h"] for c in api.index_status("ATL06")["cells"]]
+    assert first == sorted(first)
+    for _ in range(5):
+        api._INDEX_CACHE.pop("ATL06", None)          # force a real rescan, not the memo
+        assert [c["h"] for c in api.index_status("ATL06")["cells"]] == first

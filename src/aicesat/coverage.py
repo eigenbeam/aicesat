@@ -295,8 +295,12 @@ def cell_coverage(collection: str) -> dict[int, tuple] | None:
         return None
     con = duckdb.connect()
     try:
+        # ORDER BY is not cosmetic. DuckDB's parallel hash aggregate returns groups in an arbitrary order that
+        # varies BETWEEN IDENTICAL CALLS (measured: 8 orderings from 8 runs of this query), so index_status handed
+        # every consumer a differently-ordered `cells` list each time its mtime gate missed. That is a diffable
+        # response that never compares equal to itself; sorting 14k rows the scan has already materialised is free.
         rows = con.execute("SELECT h3_cell, count(DISTINCT granule), count(DISTINCT ym), min(ym), max(ym) "
-                           "FROM read_parquet(?) GROUP BY h3_cell", [str(manifest)]).fetchall()
+                           "FROM read_parquet(?) GROUP BY h3_cell ORDER BY h3_cell", [str(manifest)]).fetchall()
     finally:
         con.close()
     return {int(c): (int(g), int(e), y0, y1) for c, g, e, y0, y1 in rows}
