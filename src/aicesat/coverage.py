@@ -277,6 +277,46 @@ def _ensure_manifest(d, ym: str):
     return _manifest_paths(d)[1]
 
 
+def cell_coverage(collection: str) -> dict[int, tuple] | None:
+    """Per-cell index coverage straight from the manifest: {cell: (granules, epochs, ym_min, ym_max)}, or None.
+
+    This is what index_status is built on. Deriving the same answer by opening every per-granule index parquet cost
+    43.5 s for ATL06 on the deployed box (33,064 files) — measured against 0.35 s here, for an identical cell set
+    (14,482; GLAS 23,142 and ICESSN 7,782 also identical). Going through _ensure_manifest rather than reading the
+    file directly matters: the manifest is rebuilt lazily when the index grows, so a blind read can lag it.
+    """
+    import duckdb
+
+    d, _res, ym = _index_for("ATL03" if collection == "ICESAT2" else collection)
+    if d is None or not d.exists():
+        return None
+    manifest = _ensure_manifest(d, ym)
+    if manifest is None:
+        return None
+    con = duckdb.connect()
+    try:
+        rows = con.execute("SELECT h3_cell, count(DISTINCT granule), count(DISTINCT ym), min(ym), max(ym) "
+                           "FROM read_parquet(?) GROUP BY h3_cell", [str(manifest)]).fetchall()
+    finally:
+        con.close()
+    return {int(c): (int(g), int(e), y0, y1) for c, g, e, y0, y1 in rows}
+
+
+def span_years(ym0: str | None, ym1: str | None) -> float:
+    """First-to-last observation span in years, from two 'YYYY-MM' stamps. 0.0 when a cell was seen only once.
+
+    Span replaces the old per-cell "distinct cycles": only ICESat-2 has repeat cycles, and index_status silently
+    substituted the YEAR for GLAS and IceBridge, so one colour scale meant two different things. Span means the same
+    thing for every collection.
+    """
+    try:
+        y0, m0 = int(ym0[:4]), int(ym0[5:7])
+        y1, m1 = int(ym1[:4]), int(ym1[5:7])
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0, (y1 * 12 + m1) - (y0 * 12 + m0)) / 12, 1)
+
+
 def read_parquet_src(index_dir, files: list[str] | None) -> str:
     """DuckDB source clause for an index query: the named granule files when the manifest resolved them, else the
     whole-directory glob (the safe fallback)."""

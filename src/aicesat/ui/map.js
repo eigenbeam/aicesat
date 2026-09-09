@@ -51,7 +51,7 @@ AICESAT.MapView = class {
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
-  setIndexCells(cells, pct) { this.state.indexCells = cells; this.state.indexPct = pct; this.render(); }
+  setIndexCells(cells, pct, spanMax) { this.state.indexCells = cells; this.state.indexPct = pct; this.state.indexSpanMax = spanMax || 0; this.render(); }
   click(info) {
     const s = this.state;
     if (info.layer && info.layer.id === 'scenes' && info.object) { this.onOpenScene(info.object); return; }
@@ -75,7 +75,9 @@ AICESAT.MapView = class {
     const U = AICESAT.util, st = o.stats;
     const head = `<b>H3 ${o.hexagon}</b> (res ${h3.getResolution(o.hexagon)})`;
     if (o.idx) { const p = this.state.indexPct, x = o.idx;
-      return head + `<br><b>${x.g}</b> granule${x.g === 1 ? '' : 's'}, <b>${x.c}</b> cycle${x.c === 1 ? '' : 's'} indexed` + (x.y0 ? ` (${x.y0}-${x.y1})` : '') + (p != null && p < 100 ? `<br>index build ${p}% of granules done` : ''); }
+      return head + `<br><b>${(x.sp || 0).toFixed(1)}</b> yr span` + (x.y0 ? ` (${x.y0}\u2013${x.y1})` : '')
+        + `<br><b>${x.e}</b> epoch${x.e === 1 ? '' : 's'} \u00b7 <b>${x.g}</b> granule${x.g === 1 ? '' : 's'} indexed`
+        + (p != null && p < 100 ? `<br>index build ${p}% of granules done` : ''); }
     if (!st || !st.bytes) return head + '<br>not in the lake';
     return head + `<br>${U.fmtBytes(st.bytes)} · ${U.fmtN(st.rows)} rows · ${st.files} files<br>${(st.granules || []).length} granules · ${st.chunks || 0} chunks` +
       (st.last_ingested ? `<br>ingested ${U.fmtAge(st.age_s)}` : '') + (st.n_cells ? `<br>(${st.n_cells} res-6 cells aggregated)` : '');
@@ -154,9 +156,13 @@ AICESAT.MapView = class {
     const agg = this.gridData();
     const idxFor = this.indexAt(res);   // grid-cell -> sub-granule-index info (or null), mapped to THIS grid resolution
     const patch = new Set(cells);
-    // In index mode the grid IS the index view: a cell in the index is coloured by temporal depth (distinct cycles);
-    // otherwise it falls back to the lake-data colouring. One layer, so it always aligns with the grid at every zoom.
-    const ramp = d => { const t = Math.min(1, (d.idx.c || 1) / 21); return [70 + t * 185, 220 - t * 30, 200 - t * 150, 175]; };
+    // In index mode the grid IS the index view: a cell is coloured by its OBSERVATION SPAN, first to last, scaled to
+    // the widest span this collection has anywhere. Span, not "distinct cycles": only ICESat-2 has repeat cycles, so
+    // the old number silently meant years on GLAS and IceBridge and one colour scale meant two different things.
+    // Scaling per collection rather than to a fixed 22 yr keeps ATL06 (7 yr of record) from rendering uniformly pale.
+    // One layer, so it always aligns with the grid at every zoom.
+    const spanMax = s.indexSpanMax || 1;
+    const ramp = d => { const t = Math.min(1, (d.idx.sp || 0) / spanMax); return [70 + t * 185, 220 - t * 30, 200 - t * 150, 175]; };
     const lake = d => { const st = d.stats; if (!st || !st.bytes) return [255, 255, 255, 6]; const a = st.age_s == null ? 1 : Math.max(0.35, 1 - st.age_s / (7 * 86400)); return [55, 138, 221, Math.round(40 + 120 * a)]; };
     const fill = d => d.idx ? ramp(d) : lake(d);
     const line = d => d.idx ? [90, 230, 210, 170] : ((d.stats && d.stats.bytes) ? [120, 190, 255, 160] : [255, 255, 255, 40]);
@@ -183,8 +189,10 @@ AICESAT.MapView = class {
     const coarse = new Map();   // grid coarser than the index -> roll index cells up to their grid-res ancestor
     for (const x of cells) {
       let k; try { k = h3.cellToParent(x.h, gridRes); } catch (e) { continue; }
-      const e = coarse.get(k) || {g: 0, c: 0, y0: x.y0, y1: x.y1};
-      e.g += x.g || 0; e.c = Math.max(e.c, x.c || 0);
+      const e = coarse.get(k) || {g: 0, e: 0, sp: 0, y0: x.y0, y1: x.y1};
+      // span and epochs roll up as a MAX, not a sum: what matters is the best record available anywhere inside this
+      // coarser cell, and adding two children's spans would invent a record neither of them has.
+      e.g += x.g || 0; e.e = Math.max(e.e, x.e || 0); e.sp = Math.max(e.sp, x.sp || 0);
       if (x.y0) e.y0 = Math.min(e.y0 || 9999, x.y0); if (x.y1) e.y1 = Math.max(e.y1 || 0, x.y1);
       coarse.set(k, e);
     }

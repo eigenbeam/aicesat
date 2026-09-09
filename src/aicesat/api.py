@@ -666,51 +666,33 @@ def index_status(collection: str = "ATL06") -> dict:
 
 
 def _index_status_locked(collection: str, d, res) -> dict:
-    import pyarrow.parquet as pq
     import h3
 
-    c = _INDEX_CACHE.setdefault(collection, {"seen": {}, "info": {}})   # info: cell -> [n_granules, {cycles}, yr_min, yr_max]
-    # Gate the whole scan on ONE stat of the directory. Reading is already incremental (per-file mtime), but working
-    # out WHAT to read globbed and stat()ed every file every call — ~32,060 index parquets for ATL06 on the deployed
-    # box, every 8 s, for each of four collections. Work proportional to the store, not the request, again.
-    # A directory's mtime changes whenever an entry is added or replaced, and index files are written tmp-then-rename
-    # (see build_atl06_index), so a rename into the directory always trips it.
+    from . import coverage
+
+    c = _INDEX_CACHE.setdefault(collection, {})
+    # Gate the whole thing on ONE stat of the directory. A directory's mtime changes whenever an entry is added or
+    # replaced, and index files are written tmp-then-rename (see build_atl06_index), so a rename always trips it.
     try:
         dir_mt = d.stat().st_mtime_ns if d.exists() else None
     except OSError:
         dir_mt = None
     if dir_mt is not None and c.get("dir_mt") == dir_mt and c.get("out") is not None:
         return c["out"]
-    for pth in (d.glob("*.parquet") if d.exists() else []):
-        try:
-            mt = pth.stat().st_mtime
-        except OSError:
-            continue
-        if c["seen"].get(pth.name) == mt:
-            continue
-        try:
-            names = set(pq.read_schema(pth).names)
-            cols = ["h3_cell"] + [x for x in ("cycle", "gdate") if x in names]
-            t = pq.read_table(pth, columns=cols)
-        except Exception:
-            continue   # parquet mid-write; skip this poll
-        h3c = t["h3_cell"].to_pylist()
-        gd = str(t["gdate"][0].as_py()) if "gdate" in cols and len(t) else ""
-        try:
-            yr = int(gd[:4]) if gd else int(pth.stem[6:10])   # GLAS/ICESSN: gdate column; ATL0x: name YYYYMMDD
-        except ValueError:
-            yr = 0
-        # depth token per granule: ICESat-2 cycle where present, else the year (GLAS/ICESSN have no repeat cycle)
-        cy = (int(t["cycle"][0].as_py()) if "cycle" in cols and len(t) else yr)
-        for cell in {int(x) for x in h3c}:
-            inf = c["info"].setdefault(cell, [0, set(), 9999, 0])
-            inf[0] += 1; inf[1].add(cy)
-            if yr:
-                inf[2] = min(inf[2], yr); inf[3] = max(inf[3], yr)
-        c["seen"][pth.name] = mt
-    cells = [{"h": h3.int_to_str(cell), "g": inf[0], "c": len(inf[1]),
-              "y0": (inf[2] if inf[2] != 9999 else 0), "y1": inf[3]} for cell, inf in c["info"].items()]
-    granules = len(c["seen"]); target = None
+    # Per-cell coverage comes from the rolled-up manifest, never from the per-granule index parquets. Opening those
+    # cost 43.5 s for ATL06 on the deployed box (33,064 files) against 0.35 s here, for an identical cell set — and
+    # it was most of why the Data Lake page took ~30 s on its first load after a restart. `granules` still comes
+    # from the directory, which is a readdir (no per-file stat) and is exact: the manifest can lag by a few granules
+    # between builds, and this number drives the "index build N% done" readout.
+    cov = coverage.cell_coverage(collection) or {}
+    cells, span_max = [], 0.0
+    for cell, (g, e, ym0, ym1) in cov.items():
+        sp = coverage.span_years(ym0, ym1)
+        span_max = max(span_max, sp)
+        cells.append({"h": h3.int_to_str(cell), "g": g, "e": e, "sp": sp,
+                      "y0": int(ym0[:4]) if ym0 else 0, "y1": int(ym1[:4]) if ym1 else 0})
+    granules = sum(1 for _ in d.glob("*.parquet")) if d.exists() else 0
+    target = None
     mf = d / "_build.json"
     if mf.exists():
         try:
@@ -719,7 +701,7 @@ def _index_status_locked(collection: str, d, res) -> dict:
             target = None
     pct = (min(100, round(100 * granules / target)) if target else None)
     out = {"collection": collection, "indexed": True, "res": res, "granules": granules,
-           "target": target, "pct": pct, "cells": cells}
+           "target": target, "pct": pct, "span_max": round(span_max, 1), "cells": cells}
     c["dir_mt"], c["out"] = dir_mt, out
     return out
 

@@ -139,9 +139,10 @@ AICESAT.LakeView = class {
     if (this.mode === 'index') {
       const idx = this._idxByKey[this.coll] || {indexed: false, cells: []};
       this.map.state.cells = null;
-      this.map.setIndexCells(idx.cells || [], idx.pct);
+      this.map.setIndexCells(idx.cells || [], idx.pct, idx.span_max);
       $('lkHint').textContent = idx.indexed
-        ? `Map: ${this.collLabel()} index coverage (res ${idx.res}). Colour = distinct cycles per cell (temporal depth).`
+        ? `Map: ${this.collLabel()} index coverage (res ${idx.res}). Colour = observation span, first to last`
+          + (idx.span_max ? ` (up to ${idx.span_max} yr here)` : '') + `. Hover for epochs.`
         : `${this.collLabel()} has no sub-granule index yet.`;
     } else {
       this.map.setIndexCells([]);

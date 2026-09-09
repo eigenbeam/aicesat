@@ -26,7 +26,10 @@ def idx(tmp_path, monkeypatch):
 
 
 def _granule(d, name, cells):
+    # `granule` is a real column of the index parquets: the coverage manifest, which index_status now reads instead
+    # of these files, rolls up DISTINCT (h3_cell, granule, ym) and parses the date out of the granule NAME.
     t = pa.table({"h3_cell": pa.array(cells, type=pa.uint64()),
+                  "granule": pa.array([name + ".h5"] * len(cells)),
                   "cycle": np.full(len(cells), 7, "i4")})
     tmp = d / f".{name}.tmp"
     pq.write_table(t, tmp)
@@ -47,6 +50,12 @@ def test_a_repeat_poll_does_not_rescan_the_index(idx, monkeypatch):
     _granule(idx, "ATL06_20200115000000_11760601_007_01", [600000000000000000, 600000000000000001])
     first = api.index_status("ATL06")
     assert first["indexed"] and first["granules"] == 1 and first["cells"]
+
+    # One settling pass: the first call builds the coverage manifest, and creating the `_coverage/` subdirectory
+    # bumps the PARENT directory's mtime, so that call invalidates its own gate. The mtime is deliberately stamped
+    # before the work (stale-and-corrected beats silently missing a granule that landed mid-call), so this costs one
+    # extra pass per index directory, ever — not one per poll, which is what this test is about.
+    api.index_status("ATL06")
 
     scans = _count_scans(monkeypatch)
     for _ in range(5):
