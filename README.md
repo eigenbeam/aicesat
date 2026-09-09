@@ -67,7 +67,23 @@ A `~/.netrc` with your Earthdata username/password also works, but a token in `e
 we recommend for sharing the server with a colleague.
 
 Tools: `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),
-`add_glas`, `coregister`, `lake_status`, `lake_load_cells`, `job_status`.
+`add_glas`, `coregister`, `find_timeseries_candidates`, `show_timeseries`, `lake_status`, `lake_load_cells`,
+`job_status`.
+
+### Asking for a time series
+
+`find_timeseries_candidates` ranks the places in an already-built scene where an elevation time series can actually
+be measured, and `show_timeseries` shows one of them. Both open the **Time series** view inline.
+
+The search bins every mission's points into H3 cells and fixed time windows, keeps cells seen in three or more
+windows, and fits one local reference plane per cell so surface slope is removed rather than mistaken for change.
+Each cell gets a deterministic 0–1 confidence dominated by within-cell roughness — the real failure mode, where two
+missions sample different sub-cell relief and fake a trend. `why` names the top two limiters in plain language.
+
+The candidate list is summarised for the caller (no per-cell series, no geometry) and reports `n_candidates_total`
+alongside what it returned, so a truncated answer still says how much it left behind; the view shows every cell.
+`trend_cm_yr` is the least-squares rate through the window medians and is **uncorrected** for inter-campaign /
+inter-sensor bias and for GIA — quote it with that caveat, as `params.notes` states on every answer.
 
 ## UI
 
@@ -81,6 +97,10 @@ Python; the server rebuilds it on start when sources change), served both inline
 - **Scene** — the 3-D viewer: ICESat-2 and GLAS points draped on a DEM, an **Adjustments** panel of correction toggles,
   and the co-located Δh histograms. The true plate-motion shift is sub-pixel at scene scale, so the clouds do not
   visibly move — the effect is read from the Δh panel, not an exaggerated visual. Panels collapse and close.
+- **Time series** (`#ts/<scene_id>`) — the same candidate list and chart the Scene panel carries, given the whole
+  page and no 3-D. It needs only the scene *metadata* and one search call, so unlike the Scene view it renders
+  completely inside Claude Desktop, where the point cloud's push stream cannot follow (`tools/call` is
+  request/response). Selecting a different cell is a local redraw: the view already holds every candidate's series.
 
 The UI talks to a transport-neutral API (`api.py`) exposed two ways: the localhost `/api/*` routes for the browser,
 and `visibility:["app"]` MCP tools the host proxies for the inline app. `scripts/e2e_apps.py` checks the MCP-App wiring.

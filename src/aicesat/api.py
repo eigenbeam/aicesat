@@ -724,15 +724,113 @@ def _index_status_locked(collection: str, d, res) -> dict:
     return out
 
 
+# Memoised candidate searches. The compute is proportional to the SCENE, not the request: every call reloads each
+# mission's npz and re-runs pyproj over every point (measured 0.99 s then 0.94 s back-to-back on a 264k-point scene,
+# and it grows from there). Two callers make that bite -- the UI re-fires the search on every h3_res / delta_t /
+# reference-mission nudge, and the MCP flow is inherently multi-call (list the candidates, then fetch one cell's
+# series). Both were paying the full load twice for a byte-identical answer.
+#
+# Keyed on the scene file's mtime+size like _scene_for_read, so a build writing progressive updates invalidates the
+# entry instead of being served a stale one. Results measure 35-160 KB, so four of them is under a megabyte.
+_CAND_MEMO: dict = {}
+_CAND_MEMO_MAX = 4
+_CAND_MEMO_LOCK = threading.Lock()
+
+
+def _cand_key(scene_id: str, h3_res, delta_t, ref_missions, min_bins) -> tuple:
+    p = cache.SCENE_DIR / f"{scene_id}.json"
+    st = p.stat()          # OSError here means no such scene; the caller turns it into KeyError
+    # ref_missions is order-insensitive downstream (_reference_set makes it a set), so normalise it here too --
+    # otherwise ["GLAS","ATL06"] and ["ATL06","GLAS"] split the memo and recompute the same answer.
+    return (scene_id, st.st_mtime_ns, st.st_size, int(h3_res), float(delta_t),
+            tuple(sorted(ref_missions)) if ref_missions else None, int(min_bins))
+
+
+def _cand_memo_get(key):
+    with _CAND_MEMO_LOCK:
+        return _CAND_MEMO.get(key)
+
+
+def _cand_memo_put(key, val) -> None:
+    with _CAND_MEMO_LOCK:
+        _CAND_MEMO[key] = val
+        while len(_CAND_MEMO) > _CAND_MEMO_MAX:
+            _CAND_MEMO.pop(next(iter(_CAND_MEMO)))
+
+
 def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
-    """Candidate coincident-observation cells + their elevation time series for a built scene."""
+    """Candidate coincident-observation cells + their elevation time series for a built scene.
+
+    The result is every qualifying cell, ranked -- never truncated (see tests/test_no_caps.py). Callers that need a
+    short list slim the RESPONSE and say how many they dropped; they do not cap the search."""
     from . import timeseries
+    try:
+        key = _cand_key(scene_id, h3_res, delta_t, ref_missions, min_bins)
+    except OSError:
+        raise KeyError(scene_id) from None
+    hit = _cand_memo_get(key)               # outside _lock: a memo hit must not queue behind a running build
+    if hit is not None:
+        return hit
     doc = cache.load_scene(scene_id)
     if doc is None:
         raise KeyError(scene_id)
     with _lock:
-        return timeseries.candidates(doc, h3_res=int(h3_res), delta_t=float(delta_t),
-                                     ref_missions=ref_missions, min_bins=int(min_bins))
+        hit = _cand_memo_get(key)           # another caller may have computed it while we waited for the lock
+        if hit is not None:
+            return hit
+        out = timeseries.candidates(doc, h3_res=int(h3_res), delta_t=float(delta_t),
+                                    ref_missions=ref_missions, min_bins=int(min_bins))
+    _cand_memo_put(key, out)
+    return out
+
+
+# --- model-facing projection of the search -------------------------------------------------------------------
+# A caller with a context window cannot take the full result: it carries every cell's time series plus the hex
+# boundary in scene-local metres (42 KB / 36 cells on one real scene, 159 KB / 133 on another). The viewer wants all
+# of that; a model wants the ranked verdict and then ONE cell's series. So the response is slimmed here, at the
+# transport edge -- the search itself is never capped. A result cap used to live in the search and silently dropped
+# the cells past it; tests/test_no_caps.py greps this package to keep it from coming back, which is why the retired
+# parameter is not named here. Anything the RESPONSE drops is accounted for by n_candidates_total.
+_SUMMARY_FIELDS = ("h3", "lat", "lon", "level", "confidence", "n_bins", "span_years",
+                   "slope_deg", "n_points", "n_ref", "trend_cm_yr", "why")
+_CELL_DROP = ("xy", "center")     # scene-local render geometry: for the deck.gl layer, meaningless to a reader
+
+
+def _ranked(out: dict) -> list[dict]:
+    """The search result is already sorted by (confidence, n_bins, span_years). Number it so a caller can say
+    "the third one" and mean something stable."""
+    return [dict(c, rank=i + 1) for i, c in enumerate(out["candidates"])]
+
+
+def timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
+                          min_bins: int = 3, limit: int | None = 10) -> dict:
+    """Ranked candidate cells for a time series, summarised: one row per cell, no series and no geometry.
+
+    limit=None returns every cell (large). n_candidates_total is always the true count, so a truncated answer
+    still says how much it left behind."""
+    out = scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
+    ranked = _ranked(out)
+    rows = ranked if limit is None else ranked[: max(1, int(limit))]
+    return {"scene_id": scene_id, "n_candidates_total": len(ranked), "returned": len(rows),
+            "params": out["params"], "candidates": [{"rank": c["rank"], **{k: c[k] for k in _SUMMARY_FIELDS}} for c in rows]}
+
+
+def timeseries_cell(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
+                    min_bins: int = 3) -> dict:
+    """One cell's full record: the series, the confidence breakdown, the trend.
+
+    The search parameters are required because a cell id only exists under the parameters that produced it -- a
+    res-9 cell is not in a res-10 search. Repeating them is free: scene_candidates memoises."""
+    out = scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
+    for c in _ranked(out):
+        if c["h3"] == h3:
+            return {"scene_id": scene_id, "params": out["params"],
+                    **{k: v for k, v in c.items() if k not in _CELL_DROP}}
+    raise ValueError(
+        f"cell {h3} is not among the {len(out['candidates'])} candidates for scene {scene_id} at "
+        f"h3_res={h3_res}, delta_t={delta_t}, min_bins={min_bins}, ref_missions={out['params']['ref_missions']}. "
+        "A cell id is only valid for the search that produced it — re-run the search with these parameters, or "
+        "use the parameters the cell came from.")
 
 
 # ----------------------------------------------------------------------------- lake

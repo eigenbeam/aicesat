@@ -98,6 +98,23 @@ def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple
     return round(conf, 2), level, why, comps
 
 
+def _trend_cm_yr(series) -> float:
+    """Unweighted least-squares rate through the window medians, in cm/yr.
+
+    Ported from the UI's linfit so the rate a caller is handed and the rate the chart prints are the same number
+    computed once, not two implementations that can drift. It inherits every caveat in `params["notes"]`: no
+    inter-campaign / inter-sensor bias adjustment and no GIA, so a mission changeover mid-series biases it."""
+    if len(series) < 2:
+        return 0.0
+    x = np.array([p["year"] for p in series], "f8")
+    y = np.array([p["value_m"] for p in series], "f8")
+    dx = x - x.mean()
+    sxx = float((dx * dx).sum())
+    if sxx <= 0.0:                       # every window landed on the same year: no baseline, no rate
+        return 0.0
+    return round(100.0 * float((dx * (y - y.mean())).sum()) / sxx, 2)
+
+
 def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
                min_bins: int = 3, common_epoch: float = 2005.0) -> dict:
     recs = _load_all(doc, common_epoch)
@@ -195,7 +212,7 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
         return {"h3": hexstr, "lat": round(float(clat), 5), "lon": round(float(clon), 5),
                 "center": [round(float(cx[0]), 2), round(float(cy[0]), 2), round(float(coef[0] - z0), 2)],
                 "xy": [[round(float(px), 2), round(float(py), 2)] for px, py in zip(bx, by)],
-                "n_bins": len(series), "span_years": span_years,
+                "n_bins": len(series), "span_years": span_years, "trend_cm_yr": _trend_cm_yr(series),
                 "slope_deg": round(float(np.degrees(np.arctan(np.hypot(coef[1], coef[2])))), 3),
                 "n_points": int(gi.size), "n_ref": int(rmask.sum()),
                 "confidence": conf, "level": level, "why": why, "components": comps, "series": series}

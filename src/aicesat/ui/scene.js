@@ -25,24 +25,11 @@ const adj = {plate_motion: true, gia: true};   // which corrections are applied 
 const $ = id => root.querySelector('#' + id);
 const PAIR_RING = [220, 200, 150, 180];
 let SHOW_PAIRS = true;
-// The three missions, as users know them (the legend doubles as show/hide controls). Keyed by the internal series
-// name; ICESat-2 appears as two products (ATL03 photons + ATL06 land ice).
-const MISSIONS = {
-  GLAS:    {name: 'ICESat-1 (GLAS)',          epoch: '2003–2009', gloss: 'ICESat / GLAS laser-altimeter surface heights'},
-  ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
-  ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
-  ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
-};
-const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
+// Mission identity and the display palette live in tspanel.js, shared with the standalone #ts view. Aliased here
+// so everything below reads exactly as it did when they were declared in this constructor.
+const {MISSIONS, MISSION_ORDER, MISSION_COLORS} = AICESAT.missions;
 const visible = {};   // mission key -> shown; initialised per scene (all on)
-// Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the grey-blue DEM.
-// Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before this palette.
-// Okabe-Ito blue/yellow/green (colour-blind-safe by construction): the dense ATL06 becomes a receding blue base,
-// GLAS a bright yellow, IceBridge green; ATL03 (rarely shown) a distinct vermillion.
-// Punchy trio on the (now charcoal) DEM: GLAS yellow, IceBridge vermillion, ATL06 blue — high contrast + colour-blind
-// distinct (yellow/blue is the safe axis; vermillion is Okabe-Ito's CVD-safe red). ATL03 (rare) takes green.
-const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120]};
-const colorOf = m => MISSION_COLORS[m] || (scene && scene.series[m] && scene.series[m].color) || [200, 200, 210];
+const colorOf = m => AICESAT.missions.colorOf(m, scene);
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -643,8 +630,7 @@ $('stats').addEventListener('reopen', () => updateStats());
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1;
-const H3_EDGE_M = {7: 1220, 8: 461, 9: 174, 10: 66, 11: 25};
-const missionColor = colorOf;
+const H3_EDGE_M = AICESAT.ts.H3_EDGE_M;
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (H3_EDGE_M[r] || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {
@@ -668,51 +654,10 @@ async function findCandidates() {
   } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); }
   $('tsFind').disabled = false;
 }
-function renderCandList() {
-  $('tsList').innerHTML = candidates.map((c, i) =>
-    '<div class="tscand ' + (i === candSel ? 'on' : '') + '" data-i="' + i + '"><span class="conf-badge ' + c.level + '" title="confidence ' + c.confidence + '">' + c.level + '</span> <b>' + c.n_bins + ' epochs</b> · ' + c.span_years + ' yr · ' + c.slope_deg + '° <span class="small">' + c.n_points + ' pts</span></div>').join('');
-  $('tsList').querySelectorAll('.tscand').forEach(el => el.onclick = () => selectCand(+el.dataset.i));
-}
+function renderCandList() { AICESAT.ts.renderCandList($('tsList'), candidates, candSel, selectCand); }
 function selectCand(i) { candSel = i; renderCandList(); drawChart(); renderConf(candidates[i]); render(); }
-function compRow(label, val, score) { return '<div class="comp-row"><span class="comp-lbl">' + label + '</span><span class="comp-val">' + val + '</span><span class="comp-bar"><i style="width:' + Math.round((score || 0) * 100) + '%"></i></span></div>'; }
-function renderConf(c) {
-  const el = $('tsConf'); if (!el) return;
-  if (!c) { el.innerHTML = ''; return; }
-  const m = c.components, sc = m.scores;
-  el.innerHTML = '<div class="conf-why"><span class="conf-badge ' + c.level + '">' + c.level + '</span> ' + c.why + '</div>' +
-    '<details class="tscomp"><summary>confidence breakdown (' + c.confidence + ')</summary><div class="tscomp-body">' +
-    compRow('within-cell roughness', m.roughness_m + ' m', sc.roughness) +
-    compRow('epochs (time windows)', m.epochs, sc.epochs) +
-    compRow('baseline', m.span_yr + ' yr', sc.span) +
-    compRow('reference points', m.ref_pts, sc.density) +
-    '</div></details>';
-}
-function linfit(x, y) { const n = x.length; if (n < 2) return 0; const mx = x.reduce((a, b) => a + b, 0) / n, my = y.reduce((a, b) => a + b, 0) / n; let sxy = 0, sxx = 0; for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; } return sxx ? sxy / sxx : 0; }
-function drawChart() {
-  const cv = $('tsChart'); if (candSel < 0 || !candidates[candSel]) { cv.hidden = true; return; }
-  cv.hidden = false; const c = candidates[candSel], s = c.series, dpr = devicePixelRatio;
-  const ctx = cv.getContext('2d'); const W = cv.width = cv.clientWidth * dpr; cv.style.height = '150px'; const H = cv.height = 150 * dpr;
-  ctx.clearRect(0, 0, W, H);
-  const padL = 44 * dpr, padR = 8 * dpr, padT = 10 * dpr, padB = 20 * dpr;
-  const yrs = s.map(p => p.year), vals = s.map(p => p.value_m), mads = s.map(p => p.mad_m);
-  const x0 = Math.min(...yrs), x1 = Math.max(...yrs);
-  let ymin = Math.min(...vals.map((v, i) => v - mads[i])), ymax = Math.max(...vals.map((v, i) => v + mads[i]));
-  const pd = (ymax - ymin) * 0.15 || 0.1; ymin -= pd; ymax += pd;
-  const sx = v => padL + (v - x0) / ((x1 - x0) || 1) * (W - padL - padR);
-  const sy = v => padT + (ymax - v) / ((ymax - ymin) || 1) * (H - padT - padB);
-  ctx.strokeStyle = '#555'; ctx.lineWidth = dpr; ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, H - padB); ctx.lineTo(W - padR, H - padB); ctx.stroke();
-  if (ymin <= 0 && ymax >= 0) { ctx.strokeStyle = '#666'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(padL, sy(0)); ctx.lineTo(W - padR, sy(0)); ctx.stroke(); ctx.setLineDash([]); }
-  ctx.fillStyle = '#aaa'; ctx.font = (11 * dpr) + 'px sans-serif'; ctx.textAlign = 'right';
-  ctx.fillText(ymax.toFixed(2) + ' m', padL - 4 * dpr, sy(ymax) + 8 * dpr); ctx.fillText(ymin.toFixed(2), padL - 4 * dpr, sy(ymin));
-  ctx.textAlign = 'center'; ctx.fillText(x0.toFixed(0), sx(x0), H - 5 * dpr); ctx.fillText(x1.toFixed(0), sx(x1), H - 5 * dpr);
-  ctx.strokeStyle = '#7a7a86'; ctx.lineWidth = 1.2 * dpr; ctx.beginPath(); s.forEach((p, i) => { const X = sx(p.year), Y = sy(p.value_m); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }); ctx.stroke();
-  s.forEach(p => { const X = sx(p.year), col = missionColor(p.missions[0]);
-    ctx.strokeStyle = 'rgba(' + col.join(',') + ',0.55)'; ctx.lineWidth = dpr; ctx.beginPath(); ctx.moveTo(X, sy(p.value_m - p.mad_m)); ctx.lineTo(X, sy(p.value_m + p.mad_m)); ctx.stroke();
-    ctx.fillStyle = 'rgb(' + col.join(',') + ')'; ctx.beginPath(); ctx.arc(X, sy(p.value_m), 3.4 * dpr, 0, 7); ctx.fill(); });
-  const trend = linfit(yrs, vals) * 100;
-  const missions = [...new Set(s.flatMap(p => p.missions))].map(m => (MISSIONS[m] || {}).name || m).join(' → ');
-  $('tsReadout').innerHTML = 'trend <b>' + trend.toFixed(1) + ' cm/yr</b> · ' + s.length + ' epochs over ' + c.span_years + ' yr · ' + missions;
-}
+function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
+function drawChart() { AICESAT.ts.drawChart($('tsChart'), candSel < 0 ? null : candidates[candSel], colorOf, $('tsReadout')); }
 function candidateLayers() {
   if (!candidates.length) return [];
   const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], c.center[2] * Z_EXAG]), sel: i === candSel}));

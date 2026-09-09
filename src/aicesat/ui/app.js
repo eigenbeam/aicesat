@@ -29,19 +29,21 @@ AICESAT.ready.then(api => {
     if (name === 'explore') views[name] = new AICESAT.ExploreView(root, api, id => { location.hash = '#scene/' + id; });
     if (name === 'lake') views[name] = new AICESAT.LakeView(root, api);
     if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#' + lastList; });
+    if (name === 'ts') views[name] = new AICESAT.TsView(root, api, () => { location.hash = '#' + lastList; });
     return views[name];
   }
   let current = null, lastList = 'explore';   // the list view (explore/lake) a scene was opened from
   function route() {
     const r = U.route();
-    const name = ['explore', 'lake', 'scene'].includes(r.view) ? r.view : 'explore';
+    const name = ['explore', 'lake', 'scene', 'ts'].includes(r.view) ? r.view : 'explore';
     if (name === 'explore' || name === 'lake') lastList = name;
     if (current && current !== name) { AICESAT.clearError(); get(current).hide(); }
     document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
-    $('topBack').hidden = name !== 'scene';
-    $('crumb').textContent = name === 'scene' ? '› scene ' + r.arg.split('?')[0] : '';
+    const deep = name === 'scene' || name === 'ts';
+    $('topBack').hidden = !deep;
+    $('crumb').textContent = deep ? '› ' + (name === 'ts' ? 'time series ' : 'scene ') + r.arg.split('?')[0] : '';
     const v = get(name);
-    if (name === 'scene') { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show();
+    if (deep) { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show();
     current = name;
   }
   document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.onclick = () => { location.hash = '#' + t.dataset.view; });
@@ -68,7 +70,7 @@ AICESAT.ready.then(api => {
       reportSize();
     };
     // the tool result that launched this instance decides the first view
-    const onResult = r => { const sc = r && r.structuredContent; if (!sc) return; if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
+    const onResult = r => { const sc = r && r.structuredContent; if (!sc) return; if (sc.view === 'ts' && sc.scene_id) location.hash = '#ts/' + sc.scene_id + (sc.select ? '?sel=' + sc.select : ''); else if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
     AICESAT.onToolResult = onResult;
     (AICESAT.pendingToolResults || []).forEach(onResult);
     if (AICESAT.lastToolResult) onResult(AICESAT.lastToolResult);

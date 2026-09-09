@@ -20,6 +20,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
+from mcp.server.mcpserver.exceptions import ToolError
 
 from . import api, atl03, cache, coverage, geom, regions, scene, stream, uibuild
 
@@ -436,6 +437,59 @@ def coregister(scene_id: str, common_epoch: float = 2005.0, colocation_radius_m:
     return slim
 
 
+def ts_url(scene_id: str, h3: str | None = None) -> str:
+    return f"{base_url()}/#ts/{scene_id}" + (f"?sel={h3}" if h3 else "")
+
+
+def _anticipated(fn, *a, **kw):
+    """Run an api.* call, turning its two expected failures into ToolError.
+
+    The SDK treats any other exception as a crash and withholds its text: the model reads only "Error executing
+    tool <name>" and has nothing to act on. Both failures here are ones a caller can fix from the message -- a
+    scene id that does not exist, or a cell id from a different search -- so they must arrive intact."""
+    try:
+        return fn(*a, **kw)
+    except KeyError as e:
+        raise ToolError(f"no such scene {e.args[0] if e.args else ''} — list_scenes shows the built scenes") from e
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+@apps.tool(resource_uri=UI_URI, name="find_timeseries_candidates")
+def find_timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0,
+                               ref_missions: list[str] | None = None, min_bins: int = 3, limit: int = 10) -> dict:
+    """Find and rank the places in a built scene where an elevation TIME SERIES can actually be measured.
+
+    Bins every mission's points into H3 cells and fixed time windows, keeps cells seen in >= min_bins windows, fits
+    one local reference plane per cell (so surface slope is removed rather than mistaken for change), and reports
+    each window's median residual. Each cell gets a deterministic 0-1 confidence dominated by within-cell roughness
+    — the real failure mode, where two missions sample different sub-cell relief and fake a trend.
+
+    Needs an ALREADY-BUILT scene (see list_scenes); it fetches nothing. Returns the top `limit` cells ranked by
+    confidence, with n_candidates_total giving the true count. Use show_timeseries for one cell's actual series.
+    Cell size is h3_res (7 ~1.2 km, 9 ~174 m, 11 ~25 m); delta_t is the time-window width in years."""
+    out = _anticipated(api.timeseries_candidates, scene_id, h3_res=h3_res, delta_t=delta_t,
+                       ref_missions=ref_missions, min_bins=min_bins, limit=limit)
+    return {**out, "view": "ts", "url": ts_url(scene_id)}
+
+
+@apps.tool(resource_uri=UI_URI, name="show_timeseries")
+def show_timeseries(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.0,
+                    ref_missions: list[str] | None = None, min_bins: int = 3) -> dict:
+    """Show one candidate cell's elevation time series and open the chart on it.
+
+    `h3` comes from find_timeseries_candidates; pass back the SAME search parameters it was found under, because a
+    cell id only exists within the search that produced it. Returns each time window's median height residual about
+    the cell's reference plane with its MAD error bar and which missions contributed, plus the confidence breakdown
+    and the least-squares trend in cm/yr.
+
+    The trend is uncorrected for inter-campaign / inter-sensor bias and for GIA (see params.notes) — relay that with
+    the number; a mission changeover mid-series biases it."""
+    out = _anticipated(api.timeseries_cell, scene_id, h3, h3_res=h3_res, delta_t=delta_t,
+                       ref_missions=ref_missions, min_bins=min_bins)
+    return {**out, "view": "ts", "select": h3, "url": ts_url(scene_id, h3)}
+
+
 # ----------------------------------------------------------------------------- app-visible tools (MCP Apps data plane)
 _APP = dict(resource_uri=UI_URI, visibility=["app"])
 
@@ -555,7 +609,11 @@ mcp = MCPServer(
         "Cross-mission altimetry demo (ICESat-2 ATL03 + ICESat/GLAS GLAH06). Tools compute and return "
         "structured JSON plus a widget URL the user should open; the widget renders the 3D scene. "
         "Always relay the comparability block and unresolved list to the user; never claim the missions "
-        "'agree' — co-registration removes the plate-motion artifact only."
+        "'agree' — co-registration removes the plate-motion artifact only. "
+        "For the time-series tools the same discipline applies to the rate: trend_cm_yr is uncorrected for "
+        "inter-campaign / inter-sensor bias and for GIA, so quote it with that caveat and with the cell's "
+        "confidence level and `why`, never as a bare number. A truncated candidate list reports "
+        "n_candidates_total — say how many cells were found, not just how many you were shown."
     ),
 )
 

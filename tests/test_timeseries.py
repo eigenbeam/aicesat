@@ -77,3 +77,29 @@ def test_blunder_clip_keeps_real_change_and_drops_blunders(monkeypatch):
 def test_requested_reference_absent_from_scene_uses_default(monkeypatch):
     ref, _ = _run(monkeypatch, _recs(GLAS_PLUS_ATL06), ref_missions=["ICESSN"])
     assert ref == ["GLAS"]
+
+
+# --- trend: one source of truth for the rate the model states and the chart prints -----------------------------
+def _cand(monkeypatch, recs, **kw):
+    monkeypatch.setattr(timeseries, "_load_all", lambda doc, epoch: recs)
+    out = timeseries.candidates(DOC, h3_res=9, delta_t=1.0, **kw)
+    assert len(out["candidates"]) == 1
+    return out["candidates"][0]
+
+
+def test_trend_cm_yr_recovers_a_known_rate(monkeypatch):
+    """A surface rising 0.25 m/yr about the GLAS-era plane must read as +25 cm/yr. The trend used to exist only in
+    the UI's linfit, so the number a caller got and the number the chart drew came from two implementations."""
+    rate = 0.25
+    epochs = [("GLAS", [2005.05], 0.0)] + [("ATL06", [y], rate * (y - 2005.05)) for y in (2019.5, 2020.5, 2021.5)]
+    c = _cand(monkeypatch, _recs(epochs))
+    assert abs(c["trend_cm_yr"] - 100 * rate) < 1.5, c["trend_cm_yr"]
+
+
+def test_trend_cm_yr_matches_a_least_squares_fit_of_the_series(monkeypatch):
+    """Whatever the windows come out as, the reported trend is the unweighted LS slope through them -- the same
+    statistic the UI drew, so the readout and the tool payload cannot drift apart."""
+    c = _cand(monkeypatch, _recs(GLAS_PLUS_ATL06))
+    x = np.array([p["year"] for p in c["series"]]); y = np.array([p["value_m"] for p in c["series"]])
+    expect = 100.0 * np.polyfit(x, y, 1)[0]
+    assert abs(c["trend_cm_yr"] - expect) < 0.01, (c["trend_cm_yr"], expect)
