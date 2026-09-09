@@ -38,7 +38,7 @@ AICESAT.LakeView = class {
       </div>
       <div id="attrib">Basemap: Natural Earth (public domain). Scene imagery: Sentinel-2 cloudless / EOX (CC BY-NC-SA 4.0)</div>`;
     const $ = id => root.querySelector('#' + id); this.$ = $;
-    this.mode = 'index'; this.coll = 'ATL06'; this.cols = []; this._viewSeq = 0; this._idxByKey = {};
+    this.mode = 'index'; this.coll = 'ATL06'; this.cols = []; this._viewSeq = 0; this._busy = false; this._idxByKey = {};
     this.map = new AICESAT.MapView($('lkMap'), {grid: true, selectCells: true, draw: false, footprints: true});
     this.map.onCellsSelected = cells => { $('lkSel').textContent = cells.length ? `${cells.length} cells: ${cells.slice(0, 6).join(', ')}${cells.length > 6 ? '…' : ''}` : 'none selected'; $('lkLoad').disabled = $('lkEvict').disabled = !cells.length; };
     $('lkClear').onclick = () => this.map.clear();
@@ -81,18 +81,24 @@ AICESAT.LakeView = class {
   }
 
   // one focused-mission summary (also carries the cheap all-mission cells/bytes array + budget) + per-collection index
+  // A poll NEVER stacks on a still-running one. The 8 s timer used to fire regardless, so when the round trip ran
+  // longer than 8 s the polls piled up instead of queueing: each added another full server-side scan, which made the
+  // rest slower still, which let more pile up. On the deployed box that ran away completely — ~30 concurrent
+  // /api/lake/summary scans, two cores flat, and not one response in 225 s. Slow must degrade to slow, not to never.
   async refresh(quiet = false) {
     if (!this.root.classList.contains('on') && quiet) return;
     if (!this.cols.length) return;
+    if (quiet && this._busy) return;    // a poll skips; a user action (mode/collection switch) still goes through
     const U = AICESAT.util, $ = this.$, seq = ++this._viewSeq;
     this.refreshJobs();
     let s, idxAll;
+    this._busy = true;
     try {
       [s, idxAll] = await Promise.all([
         this.api.lakeSummary(this.missionOf(this.coll)).catch(() => null),
         Promise.all(this.cols.map(c => this.api.indexStatus(c.key).catch(() => ({indexed: false, cells: []})))),
       ]);
-    } catch (e) { return; }
+    } catch (e) { return; } finally { this._busy = false; }
     if (seq !== this._viewSeq) return;
     this._idxByKey = {}; this.cols.forEach((c, i) => { this._idxByKey[c.key] = idxAll[i]; });
 

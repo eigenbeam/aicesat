@@ -616,6 +616,70 @@ def concat_arrays(parts, keys) -> dict:
 
 # ----------------------------------------------------------------------------- per-cell stats, settings, eviction
 
+# Per-cell file totals, memoized on the cell directory's mtime — the same gate as api.index_status, for the same
+# reason. lake_summary is polled every 8 s by the Data Lake view and its row counts cost one Parquet footer read per
+# file: 98,522 files under mission=ATL06 on the deployed box, 10.6 s a call uncontended. Polls arriving faster than
+# the scan completed stacked until ~30 ran at once, burned two cores flat and NONE ever returned — the panel sat on
+# "loading…" forever. A cell directory's mtime changes whenever a Parquet lands in it or leaves (write_photons and
+# write_point_chunk create new files, relayout renames one in, eviction rmtree's the directory), so one stat() per
+# cell settles "changed?" for every file it holds. Work proportional to the request, not to the store.
+_STATS_CACHE: dict[str, dict[int, dict]] = {}    # mission -> cell -> {"mt": dir mtime_ns, "rows_known": bool, "s": totals}
+_STATS_LOCKS: dict[str, threading.Lock] = {}
+_STATS_LOCKS_GUARD = threading.Lock()
+
+
+def _stats_lock(mission: str) -> threading.Lock:
+    with _STATS_LOCKS_GUARD:
+        return _STATS_LOCKS.setdefault(mission, threading.Lock())
+
+
+def _scan_cell(cdir, cell: int, with_rows: bool) -> dict | None:
+    """One cell directory's file totals, or None if it holds no Parquet (an emptied or half-written cell)."""
+    files = list(cdir.glob("*.parquet"))
+    if not files:
+        return None
+    rows = 0
+    if with_rows:
+        for f in files:
+            try:
+                rows += pq.read_metadata(f).num_rows
+            except Exception:
+                pass
+    return {"cell": cell, "files": len(files), "rows": rows, "bytes": sum(f.stat().st_size for f in files),
+            "granules": sorted({f.name.split("__")[0] for f in files}), "beams": sorted({f.stem.split("__")[1] for f in files}),
+            "chunks": 0, "first_ingested": None, "last_ingested": None}
+
+
+def _file_stats(mission: str, with_rows: bool) -> dict[int, dict]:
+    """Per-cell file totals for a mission, rescanning only the cell directories that changed since the last call.
+
+    The lock means concurrent pollers wait for one scan rather than each running their own — without it the first
+    cold scan is still duplicated N ways. Returned dicts are copies: cell_stats decorates them with provenance and
+    must not write through to the cache.
+    """
+    out: dict[int, dict] = {}
+    if not LAKE_DIR.exists():
+        return out
+    with _stats_lock(mission):
+        cache = _STATS_CACHE.setdefault(mission, {})
+        for cdir in LAKE_DIR.glob(f"mission={mission}/h3_cell=*"):
+            try:
+                cell, mt = int(cdir.name.split("=")[1]), cdir.stat().st_mtime_ns
+            except (ValueError, OSError):
+                continue
+            ent = cache.get(cell)
+            if ent is None or ent["mt"] != mt or (with_rows and not ent["rows_known"]):
+                s = _scan_cell(cdir, cell, with_rows)
+                if s is None:
+                    cache.pop(cell, None)
+                    continue
+                ent = cache[cell] = {"mt": mt, "rows_known": with_rows, "s": s}
+            out[cell] = {**ent["s"], "granules": list(ent["s"]["granules"]), "beams": list(ent["s"]["beams"])}
+        for gone in set(cache) - set(out):     # evicted, or the whole lake reset
+            del cache[gone]
+    return out
+
+
 def cell_stats(mission: str = "ICESAT2", with_rows: bool = True) -> dict[int, dict]:
     """Per materialized cell: granules, beams, chunks, rows, bytes, first/last ingested. Files are the source of truth
     for bytes/rows (Parquet footers), the coverage table for provenance and age.
@@ -623,26 +687,10 @@ def cell_stats(mission: str = "ICESAT2", with_rows: bool = True) -> dict[int, di
     `with_rows=False` skips the per-file Parquet footer read and reports rows=0. Row counts are the ONLY thing here
     that needs to open files at all — bytes come from stat() — and they cost a footer read per file across the whole
     mission. On the deployed lake (864k files) that was ~300 s, and eviction, which needs only bytes and age, paid it
-    on every build that fetched anything. Callers that just size the lake must pass with_rows=False.
+    on every build that fetched anything. Callers that just size the lake must pass with_rows=False. The walk itself
+    is memoized per cell directory (see _file_stats); only the provenance join below runs on every call.
     """
-    out: dict[int, dict] = {}
-    if not LAKE_DIR.exists():
-        return out
-    for cdir in LAKE_DIR.glob(f"mission={mission}/h3_cell=*"):
-        cell = int(cdir.name.split("=")[1])
-        files = list(cdir.glob("*.parquet"))
-        if not files:
-            continue
-        rows = 0
-        if with_rows:
-            for f in files:
-                try:
-                    rows += pq.read_metadata(f).num_rows
-                except Exception:
-                    pass
-        out[cell] = {"cell": cell, "files": len(files), "rows": rows, "bytes": sum(f.stat().st_size for f in files),
-                     "granules": sorted({f.name.split("__")[0] for f in files}), "beams": sorted({f.stem.split("__")[1] for f in files}),
-                     "chunks": 0, "first_ingested": None, "last_ingested": None}
+    out = _file_stats(mission, with_rows)
     if META_DB.exists() and out:
         with meta_db() as con:
             grp = con.execute("SELECT h3_cell, count(*), min(ingested_at), max(ingested_at) FROM coverage_cells "
@@ -839,17 +887,21 @@ PRODUCTS = {"ICESAT2": "ICESat-2 ATL03", "ATL06": "ICESat-2 ATL06", "GLAS": "ICE
 
 
 def missions() -> list[dict]:
-    """Collections currently materialized in the lake (lightweight: cell dirs + file sizes, no parquet-footer reads)."""
+    """Collections currently materialized in the lake (cell dirs + file sizes; no footer reads, no meta.duckdb open).
+
+    This used to walk and stat() every Parquet in the lake itself — a second full pass on top of cell_stats' one, in
+    the same lake_summary call, 1.2 s of it on the deployed box. It shares the memoized walk now.
+    """
     if not LAKE_DIR.exists():
         return []
     out = []
     for d in sorted(LAKE_DIR.glob("mission=*")):
         m = d.name.split("=", 1)[1]
-        cells = [c for c in d.glob("h3_cell=*") if any(c.glob("*.parquet"))]
-        if not cells:
+        st = _file_stats(m, with_rows=False)
+        if not st:
             continue
-        b = sum(f.stat().st_size for c in cells for f in c.glob("*.parquet"))
-        out.append({"mission": m, "product": PRODUCTS.get(m, m), "cells": len(cells), "bytes": int(b)})
+        out.append({"mission": m, "product": PRODUCTS.get(m, m), "cells": len(st),
+                    "bytes": int(sum(s["bytes"] for s in st.values()))})
     return out
 
 
