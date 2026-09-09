@@ -1,0 +1,533 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{fancyvrb}
+\usepackage[hidelinks]{hyperref}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,shapes.geometric,backgrounds}
+
+\definecolor{idxblue}{HTML}{2F6FED}
+\definecolor{lakeblue}{HTML}{377ADD}
+\definecolor{metagold}{HTML}{E0A030}
+\definecolor{nasared}{HTML}{C0504D}
+\definecolor{soft}{HTML}{6B7A8D}
+\definecolor{panel}{HTML}{F2F5F9}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\col}[1]{\texttt{\footnotesize #1}}
+
+\tikzset{
+  store/.style   = {rectangle, rounded corners=3pt, draw=#1, fill=#1!8, line width=0.9pt,
+                    inner sep=6pt, align=center, font=\small},
+  bit/.style     = {rectangle, draw=soft, fill=white, line width=0.5pt, inner sep=3pt,
+                    align=center, font=\scriptsize},
+  flow/.style    = {-{Stealth[length=2.4mm]}, line width=0.8pt, draw=soft},
+  note/.style    = {font=\scriptsize\itshape, text=soft, align=left},
+}
+
+\title{\textbf{The AIcesat sub-granule index}\\[2pt]
+       \large design, on-disk layout, and the contents of every entry}
+\author{}
+\date{2026-09-09}
+
+\begin{document}
+\maketitle
+\vspace{-2.2em}
+
+\begin{abstract}
+\noindent
+AIcesat answers questions of the form \emph{``give me every altimetry point from four missions inside this
+box''} without downloading whole granules. It does that with a \textbf{sub-granule index}: a small table that
+records, for each spatial cell of each granule, the exact \emph{byte ranges} inside the remote file that hold
+the points for that cell. A query becomes a set of HTTP range \code{GET}s rather than a set of file downloads.
+This document describes the three stores that make that work --- the index, the lake, and the metadata
+database --- down to the directory tree, the file naming, and the meaning of every column. Section~\ref{sec:h3}
+covers a design question that keeps coming up: whether H3's cell hierarchy should carry the rollup metadata.
+All figures for size and time are measured on the deployed \code{us-west-2} instance, 2026-09-09.
+\end{abstract}
+
+\section{The three stores}
+
+The system keeps three things on disk, with sharply different jobs. Confusing them is the source of most of
+the bugs this design has produced, so it is worth being blunt about the split.
+
+\begin{center}
+\begin{tikzpicture}[node distance=8mm]
+  \node[store=nasared] (nasa) {\textbf{NASA / NSIDC}\\[1pt] granule files in S3\\ \scriptsize HDF5, CSV --- read-only, remote};
+  \node[store=idxblue, right=26mm of nasa] (idx) {\textbf{Index}\\[1pt] \code{data/index/}\\ \scriptsize where the bytes are\\ \scriptsize 71{,}640 parquet, 1.1\,GB};
+  \node[store=lakeblue, below=16mm of idx] (lake) {\textbf{Lake}\\[1pt] \code{data/lake/}\\ \scriptsize decoded points we kept\\ \scriptsize 113{,}271 parquet, 1.9\,GB};
+  \node[store=metagold, right=26mm of idx] (meta) {\textbf{Metadata DB}\\[1pt] \code{meta.duckdb}\\ \scriptsize what we fetched,\\ \scriptsize what is materialised\\ \scriptsize 16\,MB};
+
+  \draw[flow] (nasa) -- node[above, note, yshift=1pt] {build:\\one pass} (idx);
+  \draw[flow] (idx) -- node[right, note, xshift=1pt] {query: range GET\\then decode} (lake);
+  \draw[flow] (idx) -- node[above, note, yshift=1pt] {coverage\\rollup} (meta);
+  \draw[flow] (lake) -- (meta);
+  \draw[flow] (nasa.south) |- node[below, note, pos=0.72] {the fetched bytes} (lake.west);
+\end{tikzpicture}
+\end{center}
+
+\begin{description}\setlength{\itemsep}{2pt}
+\item[The index] is an \emph{address book}. It never holds science values --- only the coordinates of bytes.
+  It is built once per granule and is then immutable. Its unit is
+  \(\bigl(\text{granule},\ \text{beam},\ \text{chunk},\ \text{H3 cell}\bigr)\).
+\item[The lake] is a \emph{cache of decoded points}, in the projected form the application wants. Losing it
+  costs time, never truth: anything missing is re-fetched. Its unit is one Parquet file per
+  \(\bigl(\text{granule},\ \text{beam},\ \text{chunk}\bigr)\) \emph{inside} one H3 cell directory.
+\item[The metadata DB] records \emph{what has been fetched} (so a chunk is never fetched twice) and, since
+  2026-09-09, \emph{what is materialised} (so sizing the lake does not require walking it). These are two
+  different questions and the distinction matters --- see \S\ref{sec:meta}.
+\end{description}
+
+\section{H3 as the addressing key}
+\label{sec:h3key}
+
+Every store is keyed on an H3 cell index --- a 64-bit integer naming a hexagon on a global grid. Resolutions
+in use:
+
+\begin{center}\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Collection} & \textbf{Product} & \textbf{Index res} & \textbf{Lake res} \\
+\midrule
+\code{ATL06}   & ICESat-2 ATL06 land ice   & 5 & 5 \\
+\code{ATL03}   & ICESat-2 ATL03 photons    & 6 & 6 \\
+\code{GLAS}    & ICESat/GLAS GLAH06        & 5 & 5 \\
+\code{ICESSN}  & IceBridge ATM ILATM2      & 5 & 5 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The dense photon product (ATL03) is indexed one resolution finer because a res-5 cell holds far too many
+photons to be a useful fetch unit. Index and lake resolutions are deliberately \emph{equal} within a
+collection: a lake file is written at the same resolution its index row named, so a later query for a
+different sub-box within the same cell re-filters correctly instead of returning a partial cell.
+
+\paragraph{One subtlety that is easy to get wrong.}
+H3's hierarchy is \emph{not} exactly nested. A resolution-5 hexagon is not the union of its resolution-6
+children; the aperture-7 subdivision makes children straddle the parent's boundary. What \emph{is} exact is
+the \emph{index} relation: \code{cellToParent(c,r)} is a total function on cell IDs, so every cell has exactly
+one ancestor at each coarser resolution. Any rollup defined over \emph{cell IDs} is therefore well defined;
+only a rollup interpreted as ``the metadata of the parent's geographic area'' inherits the boundary error.
+Section~\ref{sec:h3} depends on this distinction.
+
+\section{The sub-granule index}
+
+\subsection{Directory layout}
+
+\begin{center}
+\begin{tikzpicture}[node distance=1mm, every node/.style={font=\ttfamily\scriptsize, anchor=west}]
+  \node (a) at (0,0)        {data/index/};
+  \node (b) at (0.5,-0.42)  {atl06/res5/};
+  \node (b1) at (1.4,-0.84) {ATL06\_20181014050737\_02380104\_007\_01.h5.parquet \normalfont\itshape one per granule (33{,}064)};
+  \node (b2) at (1.4,-1.26) {\dots};
+  \node (b3) at (1.4,-1.68) {\_coverage/manifest.parquet \normalfont\itshape rolled-up (cell, granule, ym)};
+  \node (b4) at (1.4,-2.10) {\_coverage/meta.json \normalfont\itshape freshness stamp};
+  \node (b5) at (1.4,-2.52) {\_build.json \normalfont\itshape the cell list this build targets};
+  \node (c) at (0.5,-2.94)  {glas/res5/ \normalfont\itshape 4{,}741 granule parquet + \_coverage/};
+  \node (d) at (0.5,-3.36)  {icessn/res5/ \normalfont\itshape 33{,}793 granule parquet + \_coverage/};
+  \node (e) at (0.5,-3.78)  {atl03/ \normalfont\itshape 42 granule parquet + \_coverage/ (no res subdir)};
+  \node (f) at (0.5,-4.20)  {meta.duckdb \normalfont\itshape 16\,MB};
+  \draw[draw=soft, line width=0.4pt] ($(a.south west)+(0.15,0)$) -- ($(f.west)+(0.1,0)$);
+\end{tikzpicture}
+\end{center}
+
+\noindent
+The per-collection directory is \emph{flat}: one Parquet file per granule, named exactly
+\code{<granule>.parquet} (the granule name keeps its \code{.h5} / \code{.csv} suffix, so the stem is
+\code{...\_007\_01.h5}). Two consequences follow, and both have bitten:
+
+\begin{enumerate}\setlength{\itemsep}{2pt}
+\item Files are written \textbf{tmp-then-rename}, so a reader never sees a torn Parquet, and the
+  \emph{directory} mtime moves whenever a granule lands. That single \code{stat()} is the freshness gate used
+  everywhere downstream (\S\ref{sec:freshness}).
+\item Anything that answers a question by opening every file in the directory does work proportional to the
+  \emph{store}, not the \emph{request}. At 33{,}064 files that is 43.5\,s. The \code{\_coverage/} rollup
+  exists precisely to stop that, and lives in a \emph{subdirectory} so that a glob of \code{*.parquet} (which
+  the fetch path uses) cannot pick up a schema-mismatched file --- and so that writing it does not invalidate
+  its own freshness stamp.
+\end{enumerate}
+
+\subsection{What a row contains: byte-range addressing}
+
+This is the heart of the design. A granule is an HDF5 file of a few hundred MB whose datasets are stored as
+compressed chunks. For each contiguous run of measurements that falls in one H3 cell, the index records where
+the \emph{compressed bytes} of every dataset it will need begin and end, plus everything required to decode
+them without opening the file.
+
+\begin{center}
+\begin{tikzpicture}[x=1mm, y=1mm, font=\footnotesize]
+  % ---- whole file -------------------------------------------------------------------------------
+  \node[note, anchor=west] at (0,50)
+    {byte space of one remote granule --- \code{ATL06\_20181014050737\_02380104\_007\_01.h5}, 340\,MB};
+  \draw[draw=soft, fill=nasared!4, line width=0.6pt] (0,40) rectangle (130,47);
+  \node[font=\scriptsize, anchor=east] at (-1.5,43.5) {\code{0}};
+  \node[font=\scriptsize, anchor=west] at (131.5,43.5) {\code{EOF}};
+  \draw[fill=idxblue!60, draw=idxblue, line width=0.5pt] (3.2,39) rectangle (4.0,48);
+  \node[note, anchor=west] at (6.5,43.5) {$\approx$ byte 8{,}552{,}114 --- everything this cell needs lives here};
+
+  % ---- zoom -------------------------------------------------------------------------------------
+  \draw[draw=soft, dashed, line width=0.4pt] (3.2,39) -- (12,28);
+  \draw[draw=soft, dashed, line width=0.4pt] (4.0,39) -- (124,28);
+  \foreach \a/\b/\n/\c in {12/13.5/1/70, 13.5/37.5/2/45, 38.0/44.5/3/60, 51.0/86.0/4/40, 86.0/124/5/50} {
+    \draw[fill=idxblue!\c, draw=idxblue, line width=0.4pt] (\a,19) rectangle (\b,28);
+    \node[font=\scriptsize] at ({(\a+\b)/2},23.5) {\n};
+  }
+  \draw[draw=soft, line width=0.5pt] (44.5,19) rectangle (51.0,28);      % the 510 B gap
+  \node[note, anchor=west] at (0,15.5)
+    {\;1 \col{quality} 91\,B \ \ 2 \col{delta\_time} 1{,}880\,B \ \ 3 \col{h\_li} 482\,B \ \
+      \emph{(510\,B gap)} \ \ 4 \col{latitude} 2{,}715\,B \ \ 5 \col{longitude} 2{,}866\,B};
+  \draw[{Stealth[length=1.6mm]}-{Stealth[length=1.6mm]}, draw=soft, line width=0.5pt] (12,11.5) -- (124,11.5);
+  \node[note, anchor=north, align=center] at (68,10.5) {five ranges, two gaps, 8{,}577 bytes end to end\\
+    $\Rightarrow$ ONE coalesced range \code{GET} of 8.6\,kB, instead of a 340\,MB download};
+
+  % ---- the index row ----------------------------------------------------------------------------
+  \node[bit, anchor=north west, fill=idxblue!8, draw=idxblue, align=left, inner sep=4pt] (row) at (0,0)
+    {\textbf{the index row that says so}\\[2pt]
+     \col{h3\_cell}=598985434483130367\ \ \col{beam}=gt1l\ \ \col{chunk\_index}=0\\
+     \col{seg\_start}=0\ \ \col{seg\_end}=410\ \ \col{lat\_min}=80.860\ \ \col{lat\_max}=81.257\\[3pt]
+     \col{latitude\_offset}=8555110\ \ \col{latitude\_size}=2715\\
+     \col{latitude\_filters}=gzip\ \ \col{latitude\_dtype}=float64\ \ \col{latitude\_ncols}=1\\
+     \emph{\dots and the same sextet for} \col{longitude}, \col{h\_li}, \col{delta\_time},
+     \col{atl06\_quality\_summary}};
+  \node[note, anchor=north west, text width=128mm] at (0,-25)
+    {\code{offset}/\code{size} give the range; \code{filters} says how to inflate it (\code{gzip}, or
+     \code{shuffle,gzip} for the int8 columns); \code{dtype}/\code{ncols} say how to view the result.
+     Nothing here requires opening the file. ATL03's ranges are \emph{not} adjacent --- 3.28\,GB apart in the
+     example granule --- which is why coalescing is bounded by a gap threshold rather than unconditional.};
+\end{tikzpicture}
+\end{center}
+
+\noindent
+The addressing comes in three flavours, one per source format:
+
+\begin{center}\small
+\begin{tabular}{@{}p{22mm}p{34mm}p{68mm}@{}}
+\toprule
+\textbf{Collection} & \textbf{Row grain} & \textbf{Addressing columns} \\
+\midrule
+\code{ATL06}, \code{ATL03} &
+  (granule, beam, chunk, cell) &
+  per dataset: \col{\_offset} \col{\_size} \col{\_filters} \col{\_dtype} \col{\_ncols} \col{\_mask}. HDF5
+  chunk ranges. \col{\_ncols} matters: ATL03's \col{signal\_conf\_ph} is $n\times5$. \\
+\addlinespace[2pt]
+\code{GLAS} &
+  (granule, beam=\code{na}, chunk, cell) &
+  per dataset: \col{\_offset} \col{\_size} \col{\_filters} \col{\_dtype} \col{\_mask} \col{\_fill}. Carries an
+  explicit \col{\_fill} because GLAH06 encodes no-data as $1.798\times10^{308}$, not NaN. \\
+\addlinespace[2pt]
+\code{ICESSN} &
+  (granule, cell) &
+  \col{byte\_start} \col{byte\_end} \col{n\_lines}. Plain CSV --- a line range, no decompression. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Every collection additionally carries the columns in Table~\ref{tab:common}.
+
+\begin{table}[h]\centering\small
+\caption{Columns common to all index rows.}\label{tab:common}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+\col{granule}      & string  & source file name, suffix included; the join key everywhere \\
+\col{url}          & string  & HTTPS location (used out of region, via presigned redirect) \\
+\col{s3url}        & string  & \code{s3://} location (used in \code{us-west-2}: no presign, free egress) \\
+\col{revision}     & string  & NSIDC revision id, so a re-issued granule is distinguishable \\
+\col{h3\_cell}     & uint64  & the cell this row addresses, at the collection's index resolution \\
+\col{lat\_min/max} & double  & bounding box of \emph{this row's} points, for pre-filtering before decode \\
+\col{lon\_min/max} & double  & \\
+\col{chunk\_index} & int64   & which decode unit this is within the granule (absent for ICESSN) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+Mission-specific extras: ATL06/ATL03 carry \col{sc\_orient}, \col{sdp\_epoch}, \col{beam}, \col{strong},
+\col{cycle}, \col{rgt} and a segment or photon range (\col{seg\_start}/\col{seg\_end},
+\col{ph\_start}/\col{ph\_end}); GLAS and ICESSN carry \col{gdate} (\code{YYYYMMDD}) because they have no
+repeat-cycle number. A typical granule yields a small number of rows --- 18 for the ATL06 example above, 7 for
+ATL03, 25 for GLAS, 2 for ICESSN --- so the whole index is 1.1\,GB for 71{,}640 granules.
+
+\subsection{The coverage manifest}
+\label{sec:freshness}
+
+Answering ``which cells does this collection cover, and over what period?'' from the per-granule files means
+opening all of them. The manifest is the rollup that avoids it:
+
+\begin{center}\small
+\begin{tabular}{@{}llp{78mm}@{}}
+\toprule
+\multicolumn{3}{@{}l}{\code{<index dir>/\_coverage/manifest.parquet} --- \code{DISTINCT} triples} \\
+\midrule
+\col{h3\_cell} & uint64 & cell at the index resolution \\
+\col{granule}  & string & source granule \\
+\col{ym}       & string & \code{YYYY-MM}, derived from \col{gdate} (GLAS/ICESSN) or parsed out of the granule
+                          \emph{name} (ATL0x) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+For ATL06 that is 2{,}261{,}439 rows in 27\,MB, against 33{,}064 files and 1.1\,GB. The accompanying
+\code{meta.json} holds \code{\{n\_source\_files, dir\_mtime\_ns, built\_at\}}, and the freshness protocol is:
+
+\begin{center}
+\begin{tikzpicture}[node distance=7mm]
+  \node[bit, fill=panel] (q) {read coverage};
+  \node[bit, right=of q, diamond, aspect=2.4, inner sep=1pt] (chk) {\code{dir\_mtime\_ns} matches?};
+  \node[bit, right=12mm of chk, fill=idxblue!10, draw=idxblue] (use) {scan the manifest};
+  \node[bit, below=8mm of chk, fill=nasared!8, draw=nasared] (build) {rebuild: read all granule parquet, \code{COPY} to tmp, \code{os.replace}};
+  \draw[flow] (q) -- (chk);
+  \draw[flow] (chk) -- node[above, note] {yes} (use);
+  \draw[flow] (chk) -- node[right, note] {no} (build);
+  \draw[flow] (build) -| (use);
+  \node[note, below=4mm of build.south, text width=112mm, anchor=north]
+    {The stamp is written \emph{before} the sources are read, so a granule landing mid-build leaves the
+     recorded mtime older than the directory's and the next read rebuilds. Stale-and-corrected, never
+     silently-missing. Writes land inside \code{\_coverage/}, which does not touch the parent's mtime, so the
+     manifest cannot invalidate itself.};
+\end{tikzpicture}
+\end{center}
+
+\noindent
+\textbf{Known lag.} Because the rebuild is lazy, the manifest can trail the directory by a few granules
+between builds --- measured 2026-09-09: 33{,}053 vs 33{,}064 (ATL06), 4{,}649 vs 4{,}741 (GLAS), 33{,}578 vs
+33{,}793 (ICESSN). The missing granules fall in already-covered cells, so the \emph{cell set} is unaffected
+(14{,}482 / 23{,}142 / 7{,}782 --- identical either way). Counts that must be exact, notably the ``index build
+$N\%$ done'' readout, therefore come from a directory listing rather than from the manifest.
+
+\section{The lake}
+
+\subsection{Layout and naming}
+
+\begin{center}
+\begin{Verbatim}[fontsize=\scriptsize, frame=single, framesep=3mm, rulecolor=\color{soft}]
+data/lake/mission=ATL06/h3_cell=599100951923523583/
+    ATL06_20181119053215_07880105_007_01__gt1l__c5.parquet   <- granule __ beam __ chunk
+    ATL06_20181119053215_07880105_007_01__gt1r__c5.parquet
+    ...                                                       (656 files in this cell)
+data/lake/mission=ICESAT2/h3_cell=604538106045005823/
+    ATL03_20210830193051_10411206_007_01.h5__gt2r.parquet     <- granule __ beam  (NO chunk)
+\end{Verbatim}
+\end{center}
+
+\noindent
+Hive-style partitioning, so DuckDB prunes on \code{mission=} and \code{h3\_cell=} without reading anything.
+The file name is the write's identity, which makes re-materialisation idempotent by construction.
+
+\paragraph{The ICESat-2 photon path names files differently, and it matters.}
+\code{write\_point\_chunk} (ATL06 / GLAS / ICESSN) emits one file per
+\((\text{granule},\text{beam},\text{chunk})\) --- so one coverage row corresponds to exactly one file.
+\code{write\_photons} (ATL03, stored under \code{mission=ICESAT2}) omits the chunk from the name, so
+\emph{many} coverage rows map to \emph{one} file: 390 rows against 363 files. Any scheme that derives
+per-file quantities by summing per-row quantities is wrong on this path.
+
+\subsection{What a lake row contains}
+
+\begin{center}\small
+\begin{tabular}{@{}llp{74mm}@{}}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+\col{native\_lon}, \col{native\_lat} & double & position as published, never rewritten \\
+\col{native\_height}                 & double & elevation in the source's own datum \\
+\col{t}                              & timestamp[ms] & observation time \\
+\col{source\_granule}, \col{beam}    & dictionary & provenance, dictionary-encoded (one value per file) \\
+\col{source\_chunk\_index}           & int32  & which fetch unit produced this row \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{ATL06 adds}} \\
+\col{quality}                        & int8   & \code{atl06\_quality\_summary} \\
+\multicolumn{3}{@{}l}{\emph{ICESSN adds}} \\
+\col{sn\_slope}, \col{we\_slope}     & double & along/across-track surface slope \\
+\multicolumn{3}{@{}l}{\emph{ICESAT2 (ATL03 photons) adds}} \\
+\col{row\_id}                        & uint64 & \code{crc32(granule/beam)} $\ll32$ $\mid$ photon index --- a
+                                                deterministic surrogate key \\
+\col{height\_ref}, \col{native\_frame} & dictionary & e.g.\ \code{WGS84 ellipsoid}, \code{ITRF2014} \\
+\col{coreg\_lon}, \col{coreg\_lat}, \col{coreg\_epoch} & double & co-registered position at
+                                                \code{COMMON\_EPOCH} $=2005.0$, materialised at ingest \\
+\col{signal\_conf\_landice}          & int8   & photon confidence \\
+\col{photon\_index}                  & int64  & index within the granule/beam \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Rows are written in along-track order with \code{ROW\_GROUP\_ROWS} $=65{,}536$, so each row group carries
+tight lat/lon statistics and DuckDB skips the groups a bounding-box predicate cannot touch. Compression is
+\code{zstd}.
+
+\section{The metadata database}
+\label{sec:meta}
+
+\code{data/index/meta.duckdb} holds two tables that answer two \emph{different} questions. Conflating them
+is the single most productive source of bugs in this subsystem.
+
+\begin{center}\small
+\begin{tabular}{@{}llp{72mm}@{}}
+\toprule
+\multicolumn{3}{@{}l}{\code{coverage\_cells} --- \emph{what has been fetched}. 118{,}157 rows.} \\
+\midrule
+\col{mission} & VARCHAR & \code{ATL06} / \code{GLAS} / \code{ICESSN} / \code{ICESAT2} \\
+\col{granule} & VARCHAR & \\
+\col{beam}    & VARCHAR & \code{na} where the source has no beams \\
+\col{chunk\_index} & INTEGER & \\
+\col{h3\_cell} & UBIGINT & \\
+\col{ingested\_at} & TIMESTAMP & \\
+\multicolumn{3}{@{}l}{\footnotesize PK \((\text{mission},\text{granule},\text{beam},\text{chunk\_index},\text{h3\_cell})\)} \\
+\addlinespace[4pt]
+\multicolumn{3}{@{}l}{\code{lake\_cell\_stats} --- \emph{what is materialised}. One row per cell.} \\
+\midrule
+\col{mission}, \col{h3\_cell} & VARCHAR, UBIGINT & PK \\
+\col{dir\_mtime\_ns} & HUGEINT & the cell directory's mtime this rollup was computed at \\
+\col{rows\_known}    & BOOLEAN & false when computed by a cheap pass that skipped row counts \\
+\col{files}, \col{n\_rows}, \col{n\_bytes} & INTEGER, BIGINT, BIGINT & \\
+\col{granules}, \col{beams} & VARCHAR[] & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Why \code{coverage\_cells} cannot answer ``how big is my lake''.}
+It deliberately records cells a chunk \emph{wanted} but wrote nothing to. \code{index\_atl06} marks every
+wanted cell of a fetched chunk ``so an all-fill cell is not re-fetched forever''; the writer then drops
+non-finite positions and, for ATL06, segments with \code{quality} $\neq 0$. Measured on the deployed lake:
+\textbf{4{,}373 of 107{,}363 ATL06 rows (4.1\%) name a file that does not exist}, spread over 184 cells and
+922 granules --- and \emph{every} file on disk has a row (zero unmarked). It is not drift and not eviction;
+it is a faithful record of a different fact. Hence the separate rollup table.
+
+\subsection{The three-tier read of the rollup}
+
+\begin{center}
+\begin{tikzpicture}[node distance=6mm]
+  \node[bit, fill=panel] (a) {in-process memo\\\code{\_STATS\_CACHE}};
+  \node[bit, right=24mm of a, fill=metagold!12, draw=metagold] (b) {\code{lake\_cell\_stats}\\in meta.duckdb};
+  \node[bit, right=24mm of b, fill=nasared!8, draw=nasared] (c) {walk the cell directory\\\code{glob} + footer reads};
+  \draw[flow] (a) -- node[above, note] {miss} (b);
+  \draw[flow] (b) -- node[above, note, yshift=0.5mm] {mtime moved} (c);
+  \draw[flow] (c.south) -- ++(0,-5mm) -| node[below, note, pos=0.25] {upsert} (b.south);
+  \node[note, below=9mm of b.south, text width=124mm, anchor=north]
+    {Gate at every tier is one \code{stat()} of the cell directory. The database is opened only when something
+     actually changed, so a steady-state poll touches no database at all. Cost on the box:
+     \(14.05\,\text{s} \rightarrow 0.27\,\text{s}\) across a process restart, identical output.};
+\end{tikzpicture}
+\end{center}
+
+\section{Read paths and what they cost}
+
+Measured on the deployed \code{t3.large} in \code{us-west-2}, 2026-09-09, against 102{,}990 lake files and
+71{,}640 index parquet.
+
+\begin{center}\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Call} & \textbf{Walking files} & \textbf{From metadata} & \textbf{Source of the fast answer} \\
+\midrule
+\code{lake\_summary(ATL06)}   & 7.09\,s  & 0.27\,s & \code{lake\_cell\_stats} + per-cell mtime \\
+\code{index\_status(ATL06)}   & 44.29\,s & 0.47\,s & \code{\_coverage/manifest.parquet} \\
+\code{index\_status(ATL03)}   & 0.05\,s  & 0.01\,s & \\
+\code{index\_status(GLAS)}    & 7.21\,s  & 0.18\,s & \\
+\code{index\_status(ICESSN)}  & 22.95\,s & 0.11\,s & \\
+\midrule
+\textbf{one page load}        & \textbf{81.58\,s} & \textbf{1.04\,s} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The recurring failure mode this table represents is worth naming: \emph{work proportional to the store rather
+than to the request}. It has been found and fixed five times in this codebase. It is invisible on a developer
+machine, where the store is 100$\times$ smaller, and it does not degrade gracefully --- an endpoint slower
+than its own polling interval does not become slow, it becomes \emph{never}, because the polls stack.
+
+\section{Should the rollup live in the H3 hierarchy?}
+\label{sec:h3}
+
+The tempting design is to store metadata at several resolutions --- a res-3 row summarising its res-5
+members --- so that a zoomed-out view reads few rows and a zoomed-in view reads exact ones. As
+\S\ref{sec:h3key} noted, the \emph{ID} hierarchy is exact even though the geometry is not, so this is well
+defined. The question is whether it pays.
+
+\paragraph{Which aggregates survive a rollup.}
+
+\begin{center}\small
+\begin{tabular}{@{}llp{72mm}@{}}
+\toprule
+\textbf{Quantity} & \textbf{Decomposable?} & \textbf{Why} \\
+\midrule
+\col{n\_bytes}, \col{n\_rows}, \col{files} & \textbf{yes}, sum & each file belongs to exactly one leaf cell \\
+\col{ym\_min}, \col{ym\_max}, hence span   & \textbf{yes}, min/max & min and max are associative \\
+\col{granules} (distinct count)             & \textbf{no}    & one granule crosses many cells; summing
+                                                               children over-counts the shared ones \\
+\col{epochs} (distinct \code{ym})           & \textbf{no}    & same reason \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+This is not hypothetical. The client already rolls index cells up to the display grid, and it does so with
+\code{e.g += x.g} --- summing a distinct-granule count. A granule crossing two res-5 cells is counted twice in
+their res-4 parent. The tooltip's granule figure is therefore an over-count at zoom levels coarser than the
+index resolution. Span and epochs, which that same rollup takes as a \code{max}, are correct.
+
+\paragraph{Recommendation: not yet, and not as stored rows.}
+Three reasons.
+
+\begin{enumerate}\setlength{\itemsep}{3pt}
+\item \textbf{The leaf table is small enough to aggregate on demand.} The rollup is
+  \code{GROUP BY cellToParent(h3\_cell, r)} over 185 lake cells or 14{,}482 index cells --- microseconds in
+  DuckDB. Materialising ancestors optimises something that is not slow.
+\item \textbf{Invalidation multiplies.} The correctness of the present design rests on one cheap, honest
+  signal: the cell directory's mtime. A stored ancestor has no directory and therefore no such signal; every
+  leaf write would have to invalidate $O(\log)$ ancestors explicitly, and any writer that forgot would leave
+  a silently wrong number with nothing to self-heal it. The current tiers degrade to a slow-but-correct walk;
+  a stale ancestor degrades to a wrong answer.
+\item \textbf{The distinct-counts would need sketches, not integers.} Doing this properly means storing an
+  HLL sketch per cell per level so \code{granules} and \code{epochs} merge correctly. That is the right
+  answer at scale and clearly disproportionate now.
+\end{enumerate}
+
+\noindent
+\textbf{The threshold to watch.} Res-5 covers the globe in roughly $2\times10^{6}$ cells. Today's index
+occupies 14{,}482 of them for ATL06 --- Greenland and Antarctica at partial build. A whole-cryosphere index
+at res 5, or any move to res 7--8 for ATL03, puts the leaf count two to three orders of magnitude higher, and
+at that point the on-demand \code{GROUP BY} stops being free. The migration is then:
+
+\begin{center}
+\begin{tikzpicture}[node distance=10mm]
+  \node[bit, fill=panel] (leaf) {leaf rows\\\scriptsize res 5/6, one per cell};
+  \node[bit, right=26mm of leaf, fill=metagold!12, draw=metagold] (r3) {res 3\\\scriptsize sum, min, max};
+  \node[bit, right=16mm of r3, fill=metagold!12, draw=metagold] (r1) {res 1\\\scriptsize sum, min, max};
+  \node[bit, below=8mm of r3, fill=idxblue!8, draw=idxblue, align=left] (hll)
+    {\scriptsize + HLL sketch per row for\\\scriptsize \col{granules}, \col{epochs}};
+  \draw[flow] (leaf) -- node[above, note] {\code{cellToParent}} (r3);
+  \draw[flow] (r3) -- (r1);
+  \draw[flow] (hll) -- (r3);
+  \node[note, right=6mm of r1, text width=42mm] {each level keyed by ID, not geometry --- so the non-nesting
+    of H3 never enters the arithmetic};
+\end{tikzpicture}
+\end{center}
+
+\section{Invariants}
+
+The following are relied on throughout, and each has been violated at least once:
+
+\begin{enumerate}\setlength{\itemsep}{2pt}
+\item \textbf{Coverage is marked only after the file is on disk.} A crash loses cache, never truth --- an
+  unmarked chunk is simply re-fetched.
+\item \textbf{Index files land by rename.} Readers never see a torn Parquet, and the directory mtime is a
+  sound change signal.
+\item \textbf{A lake file is written at the collection's own index resolution}, never at the planner's. A
+  partial cell is then impossible by construction.
+\item \textbf{Files are the source of truth for bytes and rows}; the metadata database is a cache of that
+  truth, gated on a directory mtime, and never the other way round.
+\item \textbf{\code{coverage\_cells} is a superset of the materialised set}, by design. Counting files from
+  it over-counts by $\approx 4\%$.
+\end{enumerate}
+
+\end{document}
