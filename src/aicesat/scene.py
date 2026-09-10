@@ -60,12 +60,46 @@ def bbox_extent(frame: dict) -> tuple[float, float, float, float]:
     return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
 
 
+# The addressing resolution the point collections are read at. ATL06/GLAS/ICESSN all use res 5 and ATL03 res 6, so
+# the res-5 hull is the widest ground any enabled collection can return — which makes it the scene's real footprint.
+DATA_RES = 5
+
+
+def data_extent(frame: dict, polygon=None, res: int = DATA_RES) -> tuple[float, float, float, float]:
+    """Local-metre extent of the H3 cells a query over this frame's bbox will actually READ.
+
+    The bbox is what the user drew; the points that come back cover WHOLE res-`res` cells, because the lake is
+    addressed by cell and `clip_cells` keeps cell membership rather than the rectangle. On a scene-sized box that
+    is 5.4x the drawn area, and only 28% of the returned points fell inside the box — so drawing the DEM and
+    imagery over the bbox alone left three-quarters of the point cloud hanging past the edge of its own terrain.
+
+    Falls back to the bbox extent if the cell fill fails, which is the old behaviour and never worse than nothing.
+    """
+    try:
+        from . import planner
+
+        cells = planner.cells_for_bbox(frame["bbox"], res=res, polygon=polygon)
+        if not cells:
+            return bbox_extent(frame)
+        import h3
+
+        lats, lons = [], []
+        for c in cells:
+            for la, lo in h3.cell_to_boundary(c if isinstance(c, str) else h3.int_to_str(int(c))):
+                lats.append(la); lons.append(lo)
+        xs, ys = to_local(frame, np.asarray(lons), np.asarray(lats))
+        return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+    except Exception as e:
+        log.warning("data_extent failed (%s: %s); falling back to the bbox extent", type(e).__name__, e)
+        return bbox_extent(frame)
+
+
 def add_imagery(doc: dict, width_px: int = 4096, source: str | None = None) -> dict:
     """Fetch/warp the imagery base layer for the scene's bbox (network); records the file path and extent.
     `source` (from the UI selector) overrides the AICESAT_IMAGERY default; None uses the env/default."""
     from . import imagery
 
-    meta = imagery.build(doc["frame"], bbox_extent(doc["frame"]), width_px, source=source)
+    meta = imagery.build(doc["frame"], data_extent(doc["frame"], doc.get("polygon")), width_px, source=source)
     doc["imagery"] = {**meta, "url": f"/api/scene/{doc['scene_id']}/imagery.jpg"}
     return doc
 
@@ -168,7 +202,7 @@ def set_surface(doc: dict) -> dict:
         return doc
     try:
         from . import dem
-        doc["surface"] = dem.surface_for_frame(doc["frame"], bbox_extent(doc["frame"]), doc["z0"])
+        doc["surface"] = dem.surface_for_frame(doc["frame"], data_extent(doc["frame"], doc.get("polygon")), doc["z0"])
     except Exception as e:  # DEM is a base layer, never a blocker
         import logging
         logging.getLogger(__name__).warning("DEM unavailable, no surface shown: %s", e)
