@@ -136,7 +136,8 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
             m["has_slopes"] = bool(s.get("has_slopes")) or cache.scene_array_len(scene_id, s.get("mission", ""), "slopes") > 0
             return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
-                "z0": doc["z0"], "labels": doc.get("labels"), "imagery_status": doc.get("imagery_status"),
+                "z0": doc["z0"], "labels": doc.get("labels"), "markers": doc.get("markers"),
+                "imagery_status": doc.get("imagery_status"),
                 "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
                 "series": {m: _series_meta(s) for m, s in doc["series"].items()},
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
@@ -244,7 +245,7 @@ def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
 
 def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
                 with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
-                log_fn=lambda m: None, scene_id: str | None = None) -> dict:
+                log_fn=lambda m: None, scene_id: str | None = None, markers=None) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
     plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
     optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
@@ -341,7 +342,7 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
 
     try:
         with _lock:
-            doc = scene.new_scene(sid, bb, question, polygon=poly)
+            doc = scene.new_scene(sid, bb, question, polygon=poly, markers=markers)
             cache.save_scene(sid, doc)               # persist the shell (frame/bbox) immediately -> UI opens instantly
 
             frame = doc["frame"]

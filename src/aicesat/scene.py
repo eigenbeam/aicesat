@@ -6,12 +6,16 @@ exaggeration and, in Slice 3, horizontal offset exaggeration, itself (and labels
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from pyproj import Transformer
 
 from . import cache
 
 from functools import lru_cache
+
+log = logging.getLogger(__name__)
 
 
 def frame_crs(lat: float, lon: float) -> str:
@@ -104,10 +108,29 @@ def series(frame: dict, mission: str, arrays: dict, meta: dict, z0: float, cache
     return out
 
 
-def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None) -> dict:
+def new_scene(scene_id: str, bbox, question: str | None = None, polygon=None, markers=None) -> dict:
+    """`markers` are named coordinates to point at in the rendered scene — [{lon, lat, label}]. The widget draws a
+    labelled stick at each, which is how you find a specific feature in a frame whose axes are local metres."""
     return {"scene_id": scene_id, "question": question, "frame": local_frame(bbox), "bbox": list(bbox), "polygon": polygon,
-            "z0": None, "series": {}, "coreg": None,
+            "z0": None, "series": {}, "coreg": None, "markers": normalize_markers(markers),
             "labels": {"note": "Native coordinates as delivered; no co-registration applied."}}
+
+
+def normalize_markers(markers) -> list[dict]:
+    """Validate [{lon, lat, label}] into the widget's shape. A bad marker is DROPPED, never guessed at: a pin in the
+    wrong place is worse than no pin, because the viewer reads it as a location."""
+    out = []
+    for m in (markers or []):
+        try:
+            lon, lat = float(m["lon"]), float(m["lat"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("marker %r has no usable lon/lat; dropped", m)
+            continue
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            log.warning("marker lon/lat out of range: %s %s; dropped", lon, lat)
+            continue
+        out.append({"lon": lon, "lat": lat, "label": str(m.get("label") or "")[:60]})
+    return out
 
 
 GLAS_OUTLIER_M = 50.0     # a shot this far from the median of its neighbours is a cloud/atmosphere return

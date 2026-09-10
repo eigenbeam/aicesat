@@ -232,6 +232,37 @@ function surfaceLayers() {
 
 // ---------------------------------------------------------------- orientation cues
 function niceStep(len) { const t = len / 4, p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
+// ---- local metres <-> lon/lat ---------------------------------------------------------------------------------
+// The scene renders in a local metric frame (aeqd centred on the bbox, or polar stereographic above 55 deg), so
+// nothing on screen carries a coordinate. These convert, using the frame's own orthonormal east/north unit
+// vectors -- the same basis plateletLayer uses -- so they hold for the rotated polar frames too. A flat-Earth
+// scaling around the bbox centre is sub-metre over a scene-sized box and is not meant for anything larger.
+const M_PER_DEG_LAT = 110574;
+function frameCentre(fr) { const b = fr.bbox; return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
+function mPerDegLon(clat) { return 111320 * Math.cos(clat * Math.PI / 180); }
+
+function localToLonLat(fr, x, y) {
+  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
+  const [clon, clat] = frameCentre(fr);
+  // SOLVE [E N][de dn]' = [x y]', do not project. E and N come from a finite difference at the bbox centre rounded
+  // to 6 decimals, so they are only APPROXIMATELY orthonormal and a dot-product inverse drifts with distance from
+  // the centre -- 0.4 m at the corner of this scene, and it grows with the box. A 2x2 solve is exact and no dearer.
+  const det = E[0] * N[1] - N[0] * E[1];
+  if (!det) return [clon, clat];                     // degenerate basis: refuse to invent a coordinate
+  const de = (N[1] * x - N[0] * y) / det, dn = (E[0] * y - E[1] * x) / det;
+  return [clon + de / mPerDegLon(clat), clat + dn / M_PER_DEG_LAT];
+}
+
+function lonLatToLocal(fr, lon, lat) {
+  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
+  const [clon, clat] = frameCentre(fr);
+  const de = (lon - clon) * mPerDegLon(clat), dn = (lat - clat) * M_PER_DEG_LAT;
+  return [de * E[0] + dn * N[0], de * E[1] + dn * N[1]];
+}
+
+const fmtLat = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'N' : 'S'}`;
+const fmtLon = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'E' : 'W'}`;
+
 // Local-metre bounds of the DEM base surface, so the axes anchor to the surface's corner (a stable frame that covers
 // the whole scene) rather than wherever the point cloud happens to fall. Falls back to the data bounds when no DEM.
 function surfaceExtent() {
@@ -259,15 +290,20 @@ function axesLayers() {
       const pt = [o[0] + dir[0] * v * scale, o[1] + dir[1] * v * scale, o[2] + dir[2] * v * scale];
       const t1 = [pt[0] + tdir[0] * tk, pt[1] + tdir[1] * tk, pt[2]];
       paths.push({p: [pt, t1], c: color, w: 1.5});
-      texts.push({position: [t1[0] + tdir[0] * tk * 1.2, t1[1] + tdir[1] * tk * 1.2, t1[2]], text: fmt(v), color, size: 11,
+      texts.push({position: [t1[0] + tdir[0] * tk * 1.2, t1[1] + tdir[1] * tk * 1.2, t1[2]], text: fmt(v, pt), color, size: 11,
                   anchor: tdir[0] < 0 ? 'end' : 'middle'});
     }
     const lab = [end[0] + dir[0] * 0.02 * span + (dir[2] ? -tk * 2.5 : 0), end[1] + dir[1] * 0.02 * span, end[2] + (dir[2] ? 0.02 * span : 0)];
     texts.push({position: lab, text: label, color, size: 13, anchor: dir[2] ? 'end' : (dir[0] ? 'start' : 'middle')});
   };
+  // Ticks read in DEGREES, not metres from an arbitrary corner: a scene is located by coordinate, and "6 km" from
+  // an origin the viewer cannot see locates nothing. The axis NAME keeps the metric span, so scale is not lost.
+  const fr = scene.frame;
   const km = v => `${(v / 1000).toFixed(v >= 1000 ? 0 : 1)} km`;
-  axis([1, 0, 0], Lxy, [235, 120, 120], 'x', stepXY, km, 1);
-  axis([0, 1, 0], Lxy, [120, 220, 140], 'y', stepXY, km, 1);
+  const lonAt = (v, pt) => fr ? fmtLon(localToLonLat(fr, pt[0], pt[1])[0]) : km(v);
+  const latAt = (v, pt) => fr ? fmtLat(localToLonLat(fr, pt[0], pt[1])[1]) : km(v);
+  axis([1, 0, 0], Lxy, [235, 120, 120], fr ? `lon \u2192 (${km(Lxy)})` : 'x', stepXY, lonAt, 1);
+  axis([0, 1, 0], Lxy, [120, 220, 140], fr ? `lat \u2192 (${km(Lxy)})` : 'y', stepXY, latAt, 1);
   axis([0, 0, 1], Lz, [140, 170, 255], 'z', niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
   return [
     new PathLayer({id: 'axes', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels', updateTriggers: {getPath: Z_EXAG}}),
@@ -277,10 +313,48 @@ function axesLayers() {
   ];
 }
 
+
+// ---- markers: "look HERE" -------------------------------------------------------------------------------------
+// Axis ticks orient you; they do not point at anything. A marker is a named coordinate -- a lake, an avalanche
+// source, a gauge -- rendered as a stick through the whole vertical extent so it is visible from any camera angle,
+// with the label at the top. scene.markers is [{lon, lat, label}]; absent or empty renders nothing.
+function markerLayers() {
+  const ms = (scene && scene.markers) || [];
+  const fr = scene && scene.frame;
+  const b = surfaceExtent() || bounds;
+  if (!ms.length || !fr || !b) return [];
+  const span = Math.max(b.maxx - b.minx, b.maxy - b.miny);
+  const z0 = b.minz * Z_EXAG, z1 = (b.maxz + 0.10 * Math.max(b.maxz - b.minz, 1)) * Z_EXAG;
+  const sticks = [], dots = [], labels = [];
+  ms.forEach((m, i) => {
+    const [x, y] = lonLatToLocal(fr, m.lon, m.lat);
+    // Off-scene markers are dropped rather than clamped to the edge: a pin on the boundary pointing at something
+    // outside it is worse than no pin, because it reads as a location.
+    if (x < b.minx - 0.02 * span || x > b.maxx + 0.02 * span || y < b.miny - 0.02 * span || y > b.maxy + 0.02 * span) return;
+    sticks.push({s: [x, y, z0], t: [x, y, z1]});
+    dots.push({p: [x, y, z1]});
+    labels.push({position: [x, y, z1], text: m.label || `${fmtLat(m.lat)} ${fmtLon(m.lon)}`});
+  });
+  if (!sticks.length) return [];
+  return [
+    new deck.LineLayer({id: 'marker-halo', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: [10, 10, 14, 210], getWidth: 6, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
+    new deck.LineLayer({id: 'marker-stick', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: [255, 190, 60, 240], getWidth: 2, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
+    new deck.ScatterplotLayer({id: 'marker-dot', data: dots, getPosition: d => d.p, getFillColor: [255, 190, 60, 255],
+      getRadius: 5, radiusUnits: 'pixels', stroked: true, getLineColor: [10, 10, 14, 220], lineWidthUnits: 'pixels',
+      getLineWidth: 1.5, updateTriggers: {getPosition: Z_EXAG}}),
+    new TextLayer({id: 'marker-label', data: labels, getPosition: d => d.position, getText: d => d.text,
+      getColor: [255, 215, 130], getSize: 13, sizeUnits: 'pixels', billboard: true, getPixelOffset: [0, -14],
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto', background: true,
+      getBackgroundColor: [20, 20, 26, 200], backgroundPadding: [4, 2], updateTriggers: {getPosition: Z_EXAG}}),
+  ];
+}
+
 // ---------------------------------------------------------------- render / view
 function render() {
   if (!scene) return;
-  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...candidateLayers(), ...axesLayers()]});
+  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...candidateLayers(), ...axesLayers(), ...markerLayers()]});
 }
 
 function fitView() {
