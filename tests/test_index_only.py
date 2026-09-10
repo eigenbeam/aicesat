@@ -45,7 +45,9 @@ def test_planner_refuses_an_unindexed_area(monkeypatch, tmp_path):
 # Modules allowed to name coverage.search. `coverage.py` defines it. `build_atl06.py` is a BUILDER: discovery is
 # its whole job, and it is deliberately not the module a query calls (see its docstring). Every other module under
 # src/ is on the query path, where a CMR search would hide an unbuilt index behind a slow success.
-_MAY_SEARCH_CMR = {"coverage.py", "build_atl06.py"}
+# Index BUILDERS pay discovery once, at build time; that is the whole point of the split (see build_atl06's
+# docstring). Query-path modules -- index_*.py, the extract wrappers -- may never appear here.
+_MAY_SEARCH_CMR = {"coverage.py", "build_atl06.py", "build_gedi.py"}
 
 
 def test_no_cmr_search_and_no_granule_download_in_the_package():

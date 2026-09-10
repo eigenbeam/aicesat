@@ -13,6 +13,7 @@ ATL03_SHORT_NAME, ATL03_VERSION = "ATL03", "007"
 GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
 ATL06_SHORT_NAME, ATL06_VERSION = "ATL06", "007"
 ICESSN_SHORT_NAME, ICESSN_VERSION = "ILATM2", "2"
+GEDI_SHORT_NAME, GEDI_VERSION = "GEDI02_A", "003"
 
 
 def granule_name(g) -> str:
@@ -150,6 +151,12 @@ def collections() -> list[dict]:
          "version": ATL06_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL06_WINDOW), "default": True},
         {"key": "ATL03", "mission": "ICESAT2", "flag": "with_atl03", "label": "ICESat-2 photons", "short_name": ATL03_SHORT_NAME, "product": "ATL03",
          "version": ATL03_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL03_WINDOW), "default": False},
+        # GEDI is OFF by default. It is the densest lidar flown (25 m footprints) and beats ATL06 on gentle ground,
+        # but its accuracy is strongly slope-dependent -- measured against the HMA 8 m DEM over Langtang, MAD ran
+        # 2.7 m under 15 deg and 14.7 m over 50 deg, with the median residual sliding -4.0 -> -12.4 m, while ATL06
+        # held 2.9-4.5 m on the same ground. Opting in should be a decision, not a default.
+        {"key": "GEDI", "mission": "GEDI", "flag": "with_gedi", "label": "GEDI (L2A)", "short_name": GEDI_SHORT_NAME, "product": "GEDI02_A",
+         "version": GEDI_VERSION, "epoch": "2019-", "window": list(regions.DEFAULT_GEDI_WINDOW), "default": False},
     ]
 
 
@@ -165,6 +172,9 @@ def _index_for(key: str):
         return index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_RES, gdate_ym
     if key == "ATL06":
         return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES, name_ym
+    if key == "GEDI":
+        from . import index_gedi
+        return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES, gdate_ym
     if key == "ATL03":
         return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES, name_ym
     return None, None, None
@@ -448,6 +458,9 @@ FOOTPRINTS: dict[str, list[tuple[float, float, float, float]]] = {
     "GLAS":   [(-180.0, -86.0, 180.0, 86.0)],                                  # GLAH06 v034
     "ATL06":  [(-180.0, -88.0, 180.0, 88.0)],                                  # ICESat-2, 92 deg inclination
     "ATL03":  [(-180.0, -88.0, 180.0, 88.0)],
+    # GEDI flies on the ISS, whose 51.6 deg inclination is a hard ceiling: there is no GEDI over any ice sheet.
+    # Offering it over Greenland would be offering a leg that cannot succeed.
+    "GEDI":   [(-180.0, -51.6, 180.0, 51.6)],
 }
 
 

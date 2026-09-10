@@ -247,7 +247,8 @@ IMAGERY_JOIN_TIMEOUT_S = 300   # a tile mosaic over a large scene is minutes, no
 
 
 def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
+                with_atl06=False, with_icessn=False, with_atl03=False, with_gedi=False, with_imagery=True,
+                imagery_source=None,
                 log_fn=lambda m: None, scene_id: str | None = None, markers=None,
                 wait_for_imagery: bool = False) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
@@ -296,6 +297,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly, on_granule=_on_granule("GLAS"), on_plan=_on_plan("GLAS"))
         return a, m, m["cache_key"]
 
+    def _ex_gedi():
+        from . import gedi
+        a, m = gedi.extract(bb, regions.DEFAULT_GEDI_WINDOW, polygon=poly, on_granule=_on_granule("GEDI"),
+                            on_plan=_on_plan("GEDI"))
+        return a, m, m["cache_key"]
+
     def _ex_icessn():
         from . import icessn
         a, m = icessn.extract(bb, regions.DEFAULT_ICESSN_WINDOW, polygon=poly, on_granule=_on_granule("ICESSN"), on_plan=_on_plan("ICESSN"))
@@ -330,6 +337,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         log_fn(f"ATL06: {m['n']:,} land-ice segments")
         _log_cache("ATL06", m)
 
+    def _int_gedi(a, m, ck):
+        scene.add_series(doc, "GEDI", a, m, ck)
+        _mark_done("GEDI", m)
+        log_fn(f"GEDI: {m['n']:,} footprints (25 m, 8 beams)")
+        _log_cache("GEDI", m)
+
     def _int_atl03(a, m, ck):
         st = m.get("access", {})
         if st.get("chunks_fetched"):
@@ -347,13 +360,14 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         ("GLAS",    with_glas,   _ex_glas,   _int_glas,   "GLAS"),
         ("ICESSN",  with_icessn, _ex_icessn, _int_icessn, "ICESSN"),
         ("ATL06",   with_atl06,  _ex_atl06,  _int_atl06,  "ATL06"),
+        ("GEDI",    with_gedi,   _ex_gedi,   _int_gedi,   "GEDI"),
         ("ICESAT2", with_atl03,  _ex_atl03,  _int_atl03,  "ATL03"),
     ]
     # Drop legs whose instrument never surveyed this ground. An impossible leg is not a failure worth reporting:
     # IceBridge flew the Arctic and Antarctic only, so asking it for Nepal produced a coverage error that read like
     # a missing index and invited a build that would find nothing. The UI disables these too; this is the guard for
     # every other caller (MCP tools, scripts, an older UI).
-    _COLL_FOR_LEG = {"GLAS": "GLAS", "ICESSN": "ICESSN", "ATL06": "ATL06", "ICESAT2": "ATL03"}
+    _COLL_FOR_LEG = {"GLAS": "GLAS", "ICESSN": "ICESSN", "ATL06": "ATL06", "ICESAT2": "ATL03", "GEDI": "GEDI"}
     enabled = []
     for leg in LEGS:
         if not leg[1]:
@@ -555,12 +569,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                     # Every leg's own reason is already in doc["progress"][m]["note"]. Reporting them beats the
                     # old blanket "check your selection and the token", which named neither the cause nor a fix
                     # and sent at least one diagnosis toward auth when the truth was a coverage-gate refusal.
-                    order = [m for m in ("ATL06", "ICESAT2", "GLAS", "ICESSN") if m in leg_errors]
+                    order = [m for m in ("ATL06", "ICESAT2", "GLAS", "ICESSN", "GEDI") if m in leg_errors]
                     detail = ("\n\n" + "\n\n".join(f"{m}: {leg_errors[m]}" for m in order)) if order else \
                         " No collection was even attempted — check the selection and the Earthdata token."
                     raise RuntimeError("no collection returned data over this area." + detail)
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
-                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
+                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "GEDI", "ICESAT2") if m in doc["series"]}
                 # Disk-budget eviction is pure housekeeping — the scene is already built, saved and streaming. Run it
                 # OFF the build path (background daemon) and ONLY when this build actually materialized new chunks, so
                 # footer-scanning never delays the response and idle/cache-hit builds skip it entirely. The synchronous
@@ -615,6 +629,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
                 doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"),
                                   bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
                                   with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
+                                  with_gedi=bool(params.get("with_gedi", False)),
                                   with_atl03=bool(params.get("with_atl03", False)),
                                   with_imagery=bool(params.get("with_imagery", True)), imagery_source=params.get("imagery_source"),
                                   log_fn=lambda m: job["log"].append(m), scene_id=sid)
@@ -692,6 +707,9 @@ def _index_source(collection: str):
     """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet."""
     from . import index_atl06, index_glas, index_icessn
     from . import index as atl03_index
+    if collection == "GEDI":
+        from . import index_gedi
+        return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES
     if collection == "ATL06":
         return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES
     if collection in ("ICESAT2", "ATL03"):

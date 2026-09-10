@@ -42,6 +42,8 @@ DEFAULT_GLAS_WINDOW = ("2003-02-20", "2009-10-11")    # ICESat-1 / GLAS campaign
 DEFAULT_ICESSN_WINDOW = ("2009-01-01", "2019-12-31")  # Operation IceBridge ATM, fills the ICESat -> ICESat-2 gap
 DEFAULT_ATL06_WINDOW = ("2018-10-01", "2027-01-01")   # ICESat-2 land ice, full record to present
 DEFAULT_ATL03_WINDOW = ("2018-10-01", "2027-01-01")   # ICESat-2 photons, full record to present
+DEFAULT_GEDI_WINDOW = ("2019-04-01", "2027-01-01")    # GEDI on the ISS; note the 2023 stow (2 granules that
+                                                      # year over Langtang) and the 2024 resumption
 
 
 def resolve_bbox(region: str | None = None, bbox: BBox | None = None) -> BBox:

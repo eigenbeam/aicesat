@@ -10261,8 +10261,8 @@ AICESAT.ExploreView = class {
   // ---- build progress: rendered inside the building scene's card in the Scenes list (not the build panel)
   progressHTML(j, plan = {}) {
     const log = j.log || [];
-    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
-    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03'};
+    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
+    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi'};
     const hasPlan = plan && ['with_glas', 'with_icessn', 'with_atl06', 'with_atl03'].some(f => plan[f] !== undefined);
     const wanted = k => {
       if (k === 'surface' || k === 'imagery') return true;
@@ -10538,14 +10538,15 @@ window.AICESAT = window.AICESAT || {};
   const MISSIONS = {
     GLAS:    {name: 'ICESat-1 (GLAS)',          epoch: '2003–2009', gloss: 'ICESat / GLAS laser-altimeter surface heights'},
     ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
+    GEDI:    {name: 'GEDI',                     epoch: '2019–',     gloss: 'GEDI L2A full-waveform lidar, 25 m footprints — accurate on gentle ground, slope-sensitive above ~30°'},
     ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
     ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
   };
-  const MISSION_ORDER = ['GLAS', 'ICESSN', 'ICESAT2', 'ATL06'];   // chronological
+  const MISSION_ORDER = ['GLAS', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
   // Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, high-contrast against the charcoal DEM.
   // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before it.
   // GLAS yellow, IceBridge vermillion, ATL06 blue — yellow/blue is the CVD-safe axis; ATL03 (rare) takes green.
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120]};
+  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,
@@ -10714,7 +10715,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
-const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
 
 // --- ICESSN platelets: the ILATM2 nadir product IS a plane fit per short along-track segment, so each measurement
 // carries its own surface slope. We draw it as the geometric primitive it is — a small facet tilted to its fitted

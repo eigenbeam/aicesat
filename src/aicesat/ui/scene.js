@@ -88,7 +88,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
-const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
 
 // --- ICESSN platelets: the ILATM2 nadir product IS a plane fit per short along-track segment, so each measurement
 // carries its own surface slope. We draw it as the geometric primitive it is — a small facet tilted to its fitted
