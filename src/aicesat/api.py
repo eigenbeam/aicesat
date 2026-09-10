@@ -338,7 +338,20 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         ("ATL06",   with_atl06,  _ex_atl06,  _int_atl06,  "ATL06"),
         ("ICESAT2", with_atl03,  _ex_atl03,  _int_atl03,  "ATL03"),
     ]
-    enabled = [leg for leg in LEGS if leg[1]]
+    # Drop legs whose instrument never surveyed this ground. An impossible leg is not a failure worth reporting:
+    # IceBridge flew the Arctic and Antarctic only, so asking it for Nepal produced a coverage error that read like
+    # a missing index and invited a build that would find nothing. The UI disables these too; this is the guard for
+    # every other caller (MCP tools, scripts, an older UI).
+    _COLL_FOR_LEG = {"GLAS": "GLAS", "ICESSN": "ICESSN", "ATL06": "ATL06", "ICESAT2": "ATL03"}
+    enabled = []
+    for leg in LEGS:
+        if not leg[1]:
+            continue
+        if not coverage.collection_can_cover(_COLL_FOR_LEG[leg[0]], bb):
+            log_fn(f"{leg[4]}: not flown over this area — skipped")
+            log.info("%s never surveyed %s; leg skipped", leg[4], bb)
+            continue
+        enabled.append(leg)
 
     try:
         with _lock:

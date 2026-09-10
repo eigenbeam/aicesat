@@ -438,6 +438,30 @@ def coverage_gap(d, bbox, polygon=None) -> str | None:
             f"that contains this one{tail}")
 
 
+# Where a collection CAN have data at all, as CMR declares it (BoundingRectangles on the collection record,
+# [W, S, E, N]). IceBridge only ever flew the poles, so ILATM2 exists at 60..90 N and -90..-53 S and nowhere in
+# between: offering it over Nepal is offering a leg that cannot succeed, and the failure it produces reads like a
+# missing index rather than an impossibility. GLAS reaches +-86 and ICESat-2 is near-polar, so both are effectively
+# global for our purposes.
+FOOTPRINTS: dict[str, list[tuple[float, float, float, float]]] = {
+    "ICESSN": [(-180.0, 60.0, 180.0, 90.0), (-180.0, -90.0, 180.0, -53.0)],   # ILATM2 v2
+    "GLAS":   [(-180.0, -86.0, 180.0, 86.0)],                                  # GLAH06 v034
+    "ATL06":  [(-180.0, -88.0, 180.0, 88.0)],                                  # ICESat-2, 92 deg inclination
+    "ATL03":  [(-180.0, -88.0, 180.0, 88.0)],
+}
+
+
+def collection_can_cover(key: str, bbox) -> bool:
+    """Could this collection have ANY data over bbox? A declared-footprint test, not an index test.
+
+    `indexed` and `covered` both answer "have we built it here"; neither distinguishes ground nobody ever flew from
+    ground we simply have not indexed yet. Overlap, not containment: a selection straddling 60 N genuinely has
+    IceBridge data in its northern half.
+    """
+    w, s, e, n = (float(v) for v in bbox)
+    return any(w < fe and fw < e and s < fn and fs < n for fw, fs, fe, fn in FOOTPRINTS.get(key, []) or [(-180.0, -90.0, 180.0, 90.0)])
+
+
 def check_coverage(bbox, **_ignored) -> dict:
     """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
     index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
@@ -462,6 +486,13 @@ def check_coverage(bbox, **_ignored) -> dict:
     out = []
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
+        row["possible"] = collection_can_cover(c["key"], bbox)
+        if not row["possible"]:
+            # No index question to ask: this instrument never flew here. Say so instead of reporting "not indexed",
+            # which invites the user to go build an index that would find nothing.
+            row.update(n_granules=0, indexed=False, covered=False, cells=0, by_month={})
+            out.append(row)
+            continue
         d, res, ym = _index_for(c["key"])
         covered = bool(d is not None and d.exists() and index_covers_area(d, bbox))
         if d is None or not d.exists():
