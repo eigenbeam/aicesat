@@ -159,4 +159,29 @@ eval(grabFn('function surfaceAppearance'));
   assert.strictEqual(a.updateTriggers.getColor, 0.7);
 }
 
+// --- marker labels clear the highest terrain in the scene -------------------------------------------------------
+// A pin in a valley had its label swallowed by the ridge behind it. The stick still starts on the ground so the pin
+// stays planted; the TOP is common to every marker and sits above max terrain.
+{
+  const relief = 3054 - (-2632);
+  const headroomFrac = 0.07, headroomMin = 150;
+  const topZ = 3054 + Math.max(relief * headroomFrac, headroomMin);
+  assert.ok(topZ > 3054, 'the label must sit above the highest terrain, not on it');
+  assert.ok(topZ - 3054 >= headroomMin, 'and clear it by at least the floor');
+  // a flat scene must still get usable clearance from the floor, not a fraction of nothing
+  const flatTop = 10 + Math.max(1 * headroomFrac, headroomMin);
+  assert.strictEqual(flatTop - 10, headroomMin, 'flat scene falls back to the minimum clearance');
+}
+{
+  // the constants the renderer actually uses, read from source so the test cannot drift from them
+  const frac = parseFloat(/MARKER_HEADROOM_FRAC = ([0-9.]+)/.exec(src)[1]);
+  const min = parseFloat(/MARKER_HEADROOM_MIN_M = ([0-9.]+)/.exec(src)[1]);
+  assert.ok(frac > 0 && min > 0, 'headroom constants must be positive');
+  // the old behaviour keyed the top off each marker's OWN ground, which is what let a ridge hide it
+  assert.ok(!/MARKER_RISE_FRAC/.test(src), 'per-marker rise replaced by a scene-wide label height');
+  assert.ok(/const z1 = topZ \* Z_EXAG/.test(src), 'every marker label must share the same top');
+  assert.ok(/const z0 = \(ground == null \? b\.minz : ground\) \* Z_EXAG/.test(src),
+            'the stick must still START on the terrain, or the pin stops being planted');
+}
+
 console.log('ok');

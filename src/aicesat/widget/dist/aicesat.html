@@ -10962,15 +10962,19 @@ function surfaceHeightAt(x, y) {
 // rises a short way above it. An earlier version spanned the scene's whole vertical extent, which drove the stick
 // down through the imagery and out below the ground, reading as an artefact rather than a location.
 // scene.markers is [{lon, lat, label}]; absent or empty renders nothing.
-const MARKER_RISE_FRAC = 0.13;     // stick length as a fraction of the scene's true vertical relief
-const MARKER_RISE_MIN_M = 250;     // ...but never so short it disappears in a flat scene
+// The label sits above the HIGHEST terrain in the scene, not a fixed distance above its own ground: a pin in a
+// valley had its label swallowed by the ridge behind it from most camera angles. The stick still starts on the
+// ground, so the pin stays planted and you can see which point the label belongs to — it just grows to reach clear
+// air. Tall sticks in deep valleys are the intended look.
+const MARKER_HEADROOM_FRAC = 0.07;   // clearance above max terrain, as a fraction of the scene's true relief
+const MARKER_HEADROOM_MIN_M = 150;   // ...but never so little that the label grazes the summit
 function markerLayers() {
   const ms = (scene && scene.markers) || [];
   const fr = scene && scene.frame;
   const b = surfaceExtent() || bounds;
   if (!ms.length || !fr || !b) return [];
   const relief = Math.max(b.maxz - b.minz, 1);
-  const rise = Math.max(relief * MARKER_RISE_FRAC, MARKER_RISE_MIN_M);
+  const topZ = b.maxz + Math.max(relief * MARKER_HEADROOM_FRAC, MARKER_HEADROOM_MIN_M);
   const span = Math.max(b.maxx - b.minx, b.maxy - b.miny);
   const sticks = [], dots = [], labels = [];
   ms.forEach(m => {
@@ -10982,7 +10986,7 @@ function markerLayers() {
     // and the label still carries the coordinate, which is the part that has to be right.
     const ground = surfaceHeightAt(x, y);
     const z0 = (ground == null ? b.minz : ground) * Z_EXAG;
-    const z1 = ((ground == null ? b.minz : ground) + rise) * Z_EXAG;
+    const z1 = topZ * Z_EXAG;                     // every label at the same height, clear of all terrain
     sticks.push({s: [x, y, z0], t: [x, y, z1]});
     dots.push({p: [x, y, z1]});
     labels.push({position: [x, y, z1], text: m.label || `${fmtLat(m.lat)} ${fmtLon(m.lon)}`});
