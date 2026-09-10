@@ -155,7 +155,8 @@ def test_planner_refuses_when_the_claim_does_not_cover_the_area(tmp_path, monkey
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx4")
     bbox = (-45.5, 71.8, -45.4, 71.9)
     _claim(index.ATL03_INDEX_DIR, (-46.5, 70.8, -46.4, 70.9))     # a claim somewhere else entirely
-    with pytest.raises(RuntimeError, match="not indexed over all"):
+    # Matched on the CAUSE, not on a phrase: the message is meant to be improved, the refusal is not.
+    with pytest.raises(RuntimeError, match="outside the claimed extent"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)
 
 
@@ -525,3 +526,62 @@ def test_glas_empty_granule_is_stamped_so_resume_converges(tmp_path, monkeypatch
     import pyarrow.parquet as pq
     assert pq.ParquetFile(written[0]).metadata.num_rows == 0
     assert np.array_equal(sorted(pq.read_schema(written[0]).names), sorted(tbl.schema.names))
+
+
+# --- the refusal must name its cause -----------------------------------------------------------------------------
+def test_coverage_gap_names_the_four_cases(tmp_path, monkeypatch):
+    """The gate demands CONTAINMENT, so an index covering 99.98% of a selection still refuses it. The message users
+    saw — "check your selection and the token" — named neither the cause nor a fix, and sent a real diagnosis toward
+    auth when the truth was a boundary-cell shortfall."""
+    import json as _json
+
+    bbox = (-50.05, 69.10, -49.80, 69.20)
+    d = tmp_path / "atl06"
+
+    # (1) nothing built here
+    assert "nothing was ever built here" in coverage.coverage_gap(d, bbox)
+    d.mkdir(parents=True)
+    assert "no coverage claim was stamped" in coverage.coverage_gap(d, bbox)
+
+    # (1) unreadable claim
+    (d / "_build.json").write_text("{not json")
+    assert "unreadable" in coverage.coverage_gap(d, bbox)
+
+    # (2) selection outside the claimed extent — the cheap reject, before any polyfill
+    far = (-1.0, 1.0, -0.9, 1.1)
+    index.write_build_manifest(d, far, 5, cells=planner.coverage_cells(far))
+    gap = coverage.coverage_gap(d, bbox)
+    assert "outside the claimed extent" in gap and "deg" in gap
+
+    # (4) covered -> None
+    (d / "_build.json").unlink()
+    index.write_build_manifest(d, bbox, 5, cells=planner.coverage_cells(bbox))
+    assert coverage.coverage_gap(d, bbox) is None
+
+    # (3) bounds contain it but some cells are unclaimed
+    doc = _json.loads((d / "_build.json").read_text())
+    doc["cells"] = doc["cells"][:-1]                      # drop one claimed cell
+    (d / "_build.json").write_text(_json.dumps(doc))
+    gap = coverage.coverage_gap(d, bbox)
+    assert gap is not None and "unclaimed" in gap and "gate needs every one" in gap
+
+
+def test_every_coverage_refusal_points_at_the_diagnostic():
+    """Whatever the case, the message must hand the user the command that explains it."""
+    import pathlib as _pl
+    for bad in ((_pl.Path("/nonexistent/idx"), (1.0, 2.0, 1.1, 2.1)),):
+        d, bbox = bad
+        assert "why_not_covered.py" in coverage.coverage_gap(d, bbox)
+
+
+def test_no_refusal_blames_the_token_for_a_coverage_failure():
+    """`check your selection and the token` on a coverage refusal cost real debugging time. It may only appear
+    where NO collection was attempted at all."""
+    src = pathlib.Path(planner.__file__).parent
+    for name in ("atl06.py", "glas.py", "icessn.py", "planner.py"):
+        text = (src / name).read_text()
+        assert "token" not in text.split("def extract")[-1][:4000] or "coverage_gap" in text, name
+    api_src = (src / "api.py").read_text()
+    i = api_src.index("no collection returned data over this area")
+    window = api_src[i:i + 600]
+    assert "token" not in window or "No collection was even attempted" in window

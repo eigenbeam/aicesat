@@ -487,6 +487,10 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                 # scene streams. z0 is already set from the DEM above, so add_series just uses it (no collection sets
                 # it unless the DEM was absent). Each integrated series is persisted immediately -> paintable mid-build.
                 leg_by_fut = {cfuts[leg[0]]: (leg[0], leg[4], leg[3]) for leg in enabled}   # future -> (mission, display, integrator)
+                # The doc's progress note is truncated for the UI payload; keep the FULL text too, because the
+                # actionable half of a coverage refusal (the fix, and the why_not_covered command) lives past 160
+                # characters and was being cut off exactly when it was needed.
+                leg_errors: dict[str, str] = {}
                 for fut in as_completed(leg_by_fut):
                     mkey, disp, integrator = leg_by_fut[fut]
                     try:
@@ -504,6 +508,7 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                         # data whether the cause is an empty region or a TypeError on the first line.
                         log.warning("%s unavailable: %s: %s", disp, type(e).__name__, e, exc_info=True)
                         log_fn(f"{disp} unavailable: {type(e).__name__}: {e}")
+                        leg_errors[mkey] = f"{type(e).__name__}: {e}"
                         with stream_lock:   # a leg that never lands must stop showing as in-flight
                             doc.setdefault("progress", {}).setdefault(mkey, {}).update(
                                 {"phase": "unavailable", "note": f"{type(e).__name__}: {e}"[:160]})
@@ -516,7 +521,13 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                         continue
 
                 if not doc["series"]:
-                    raise RuntimeError("no collection returned data over this area (check your selection and the token)")
+                    # Every leg's own reason is already in doc["progress"][m]["note"]. Reporting them beats the
+                    # old blanket "check your selection and the token", which named neither the cause nor a fix
+                    # and sent at least one diagnosis toward auth when the truth was a coverage-gate refusal.
+                    order = [m for m in ("ATL06", "ICESAT2", "GLAS", "ICESSN") if m in leg_errors]
+                    detail = ("\n\n" + "\n\n".join(f"{m}: {leg_errors[m]}" for m in order)) if order else \
+                        " No collection was even attempted — check the selection and the Earthdata token."
+                    raise RuntimeError("no collection returned data over this area." + detail)
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
                 doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
                 # Disk-budget eviction is pure housekeeping — the scene is already built, saved and streaming. Run it

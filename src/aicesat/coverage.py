@@ -388,6 +388,56 @@ def index_covers_area(d, bbox, polygon=None) -> bool:
     return atl03_index.covers_cells(d, planner.coverage_cells(bbox, polygon, res=res))
 
 
+def coverage_gap(d, bbox, polygon=None) -> str | None:
+    """WHY index_covers_area refuses this selection, as one line for an error message. None when it is covered.
+
+    The gate demands CONTAINMENT, so an index covering 99.98% of a selection still refuses it — and the message
+    users actually saw ("check your selection and the token") named neither the real cause nor a fix, sending at
+    least one diagnosis toward auth. This says which of the four cases it is, in the same terms
+    scripts/why_not_covered.py reports them, so the message and the diagnostic tool cannot drift apart.
+
+    Cheap by construction: cases 1 and 2 cost a stat and a compare, and only case 3/4 polyfills — the same work
+    index_covers_area was going to do anyway.
+    """
+    import json
+    import pathlib
+
+    from . import index as atl03_index
+    from . import planner
+
+    d = pathlib.Path(d)
+    where = " ".join(f"{v:g}" for v in bbox)
+    tail = f"; run `uv run scripts/why_not_covered.py {where}` for the full diagnosis"
+    if not d.exists():
+        return f"no index directory at {d} — nothing was ever built here{tail}"
+    mf = d / "_build.json"
+    if not mf.exists():
+        return ("granule files may exist but no coverage claim was stamped — a build killed before it finished "
+                f"leaves this state; re-run the build{tail}")
+    try:
+        doc = json.loads(mf.read_text())
+    except Exception as e:
+        return f"_build.json is unreadable ({type(e).__name__}) — re-run the build{tail}"
+
+    b, res = doc.get("bounds"), doc.get("coverage_res") or atl03_index.COVERAGE_RES
+    w, s, e, n = bbox
+    if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
+        over = ", ".join(f"{side} by {abs(v):.3f}deg" for side, v in
+                         (("west", b[0] - w), ("south", b[1] - s), ("east", e - b[2]), ("north", n - b[3])) if v > 0)
+        return (f"the selection is outside the claimed extent {[round(x, 3) for x in b]} ({over}) — "
+                f"draw inside the claim, or build over a box that contains it{tail}")
+
+    want = planner.coverage_cells(bbox, polygon, res=res)
+    if atl03_index.covers_cells(d, want):
+        return None
+    missing = sum(1 for c in want if not atl03_index.covers_cells(d, [c]))
+    return (f"the claim's extent contains this selection but {missing:,} of {len(want):,} res-{res} cells are "
+            f"unclaimed, and the gate needs every one. A selection flush with the build box's own edge lands here "
+            f"even when the build succeeded: H3 cells straddle their parents, so the claim's polyfill and the "
+            f"selection's need not agree at the boundary. Try a slightly smaller selection, or build over a box "
+            f"that contains this one{tail}")
+
+
 def check_coverage(bbox, **_ignored) -> dict:
     """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
     index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
