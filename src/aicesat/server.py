@@ -379,7 +379,7 @@ apps.add_html_resource(
 @apps.tool(resource_uri=UI_URI, name="show_photons")
 def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
                  time_window: list[str] | None = None, question: str | None = None) -> dict:
-    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
+    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (all 6 beams, medium+high confidence) over an area
     and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
     Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
     later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""

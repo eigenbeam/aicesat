@@ -178,9 +178,16 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     return tbl
 
 
+# GPS - UTC leap seconds since 2017-01-01, valid for the whole ICESat-2 mission. atlas_sdp_gps_epoch is GPS
+# seconds, so adding it to the GPS epoch lands 18 s AHEAD of the SDP epoch's true UTC instant (2018-01-01T00:00:00Z).
+# Omitting this put every ATL06 timestamp 18 s late and, worse, 18 s out of step with the ATL03 path, which has
+# always subtracted it (planner.GPS_EPOCH_MS, atl03.GPS_UTC_LEAP) — the same overpass dated differently per product.
+GPS_UTC_LEAP_S = 18
+
+
 def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.ndarray:
-    """delta_time (s since the ATLAS SDP epoch) -> datetime64[ms]; sdp epoch is GPS seconds since 1980-01-06."""
-    gps0 = np.datetime64("1980-01-06T00:00:00", "ms")
+    """delta_time (s since the ATLAS SDP epoch) -> datetime64[ms] UTC; sdp epoch is GPS seconds since 1980-01-06."""
+    gps0 = np.datetime64("1980-01-06T00:00:00", "ms") - np.timedelta64(GPS_UTC_LEAP_S * 1000, "ms")
     base = gps0 + np.timedelta64(int(round(sdp_epoch_gps_s * 1000)), "ms")
     return base + (delta_time * 1000.0).astype("timedelta64[ms]")
 

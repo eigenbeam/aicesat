@@ -167,33 +167,6 @@ def normalize_markers(markers) -> list[dict]:
     return out
 
 
-GLAS_OUTLIER_M = 50.0     # a shot this far from the median of its neighbours is a cloud/atmosphere return
-GLAS_NEIGHBOR_M = 400.0   # neighbourhood radius: ~2 shots along-track plus repeat-track shots from other campaigns
-GLAS_MIN_NEIGHBORS = 6
-
-
-def drop_glas_outliers(arrays: dict, meta: dict, frame: dict) -> tuple[dict, dict]:
-    """Remove GLAS shots whose height differs from the median of their spatial neighbours (mostly other campaigns
-    on the repeat track) by more than GLAS_OUTLIER_M. Shots with too few neighbours are kept: no judgement possible."""
-    from scipy.spatial import cKDTree
-
-    gx, gy = to_local(frame, arrays["lon"], arrays["lat"])
-    h = np.asarray(arrays["h"], dtype="f8")
-    tree = cKDTree(np.column_stack([gx, gy]))
-    keep = np.ones(h.size, dtype=bool)
-    n_judged = 0
-    for i, lst in enumerate(tree.query_ball_point(np.column_stack([gx, gy]), r=GLAS_NEIGHBOR_M)):
-        if len(lst) > GLAS_MIN_NEIGHBORS:
-            n_judged += 1
-            others = [j for j in lst if j != i]
-            if abs(h[i] - np.median(h[others])) > GLAS_OUTLIER_M:
-                keep[i] = False
-    meta = dict(meta, n_outliers_dropped=int((~keep).sum()), n_outlier_judged=int(n_judged),
-                outlier_rule=f"|h - median(h of neighbours within {GLAS_NEIGHBOR_M:.0f} m)| > {GLAS_OUTLIER_M:.0f} m, "
-                             f"needs > {GLAS_MIN_NEIGHBORS} neighbours")
-    return {k: v[keep] for k, v in arrays.items()}, meta
-
-
 def set_surface(doc: dict) -> dict:
     """Attach the DEM base surface for the scene's frame (independent of which missions are loaded). Needs z0, so
     call it after at least one series has been added. No photon-interpolated fallback: no DEM -> no surface."""
@@ -209,13 +182,31 @@ def set_surface(doc: dict) -> dict:
     return doc
 
 
+# GLAS used to be cleaned here, and is not any more.
+#
+# The rule was |h - median(h of neighbours within 400 m)| > 50 m. Over Langtang it dropped 1,389 of 3,042 shots
+# (45.7%) and 1,174 of those were GOOD: sampled against the HMA 8 m DEM the DROPPED shots sat at a median -0.24 m
+# with 87.4% inside 20 m. The cause is geometry, not tuning — GLAS 40 Hz shots are ~172 m apart along-track and the
+# repeat tracks are offset by hundreds of metres, so a 400 m neighbourhood is a sparse scatter across a glacial
+# valley whose DEM relief there has a MEDIAN of 316 m, six times the threshold.
+#
+# Nothing replaced it, because every candidate was measured and rejected:
+#   * a local PLANE fit (with a line-fit fallback for the collinear single-pass case) only cut the residual MAD from
+#     55 m to 31 m, and still lost 1,145 good shots at any threshold that caught the bad ones. No self-referential
+#     model can work when the shot spacing exceeds the terrain's correlation length.
+#   * GLAH06's own flags do not discriminate: sat_corr_flg, d_pctSAT and sigma_att_flg each catch 0 of 87 gross
+#     errors, elv_cloud_flg is set on 99.9% of shots, and the built-in d_DEM_elv is a 1 km surface (MAD 97 m).
+#   * an EXTERNAL DEM gate does work (|h - HMA| is bimodal with a ~600 m gap, so 150 m drops 101 shots instead of
+#     1,389) but it makes the displayed series a function of the DEM. Anyone then reading GLAS-vs-DEM as a result is
+#     reading a number the gate helped produce, and no other mission is cleaned this way.
+#
+# So GLAS ships as delivered, with only the product's own quality flags applied (elev_use_flg == 0, saturation flag
+# <= 2, saturation correction added — see index_glas). About 3% of shots are gross cloud returns and they are drawn:
+# they are real ICESat-1 measurements, labelled as such. The display absorbs them because scene.js frames on the DEM
+# surface extent, not the point bounds, and colours points flat per mission with no height ramp.
 def add_series(doc: dict, mission: str, arrays: dict, meta: dict, cache_key: str) -> dict:
     if doc["z0"] is None:
         doc["z0"] = float(np.median(arrays["h"]))
-    if mission == "GLAS":
-        arrays, meta = drop_glas_outliers(arrays, meta, doc["frame"])
-        cache.save(cache_key + "-clean", arrays, meta)
-        cache_key = cache_key + "-clean"
     doc["series"][mission] = series(doc["frame"], mission, arrays, meta, doc["z0"], cache_key, doc["scene_id"])
     return doc
 
@@ -225,9 +216,10 @@ def append_partial(doc: dict, mission: str, arrays: dict) -> dict:
     its position sidecar, so the widget's poll paints a growing cloud during a cache-miss build. Baking mirrors
     series() exactly (to_local + h - z0, f4, round to mm, flat [x,y,z,...]).
 
-    Finalize still REPLACES this buffer via add_series, and that is not vestigial: the authoritative arrays are not
-    always the same points. GLAS runs drop_glas_outliers in add_series and nowhere else, so its final series is a
-    strict subset of what streamed. That replacement is what the stream's `reset` control frame exists to announce.
+    Finalize still REPLACES this buffer via add_series: the streamed points are baked per granule as they land, and
+    the authoritative array is written once, in one piece. No mission is filtered at finalize any more (GLAS was, and
+    is not — see above add_series), so the points now match; the replacement itself is still what the stream's
+    `reset` control frame exists to announce, because os.replace hands the path a new inode either way.
     Requires doc['z0'] (baking is height-relative); the caller buffers partials until z0 is known and never invents
     one here. If the mission's series does not exist yet, a minimal one is created with the
     same shape add_series produces so the client renders it immediately.
