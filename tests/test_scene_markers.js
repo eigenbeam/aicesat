@@ -209,4 +209,15 @@ eval(grabFn('function surfaceAppearance'));
   assert.ok(dir[2] < 0, 'the sun must be above the scene, so the light travels downward');
 }
 
+// --- scene switch clears per-scene state before the wait, not after ---------------------------------------------
+// initTimeSeries() clears the candidate cells, but it reads scene.series so it cannot run until the doc lands.
+// That left the PREVIOUS scene's cells painted over the new one for the whole load.
+{
+  const resetAt = src.indexOf('sceneId = id; scene = null;');
+  assert.ok(resetAt > 0, 'could not find the scene-switch reset');
+  const window = src.slice(resetAt, resetAt + 700);
+  assert.ok(/candidates = \[\]; candSel = -1;/.test(window),
+            'the scene-switch reset must clear candidates, or stale cells paint over the new scene while it loads');
+}
+
 console.log('ok');

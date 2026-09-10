@@ -346,7 +346,11 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
             cache.save_scene(sid, doc)               # persist the shell (frame/bbox) immediately -> UI opens instantly
 
             frame = doc["frame"]
-            extent = scene.bbox_extent(frame)        # computed once here (the shared _tr transformer is build-thread only)
+            # The DATA extent, not the drawn bbox: the imagery must cover the same ground as the surface mesh it is
+            # draped on. scene.set_surface sizes the mesh with data_extent, so leaving this as bbox_extent gave a
+            # 19.5 km texture on a 52.6 km mesh — texCoords ran past 1.0 and the texture REPEATED, which is what
+            # "the imagery is striped" was. Computed once here; the shared _tr transformer is build-thread only.
+            extent = scene.data_extent(frame, poly)
 
             # --- per-granule progressive streaming (cache-miss builds only) -------------------------------------------
             # An index mission's fetch_bbox calls on_granule ONCE per satellite pass as its chunks land, from the

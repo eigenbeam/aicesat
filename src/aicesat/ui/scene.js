@@ -843,6 +843,10 @@ this.open = async (id, query) => {
   if (id !== sceneId) {
     stopPoll(); stopStream(); clearLayerMemos();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
+    // Candidate cells belong to the scene that produced them. initTimeSeries() clears them, but it needs
+    // scene.series so it cannot run until the doc lands — which left the PREVIOUS scene's cells painted over the
+    // new one for the whole load. Cleared here, before the wait, not after it.
+    candidates = []; candSel = -1;
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them
