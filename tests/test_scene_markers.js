@@ -94,4 +94,33 @@ assert.strictEqual(fmtLon(-49.5), '49.500°W');
 // --- a missing basis falls back to axis-aligned rather than throwing ---------------------------------------------
 roundtrip({bbox: [0, 0, 1, 1]}, 0.5, 0.5, TOL);
 
+// --- surfaceHeightAt: markers are PLANTED on the terrain, not driven through it ----------------------------------
+// Spanning the scene's whole vertical extent sent the stick down through the imagery and out below the ground.
+var scene = null;   // the helper reads the module-scoped `scene`; eval'd code sees this one
+eval(grabFn('function surfaceHeightAt'));
+
+// a 3x3 grid, 100 m cells, origin (0,0), heights rising 10 m per cell eastward
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 3, ny: 3,
+                   z: [0, 10, 20, 0, 10, 20, 0, 10, 20]}};
+assert.strictEqual(surfaceHeightAt(0, 0), 0, 'grid corner');
+assert.strictEqual(surfaceHeightAt(200, 200), 20, 'far corner');
+assert.ok(Math.abs(surfaceHeightAt(50, 0) - 5) < 1e-9, 'bilinear halfway between 0 and 10');
+assert.ok(Math.abs(surfaceHeightAt(150, 150) - 15) < 1e-9, 'bilinear in the far cell');
+
+// outside the grid -> null, so the caller falls back instead of extrapolating off the edge
+assert.strictEqual(surfaceHeightAt(-1, 0), null, 'west of the grid');
+assert.strictEqual(surfaceHeightAt(0, -1), null, 'south of the grid');
+assert.strictEqual(surfaceHeightAt(201, 0), null, 'east of the grid');
+assert.strictEqual(surfaceHeightAt(0, 201), null, 'north of the grid');
+
+// a DEM hole must report null, NOT an average of the cells around it
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 2, ny: 2, z: [0, null, 0, 0]}};
+assert.strictEqual(surfaceHeightAt(50, 50), null, 'nodata corner poisons the cell, by design');
+
+// no surface at all (meta arrives before the chunked z) -> null, not a throw
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 2, ny: 2}};
+assert.strictEqual(surfaceHeightAt(50, 50), null, 'surface without z');
+scene = {};
+assert.strictEqual(surfaceHeightAt(0, 0), null, 'no surface');
+
 console.log('ok');

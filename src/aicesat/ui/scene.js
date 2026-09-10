@@ -314,23 +314,49 @@ function axesLayers() {
 }
 
 
+// Terrain height (TRUE metres, pre-exaggeration) under a local x/y, bilinear over the DEM grid. null outside the
+// grid or over nodata — the caller must not invent ground where the DEM has none.
+function surfaceHeightAt(x, y) {
+  const g = scene && scene.surface;
+  if (!g || g.z == null) return null;
+  const {x0, y0, cell, nx, ny, z} = g;
+  const fi = (x - x0) / cell, fj = (y - y0) / cell;
+  if (!(fi >= 0 && fj >= 0 && fi <= nx - 1 && fj <= ny - 1)) return null;
+  const i0 = Math.floor(fi), j0 = Math.floor(fj);
+  const i1 = Math.min(i0 + 1, nx - 1), j1 = Math.min(j0 + 1, ny - 1);
+  const tx = fi - i0, ty = fj - j0;
+  const q = [z[j0 * nx + i0], z[j0 * nx + i1], z[j1 * nx + i0], z[j1 * nx + i1]];
+  if (q.some(v => v == null || !isFinite(v))) return null;   // a hole in the DEM: say so, do not average around it
+  return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty;
+}
+
 // ---- markers: "look HERE" -------------------------------------------------------------------------------------
 // Axis ticks orient you; they do not point at anything. A marker is a named coordinate -- a lake, an avalanche
-// source, a gauge -- rendered as a stick through the whole vertical extent so it is visible from any camera angle,
-// with the label at the top. scene.markers is [{lon, lat, label}]; absent or empty renders nothing.
+// source, a gauge -- drawn as a pin PLANTED ON THE TERRAIN: the stick starts at the DEM height under the point and
+// rises a short way above it. An earlier version spanned the scene's whole vertical extent, which drove the stick
+// down through the imagery and out below the ground, reading as an artefact rather than a location.
+// scene.markers is [{lon, lat, label}]; absent or empty renders nothing.
+const MARKER_RISE_FRAC = 0.13;     // stick length as a fraction of the scene's true vertical relief
+const MARKER_RISE_MIN_M = 250;     // ...but never so short it disappears in a flat scene
 function markerLayers() {
   const ms = (scene && scene.markers) || [];
   const fr = scene && scene.frame;
   const b = surfaceExtent() || bounds;
   if (!ms.length || !fr || !b) return [];
+  const relief = Math.max(b.maxz - b.minz, 1);
+  const rise = Math.max(relief * MARKER_RISE_FRAC, MARKER_RISE_MIN_M);
   const span = Math.max(b.maxx - b.minx, b.maxy - b.miny);
-  const z0 = b.minz * Z_EXAG, z1 = (b.maxz + 0.10 * Math.max(b.maxz - b.minz, 1)) * Z_EXAG;
   const sticks = [], dots = [], labels = [];
-  ms.forEach((m, i) => {
+  ms.forEach(m => {
     const [x, y] = lonLatToLocal(fr, m.lon, m.lat);
     // Off-scene markers are dropped rather than clamped to the edge: a pin on the boundary pointing at something
     // outside it is worse than no pin, because it reads as a location.
     if (x < b.minx - 0.02 * span || x > b.maxx + 0.02 * span || y < b.miny - 0.02 * span || y > b.maxy + 0.02 * span) return;
+    // Plant on the terrain. With no DEM under the point, sit on the scene floor rather than guessing a height --
+    // and the label still carries the coordinate, which is the part that has to be right.
+    const ground = surfaceHeightAt(x, y);
+    const z0 = (ground == null ? b.minz : ground) * Z_EXAG;
+    const z1 = ((ground == null ? b.minz : ground) + rise) * Z_EXAG;
     sticks.push({s: [x, y, z0], t: [x, y, z1]});
     dots.push({p: [x, y, z1]});
     labels.push({position: [x, y, z1], text: m.label || `${fmtLat(m.lat)} ${fmtLon(m.lon)}`});
@@ -338,11 +364,11 @@ function markerLayers() {
   if (!sticks.length) return [];
   return [
     new deck.LineLayer({id: 'marker-halo', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
-      getColor: [10, 10, 14, 210], getWidth: 6, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
+      getColor: [10, 10, 14, 210], getWidth: 5, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
     new deck.LineLayer({id: 'marker-stick', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
       getColor: [255, 190, 60, 240], getWidth: 2, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
     new deck.ScatterplotLayer({id: 'marker-dot', data: dots, getPosition: d => d.p, getFillColor: [255, 190, 60, 255],
-      getRadius: 5, radiusUnits: 'pixels', stroked: true, getLineColor: [10, 10, 14, 220], lineWidthUnits: 'pixels',
+      getRadius: 4.5, radiusUnits: 'pixels', stroked: true, getLineColor: [10, 10, 14, 220], lineWidthUnits: 'pixels',
       getLineWidth: 1.5, updateTriggers: {getPosition: Z_EXAG}}),
     new TextLayer({id: 'marker-label', data: labels, getPosition: d => d.position, getText: d => d.text,
       getColor: [255, 215, 130], getSize: 13, sizeUnits: 'pixels', billboard: true, getPixelOffset: [0, -14],
@@ -350,6 +376,7 @@ function markerLayers() {
       getBackgroundColor: [20, 20, 26, 200], backgroundPadding: [4, 2], updateTriggers: {getPosition: Z_EXAG}}),
   ];
 }
+
 
 // ---------------------------------------------------------------- render / view
 function render() {
