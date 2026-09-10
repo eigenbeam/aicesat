@@ -41,6 +41,28 @@ IMAGERY = {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0, "zoom": 11, "m_per_px": 1
            "attribution": "mock imagery", "source": "mock", "path": "/dev/null"}
 
 
+@pytest.fixture(autouse=True)
+def no_thread_outlives_the_test():
+    """Fail if a build's background thread is still alive when the test ends.
+
+    These tests redirect cache.SCENE_DIR to tmp with monkeypatch, and cache.save_scene resolves SCENE_DIR at CALL
+    time. So a thread that finishes after teardown writes its scene into the REAL data/scenes — which is exactly
+    what happened: every full-suite run leaked one mock Greenland scene (imagery_status ready, source "mock") into
+    production, invisible because the imagery worker never touches the registry. Running the file alone hid it,
+    because then the thread won the race.
+
+    Asserting here turns a silent leak into a failure the next person cannot miss.
+    """
+    before = {t.name for t in threading.enumerate()}
+    yield
+    stragglers = [t.name for t in threading.enumerate()
+                  if t.name not in before and t.is_alive()
+                  and (t.name.startswith("imagery-") or t.name.startswith("lake-evict-"))]
+    assert not stragglers, (
+        f"background thread(s) still alive at teardown: {stragglers}. They will write into the real data dir once "
+        f"monkeypatch restores cache.SCENE_DIR. Either pass wait_for_imagery=True or await it inside the test.")
+
+
 def _install(monkeypatch, tmp_path, *, delay=0.0, fail=()):
     """Redirect the cache/registry to tmp and stub every network leg. `fail` names legs whose extract should raise."""
     from aicesat import atl03, atl06, glas, icessn, imagery, dem, lake
@@ -190,6 +212,41 @@ def test_slow_imagery_does_not_delay_the_build(monkeypatch, tmp_path):
     assert elapsed < 2.0, f"build waited on imagery ({elapsed:.1f}s)"
     assert len(doc["series"]) == 4                          # data is complete and usable without imagery
     assert doc["imagery_status"] == "pending" and doc.get("imagery") is None
+    # This test has to leave imagery async to prove the point, so drain it HERE, while cache.SCENE_DIR is still
+    # redirected to tmp. Returning with the thread mid-sleep is what leaked a mock scene into the real data dir.
+    _await_imagery(doc["scene_id"])
+
+
+def test_wait_for_imagery_returns_a_scene_that_already_has_it(monkeypatch, tmp_path):
+    """The opt-in for callers that are about to exit. Without it a script's process dies with the daemon imagery
+    thread mid-flight and persists a scene stuck at imagery_status 'pending' -- which is how two real scenes in this
+    project ended up with no basemap and needed a second pass to attach one."""
+    from aicesat import imagery
+
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(imagery, "build", lambda *a, **k: (time.sleep(0.5), dict(IMAGERY))[1])
+
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_atl06=True, wait_for_imagery=True)
+
+    # returned doc is already complete -- no polling, no second pass
+    assert doc["imagery_status"] == "ready"
+    assert doc["imagery"]["width"] == 256
+    # and it is on DISK that way, which is what a script's next process would read
+    assert cache.load_scene(doc["scene_id"])["imagery_status"] == "ready"
+
+
+def test_default_still_does_not_wait(monkeypatch, tmp_path):
+    """The server depends on the default: points paint, scene goes ready, imagery lands later."""
+    from aicesat import imagery
+
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(imagery, "build", lambda *a, **k: (time.sleep(1.0), dict(IMAGERY))[1])
+
+    t0 = time.time()
+    doc = api.build_scene(bbox=BBOX, with_glas=True, with_atl06=True)
+    assert time.time() - t0 < 0.8, "the default must not join the imagery thread"
+    assert doc["imagery_status"] == "pending"
+    _await_imagery(doc["scene_id"])          # drain before teardown (see the autouse guard)
 
 
 def test_slow_imagery_does_not_hold_the_doc_lock(monkeypatch, tmp_path):

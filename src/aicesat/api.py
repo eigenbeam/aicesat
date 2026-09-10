@@ -243,13 +243,24 @@ def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
         return []
 
 
+IMAGERY_JOIN_TIMEOUT_S = 300   # a tile mosaic over a large scene is minutes, not seconds; past this, give up on it
+
+
 def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
                 with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
-                log_fn=lambda m: None, scene_id: str | None = None, markers=None) -> dict:
+                log_fn=lambda m: None, scene_id: str | None = None, markers=None,
+                wait_for_imagery: bool = False) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
     plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
     optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
-    Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)"""
+    Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)
+
+    `wait_for_imagery` (opt-in): join the imagery thread before returning. The default False is what the SERVER
+    wants -- the scene reaches "ready" the moment the points paint and a slow tile source cannot hold it there.
+    But that thread is a DAEMON, so a caller that exits when build_scene returns kills it mid-flight: a script gets
+    a scene saved with imagery_status "pending" and no imagery, and a test gets its scene written into the real
+    data dir after monkeypatch has restored cache.SCENE_DIR (resolved at call time, not at launch). Any caller that
+    is not a long-lived process should pass True."""
     bb, poly = geom.normalize_area(bbox, polygon)
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
@@ -473,13 +484,15 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
             # t=0: every independent leg starts at once. Extracts are I/O-bound (requests/DuckDB/rasterio release the
             # GIL; ATL03 spawns its own ProcessPoolExecutor internally, fine on a thread). Imagery & DEM depend only on
             # frame+extent, so they run without waiting on the z0 barrier. All `doc` mutation stays on this thread.
+            imagery_thread = None
             with ThreadPoolExecutor(max_workers=min(8, len(enabled) + 2), thread_name_prefix=f"build-{sid}") as ex:
                 cfuts = {leg[0]: ex.submit(leg[2]) for leg in enabled}
                 if with_atl03:
                     log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
                 if with_imagery:   # own thread, never the pool (the pool's exit would wait on it) — see _imagery_worker
                     doc["imagery_status"] = "pending"
-                    threading.Thread(target=_imagery_worker, name=f"imagery-{sid}", daemon=True).start()
+                    imagery_thread = threading.Thread(target=_imagery_worker, name=f"imagery-{sid}", daemon=True)
+                    imagery_thread.start()
                 dem_fut = ex.submit(_prefetch_dem)
 
                 # z0 + DEM surface from the DEM, up front: terrain-centred z0 (deterministic, independent of the
@@ -580,6 +593,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
     except Exception:
         registry_upsert(sid, status="error")
         raise
+    if wait_for_imagery and imagery_thread is not None:
+        # Bounded: the point is that the caller can safely exit, not that imagery is guaranteed. A tile source that
+        # hangs past the timeout leaves the scene exactly as the default path would -- status "pending", no imagery.
+        imagery_thread.join(timeout=IMAGERY_JOIN_TIMEOUT_S)
+        if imagery_thread.is_alive():
+            log.warning("imagery still running after %.0fs; returning the scene without it", IMAGERY_JOIN_TIMEOUT_S)
     return cache.load_scene(sid)
 
 
