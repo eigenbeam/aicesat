@@ -123,4 +123,40 @@ assert.strictEqual(surfaceHeightAt(50, 50), null, 'surface without z');
 scene = {};
 assert.strictEqual(surfaceHeightAt(0, 0), null, 'no surface');
 
+// --- surfaceAppearance: solid by default, and depth writing is what makes terrain occlude --------------------------
+// The DEM was drawn translucent AND with depth writing off, so points behind a ridge drew in front of it. Right for
+// a near-flat ice sheet, disorienting in 5,500 m of Himalayan relief.
+var TERRAIN_ALPHA = 1, Z_EXAG = 1;
+eval(grabFn('function surfaceAppearance'));
+
+{
+  TERRAIN_ALPHA = 1;
+  const solidImg = surfaceAppearance(true), solidDem = surfaceAppearance(false);
+  assert.strictEqual(solidImg.getColor[3], 255, 'solid means fully opaque, imagery draped');
+  assert.strictEqual(solidDem.getColor[3], 255, 'solid means fully opaque, bare DEM');
+  assert.ok(!solidImg.parameters, 'solid must WRITE depth, or terrain still does not occlude');
+  assert.ok(!solidDem.parameters, 'solid must WRITE depth, or terrain still does not occlude');
+  assert.deepStrictEqual(solidDem.getColor.slice(0, 3), [76, 84, 100], 'charcoal hillshade retained');
+  assert.deepStrictEqual(solidImg.getColor.slice(0, 3), [255, 255, 255], 'imagery drapes on white');
+}
+{
+  TERRAIN_ALPHA = 0.5;
+  const a = surfaceAppearance(false);
+  assert.strictEqual(a.getColor[3], 128, 'alpha tracks the slider');
+  assert.strictEqual(a.parameters.depthWriteEnabled, false, 'translucent must stop writing depth to show points behind');
+}
+{
+  // the boundary: 0.95 is visibly translucent and must behave as such
+  TERRAIN_ALPHA = 0.95;
+  assert.strictEqual(surfaceAppearance(false).parameters.depthWriteEnabled, false);
+  TERRAIN_ALPHA = 1;
+  assert.ok(!surfaceAppearance(false).parameters);
+}
+{
+  // getColor must be in the update triggers or deck.gl keeps the old colour when the slider moves
+  TERRAIN_ALPHA = 0.7;
+  const a = surfaceAppearance(false);
+  assert.strictEqual(a.updateTriggers.getColor, 0.7);
+}
+
 console.log('ok');
