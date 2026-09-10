@@ -17,6 +17,12 @@ let TERRAIN_ALPHA = 1;
 function surfaceAppearance(img) {
   const a = Math.round(255 * TERRAIN_ALPHA);
   const props = {getColor: img ? [255, 255, 255, a] : [76, 84, 100, a],   // charcoal hillshade so mission colours pop
+                 // Satellite imagery already CONTAINS the sun: the 2025-12-15 Sentinel-2 scene over Langtang was
+                 // acquired at solar azimuth 162 / elevation 36, and those shadows are in the pixels. Adding the
+                 // synthetic hillshade on top rendered two suns 27 deg apart, close enough to look plausible while
+                 // making the east/west contrast partly an artefact. Draped mesh is unlit; a BARE DEM keeps the
+                 // hillshade, because there it is the only relief cue there is.
+                 material: img ? false : {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
                  updateTriggers: {getPosition: Z_EXAG, getColor: TERRAIN_ALPHA}};
   if (TERRAIN_ALPHA < 0.99) props.parameters = {depthWriteEnabled: false};
   return props;
@@ -50,9 +56,13 @@ const deckgl = new Deck({
   onError: e => { console.error('[aicesat] deck error', e && e.message); if (/mesh/i.test(String(e && e.message))) { meshOk = false; render(); } },
   onLoad: () => console.log('[aicesat] deck loaded'),
   views: new OrbitView({orbitAxis: 'Z', fovy: 45}),
-  // low-angle directional light from the north-west so relief reads as shading (hillshade-like)
+  // Low-angle hillshade from the NORTH-WEST (azimuth 315, the cartographic convention — lighting from the south-east
+  // instead makes ridges read as valleys). deck.gl's `direction` is the direction light TRAVELS: the shader uses
+  // `-directionalLight.direction` as the vector toward the light, so a NW source travels east-and-south. It used to
+  // be [-1, 1, -0.6], which is azimuth 135 (SE) — the opposite of what the comment claimed, and the opposite of the
+  // LIGHT vector the ICESSN platelets shade with, so a scene showing both lit them from opposite sides.
   effects: [new LightingEffect({ambient: new AmbientLight({color: [255, 255, 255], intensity: 0.9}),
-                                sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [-1, 1, -0.6]})})],
+                                sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [1, -1, -0.6]})})],
   initialViewState: {target: [0, 0, 0], rotationX: 35, rotationOrbit: -25, zoom: -6, minZoom: -12, maxZoom: 6},
   controller: true,
   // track zoom for the ICESSN dots<->platelets level-of-detail; re-render only when the threshold flips (not every tick)
@@ -184,7 +194,6 @@ function surfaceLayers() {
     const meshProps = {
       id: 'surface-mesh' + (img ? '-img' : ''), data: [{}], mesh: _meshMemo.mesh,
       getPosition: () => [0, 0, 0],
-      material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
       ...surfaceAppearance(img),
     };
     if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);
@@ -223,7 +232,6 @@ function surfaceLayers() {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: _meshMemo.mesh,
         getPosition: () => [0, 0, 0],
-        material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
         ...surfaceAppearance(img),
       };
       if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);   // omit the key entirely when not draping; IMG_VER busts the cache after a source change

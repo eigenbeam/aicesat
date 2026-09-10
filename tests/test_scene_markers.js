@@ -135,6 +135,11 @@ eval(grabFn('function surfaceAppearance'));
   assert.strictEqual(solidImg.getColor[3], 255, 'solid means fully opaque, imagery draped');
   assert.strictEqual(solidDem.getColor[3], 255, 'solid means fully opaque, bare DEM');
   assert.ok(!solidImg.parameters, 'solid must WRITE depth, or terrain still does not occlude');
+  // Imagery already contains the sun (S2 2025-12-15 over Langtang: azimuth 162, elevation 36). A synthetic
+  // hillshade on top is a second sun and makes the east/west contrast partly an artefact.
+  assert.strictEqual(solidImg.material, false, 'a draped mesh must be UNLIT');
+  assert.ok(solidDem.material && solidDem.material.diffuse > 0,
+            'a bare DEM must keep the hillshade — it is the only relief cue there');
   assert.ok(!solidDem.parameters, 'solid must WRITE depth, or terrain still does not occlude');
   assert.deepStrictEqual(solidDem.getColor.slice(0, 3), [76, 84, 100], 'charcoal hillshade retained');
   assert.deepStrictEqual(solidImg.getColor.slice(0, 3), [255, 255, 255], 'imagery drapes on white');
@@ -182,6 +187,26 @@ eval(grabFn('function surfaceAppearance'));
   assert.ok(/const z1 = topZ \* Z_EXAG/.test(src), 'every marker label must share the same top');
   assert.ok(/const z0 = \(ground == null \? b\.minz : ground\) \* Z_EXAG/.test(src),
             'the stick must still START on the terrain, or the pin stops being planted');
+}
+
+// --- the two synthetic lights must agree on a direction, and on the cartographic convention ---------------------
+// deck.gl's `direction` is the direction light TRAVELS (the shader uses -direction as the vector toward the light).
+// The mesh light was [-1, 1, -0.6] = azimuth 135 (SE): the opposite of its own comment AND the opposite of the
+// vector the ICESSN platelets shade with, so a scene showing both lit them from opposite sides.
+{
+  const azimuthOf = toward => (Math.atan2(toward[0], toward[1]) * 180 / Math.PI + 360) % 360;  // x=east, y=north
+
+  const dir = JSON.parse(/DirectionalLight\(\{[^}]*direction: (\[[^\]]+\])/.exec(src)[1]);
+  const meshAz = azimuthOf(dir.map(v => -v));            // toward the light = -direction
+  assert.ok(Math.abs(meshAz - 315) < 1, `terrain light should be NW (315), got ${meshAz.toFixed(0)}`);
+
+  const L = JSON.parse(/const LIGHT = \(\(\) => \{ const v = (\[[^\]]+\])/.exec(src)[1]);
+  const platAz = azimuthOf(L);                            // LIGHT is already a toward-light vector
+  assert.ok(Math.abs(platAz - 315) < 1, `platelet light should be NW (315), got ${platAz.toFixed(0)}`);
+
+  assert.ok(Math.abs(meshAz - platAz) < 1,
+            `the terrain mesh and the ICESSN platelets must be lit from the SAME side (${meshAz} vs ${platAz})`);
+  assert.ok(dir[2] < 0, 'the sun must be above the scene, so the light travels downward');
 }
 
 console.log('ok');
