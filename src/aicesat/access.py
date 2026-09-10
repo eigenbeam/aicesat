@@ -260,8 +260,17 @@ class RangeReader:
         from urllib3.util.retry import Retry
         retry = Retry(total=5, backoff_factor=0.6, status_forcelist=(429, 500, 502, 503, 504),
                       allowed_methods=frozenset({"GET"}), respect_retry_after_header=True)
-        self.session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=32, pool_maxsize=32))
         self.threads = threads if threads is not None else (16 if reg else 8)   # S3 scales; in-region go wider
+        # Size the pool to the concurrency this session ACTUALLY sees. fetch_bbox builds ONE reader and hands it to
+        # an outer pool of up to FETCH_WORKER_CAP granules, each of which fetches its spans with `threads` inside —
+        # so 16 x 8 = 128 out-of-region, not the 32 the old comment assumed. urllib3 does not queue past pool_maxsize:
+        # it opens the connection, uses it once and discards it ("Connection pool is full, discarding connection",
+        # 24 of them in one scene build), so every overflow request pays a fresh TLS handshake against CloudFront at
+        # 100-160 ms TTFB. This does not widen concurrency — the requests were already being made — it stops the
+        # churn of throwing their connections away.
+        outer = _env_int(FETCH_WORKER_ENV) or FETCH_WORKER_CAP
+        pool = max(32, outer * self.threads)
+        self.session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=pool, pool_maxsize=pool))
         self.stats = AccessStats()
         self._presigned: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
