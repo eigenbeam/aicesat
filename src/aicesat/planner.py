@@ -255,9 +255,11 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
     # H3 cells match the area. An unindexed area is an error, not a slow success via a whole-granule fallback.
     fine = list(fine_cells if fine_cells is not None else coverage_cells(bbox))
     if not index.covers_cells(index.ATL03_INDEX_DIR, fine):
-        raise RuntimeError(f"ATL03 not indexed over all {len(fine)} res-{index.COVERAGE_RES} cells this area covers — "
-                           f"build the chunk index first "
-                           f"(uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)})")
+        from . import coverage as _cov
+        why = _cov.coverage_gap(index.ATL03_INDEX_DIR, bbox) or \
+            f"{len(fine)} res-{index.COVERAGE_RES} cells of this area are not all claimed"
+        raise RuntimeError(f"ATL03 not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
+                           f"Build with: uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)}")
     refs = index.chunk_refs(cells, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
     all_rows = refs.to_pylist()
     names_indexed = {r["granule"] for r in all_rows}

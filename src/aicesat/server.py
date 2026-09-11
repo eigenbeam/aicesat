@@ -379,7 +379,7 @@ apps.add_html_resource(
 @apps.tool(resource_uri=UI_URI, name="show_photons")
 def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
                  time_window: list[str] | None = None, question: str | None = None) -> dict:
-    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (strong beams, medium+high confidence) over an area
+    """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (all 6 beams, medium+high confidence) over an area
     and create a 3D scene with an imagery base layer. Area = region name, bbox [W,S,E,N], or polygon [[lon,lat],...].
     Uses the H3 chunk index + byte-range reads + Parquet lake: first touch of an area fetches only the chunks it needs,
     later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
@@ -517,11 +517,12 @@ def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | No
 @apps.tool(name="ui_extract", **_APP)
 def ui_extract(bbox: list[float] | None = None, polygon: list[list[float]] | None = None, question: str | None = None,
                with_glas: bool = True, with_coreg: bool = False,
-               with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False) -> dict:
+               with_atl06: bool = False, with_icessn: bool = False, with_atl03: bool = False,
+               with_gedi: bool = False) -> dict:
     geom.normalize_area(bbox, polygon)
     j = api.start_job({"bbox": bbox, "polygon": polygon, "question": question,
                        "with_glas": with_glas, "with_coreg": with_coreg, "with_atl06": with_atl06,
-                       "with_icessn": with_icessn, "with_atl03": with_atl03})
+                       "with_icessn": with_icessn, "with_atl03": with_atl03, "with_gedi": with_gedi})
     return {"job_id": j["id"], "scene_id": j["scene_id"]}
 
 
@@ -653,7 +654,7 @@ def job_status(job_id: str) -> dict:
 
 @mcp.tool()
 def check_coverage(region: str | None = None, bbox: list[float] | None = None) -> dict:
-    """How many granules of each collection (ICESat/GLAS, IceBridge ICESSN, ICESat-2 ATL06 and ATL03) touch a
+    """How many granules of each collection (ICESat/GLAS, IceBridge ICESSN, ICESat-2 ATL06 and ATL03, GEDI) touch a
     region, with a per-month breakdown. Give either a region name (see list_regions) or an explicit bbox
     [W, S, E, N]. No data is fetched. Returns {bbox, collections: [...]}."""
     bb = regions.resolve_bbox(region, tuple(bbox) if bbox else None)

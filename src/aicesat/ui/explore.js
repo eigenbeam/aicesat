@@ -103,6 +103,17 @@ AICESAT.ExploreView = class {
       this.$('exColList').querySelectorAll('.col-cov').forEach(el => {
         const c = byKey[el.dataset.key];
         if (!c) { el.innerHTML = ''; return; }
+        // An instrument that never flew here is a different fact from one we have not indexed yet, and only one of
+        // them is worth acting on. IceBridge (ICESSN) exists at 60..90 N and -90..-53 S only, so over Nepal it is
+        // not "not indexed" — it is impossible, and telling the user to build an index would waste their time on a
+        // search that finds nothing. Uncheck and disable, rather than let the build raise a coverage error.
+        const box = el.closest('.col-row') && el.closest('.col-row').querySelector('input[type=checkbox]');
+        if (c.possible === false) {
+          if (box) { box.checked = false; box.disabled = true; }
+          el.innerHTML = '<span class="no" title="This instrument never surveyed here — IceBridge flew the Arctic and Antarctic only. Nothing to index.">not flown here</span>';
+          return;
+        }
+        if (box) box.disabled = false;
         if (c.n_granules == null) { el.innerHTML = c.indexed === false ? '<span class="no" title="No sub-granule index built over this area yet — build the index to see coverage here.">not indexed</span>' : '<span class="no">n/a</span>'; return; }
         // `indexed` and `covered` are different facts, and the gap is real. An index is built by searching CMR over
         // a RECTANGLE and indexing the granules that intersect it. Cells outside that rectangle still end up with
@@ -141,8 +152,8 @@ AICESAT.ExploreView = class {
   // ---- build progress: rendered inside the building scene's card in the Scenes list (not the build panel)
   progressHTML(j, plan = {}) {
     const log = j.log || [];
-    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
-    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03'};
+    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
+    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi'};
     const hasPlan = plan && ['with_glas', 'with_icessn', 'with_atl06', 'with_atl03'].some(f => plan[f] !== undefined);
     const wanted = k => {
       if (k === 'surface' || k === 'imagery') return true;

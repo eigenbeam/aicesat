@@ -42,8 +42,16 @@ def test_planner_refuses_an_unindexed_area(monkeypatch, tmp_path):
         planner.ensure(UNINDEXED, regions.DEFAULT_ATL03_WINDOW)
 
 
+# Modules allowed to name coverage.search. `coverage.py` defines it. `build_atl06.py` is a BUILDER: discovery is
+# its whole job, and it is deliberately not the module a query calls (see its docstring). Every other module under
+# src/ is on the query path, where a CMR search would hide an unbuilt index behind a slow success.
+# Index BUILDERS pay discovery once, at build time; that is the whole point of the split (see build_atl06's
+# docstring). Query-path modules -- index_*.py, the extract wrappers -- may never appear here.
+_MAY_SEARCH_CMR = {"coverage.py", "build_atl06.py", "build_gedi.py"}
+
+
 def test_no_cmr_search_and_no_granule_download_in_the_package():
-    """coverage.search stays (the index builders in scripts/ call it); nothing under src/ may."""
+    """coverage.search stays (the index builders call it); no query-path module under src/ may."""
     src = pathlib.Path(planner.__file__).parent
     offenders = []
     for path in sorted(src.glob("*.py")):
@@ -52,11 +60,32 @@ def test_no_cmr_search_and_no_granule_download_in_the_package():
                               (r"earthaccess\.download\(", "whole-granule download"),
                               (r"\bsample_evenly\b", "granule sampling")):
             for m in re.finditer(pattern, text):
-                if path.name == "coverage.py" and what == "CMR search":
-                    continue                       # the definition itself lives there
+                if path.name in _MAY_SEARCH_CMR and what == "CMR search":
+                    continue
                 line = text[:m.start()].count("\n") + 1
                 offenders.append(f"{path.name}:{line}: {what}")
     assert not offenders, "query-path fallback reintroduced:\n  " + "\n  ".join(offenders)
+
+
+def test_the_builder_exemption_stays_one_way():
+    """A named exemption is only as good as its isolation: the builder may import the query path, never the
+    reverse. If a query-path module reached build_atl06, CMR would be one call away again and the file-level
+    grep above would not see it."""
+    import ast
+
+    src = pathlib.Path(planner.__file__).parent
+    offenders = []
+    for path in sorted(src.glob("*.py")):
+        if path.name in _MAY_SEARCH_CMR:
+            continue
+        # Parsed, not grepped: several modules mention build_atl06_index in prose, and a comment is not an edge.
+        for node in ast.walk(ast.parse(path.read_text())):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import) else
+                     [a.name for a in node.names] + [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            if any(n.split(".")[-1] == "build_atl06" for n in names):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, ("a query-path module imports the ATL06 builder, putting CMR one call away:\n  "
+                           + "\n  ".join(offenders))
 
 
 def test_no_dead_atl03_extraction_path():
@@ -128,7 +157,8 @@ def test_planner_refuses_when_the_claim_does_not_cover_the_area(tmp_path, monkey
     monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path / "idx4")
     bbox = (-45.5, 71.8, -45.4, 71.9)
     _claim(index.ATL03_INDEX_DIR, (-46.5, 70.8, -46.4, 70.9))     # a claim somewhere else entirely
-    with pytest.raises(RuntimeError, match="not indexed over all"):
+    # Matched on the CAUSE, not on a phrase: the message is meant to be improved, the refusal is not.
+    with pytest.raises(RuntimeError, match="outside the claimed extent"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)
 
 
@@ -406,14 +436,23 @@ def test_atl03_index_files_are_written_atomically():
 def test_builders_claim_coverage_only_after_the_ground_is_indexed():
     """The claim asserts ground is fully indexed. Stamping it BEFORE the build meant an interrupted run claimed
     granules it never got to, and coverage reported the whole region while scenes came back quietly short."""
+    import inspect
     import pathlib as _pl
 
-    for name in ("build_glas_index", "build_icessn_index", "build_atl06_index"):
+    from aicesat import build_atl06
+
+    for name in ("build_glas_index", "build_icessn_index"):
         src = _pl.Path(f"scripts/{name}.py").read_text()
         stamp = src.index("if err == 0 and ok == len(todo):")
         pool = src.index("ProcessPoolExecutor")
         assert stamp > pool, f"{name}: the claim is stamped before the build runs"
         assert "NOT claiming coverage" in src, f"{name}: an incomplete build must say it did not claim"
+    # ATL06's build moved into the library so the TUI and the script run one implementation; the ordering
+    # invariant moved with it and is checked where it now lives.
+    src = inspect.getsource(build_atl06.build_bbox)
+    assert src.index("if err == 0 and ok == len(todo):") > src.index("ProcessPoolExecutor"), \
+        "build_bbox: the claim is stamped before the build runs"
+    assert "NOT claiming coverage" in src, "build_bbox: an incomplete build must say it did not claim"
     src = _pl.Path("scripts/build_index.py").read_text()
     assert src.index("write_build_manifest") > src.index("ensure_index"), "ATL03 claims before it builds"
     assert "NOT claiming coverage" in src
@@ -489,3 +528,62 @@ def test_glas_empty_granule_is_stamped_so_resume_converges(tmp_path, monkeypatch
     import pyarrow.parquet as pq
     assert pq.ParquetFile(written[0]).metadata.num_rows == 0
     assert np.array_equal(sorted(pq.read_schema(written[0]).names), sorted(tbl.schema.names))
+
+
+# --- the refusal must name its cause -----------------------------------------------------------------------------
+def test_coverage_gap_names_the_four_cases(tmp_path, monkeypatch):
+    """The gate demands CONTAINMENT, so an index covering 99.98% of a selection still refuses it. The message users
+    saw — "check your selection and the token" — named neither the cause nor a fix, and sent a real diagnosis toward
+    auth when the truth was a boundary-cell shortfall."""
+    import json as _json
+
+    bbox = (-50.05, 69.10, -49.80, 69.20)
+    d = tmp_path / "atl06"
+
+    # (1) nothing built here
+    assert "nothing was ever built here" in coverage.coverage_gap(d, bbox)
+    d.mkdir(parents=True)
+    assert "no coverage claim was stamped" in coverage.coverage_gap(d, bbox)
+
+    # (1) unreadable claim
+    (d / "_build.json").write_text("{not json")
+    assert "unreadable" in coverage.coverage_gap(d, bbox)
+
+    # (2) selection outside the claimed extent — the cheap reject, before any polyfill
+    far = (-1.0, 1.0, -0.9, 1.1)
+    index.write_build_manifest(d, far, 5, cells=planner.coverage_cells(far))
+    gap = coverage.coverage_gap(d, bbox)
+    assert "outside the claimed extent" in gap and "deg" in gap
+
+    # (4) covered -> None
+    (d / "_build.json").unlink()
+    index.write_build_manifest(d, bbox, 5, cells=planner.coverage_cells(bbox))
+    assert coverage.coverage_gap(d, bbox) is None
+
+    # (3) bounds contain it but some cells are unclaimed
+    doc = _json.loads((d / "_build.json").read_text())
+    doc["cells"] = doc["cells"][:-1]                      # drop one claimed cell
+    (d / "_build.json").write_text(_json.dumps(doc))
+    gap = coverage.coverage_gap(d, bbox)
+    assert gap is not None and "unclaimed" in gap and "gate needs every one" in gap
+
+
+def test_every_coverage_refusal_points_at_the_diagnostic():
+    """Whatever the case, the message must hand the user the command that explains it."""
+    import pathlib as _pl
+    for bad in ((_pl.Path("/nonexistent/idx"), (1.0, 2.0, 1.1, 2.1)),):
+        d, bbox = bad
+        assert "why_not_covered.py" in coverage.coverage_gap(d, bbox)
+
+
+def test_no_refusal_blames_the_token_for_a_coverage_failure():
+    """`check your selection and the token` on a coverage refusal cost real debugging time. It may only appear
+    where NO collection was attempted at all."""
+    src = pathlib.Path(planner.__file__).parent
+    for name in ("atl06.py", "glas.py", "icessn.py", "planner.py"):
+        text = (src / name).read_text()
+        assert "token" not in text.split("def extract")[-1][:4000] or "coverage_gap" in text, name
+    api_src = (src / "api.py").read_text()
+    i = api_src.index("no collection returned data over this area")
+    window = api_src[i:i + 600]
+    assert "token" not in window or "No collection was even attempted" in window

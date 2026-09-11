@@ -136,7 +136,8 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
             m["has_slopes"] = bool(s.get("has_slopes")) or cache.scene_array_len(scene_id, s.get("mission", ""), "slopes") > 0
             return m
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
-                "z0": doc["z0"], "labels": doc.get("labels"), "imagery_status": doc.get("imagery_status"),
+                "z0": doc["z0"], "labels": doc.get("labels"), "markers": doc.get("markers"),
+                "imagery_status": doc.get("imagery_status"),
                 "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
                 "series": {m: _series_meta(s) for m, s in doc["series"].items()},
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}
@@ -242,13 +243,25 @@ def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
         return []
 
 
+IMAGERY_JOIN_TIMEOUT_S = 300   # a tile mosaic over a large scene is minutes, not seconds; past this, give up on it
+
+
 def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, with_atl03=False, with_imagery=True, imagery_source=None,
-                log_fn=lambda m: None, scene_id: str | None = None) -> dict:
+                with_atl06=False, with_icessn=False, with_atl03=False, with_gedi=False, with_imagery=True,
+                imagery_source=None,
+                log_fn=lambda m: None, scene_id: str | None = None, markers=None,
+                wait_for_imagery: bool = False) -> dict:
     """Full pipeline for an area: any subset of the collections (GLAS, IceBridge ICESSN, ATL06, ATL03 photons),
     plus a DEM surface, imagery, and — when both ATL03 and GLAS are present — co-registration. Every collection is
     optional and non-fatal: a miss over the area is logged and the scene still builds from whatever is available.
-    Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)"""
+    Returns the scene doc. (ATL03 is heavy and off by default; co-registration currently needs it.)
+
+    `wait_for_imagery` (opt-in): join the imagery thread before returning. The default False is what the SERVER
+    wants -- the scene reaches "ready" the moment the points paint and a slow tile source cannot hold it there.
+    But that thread is a DAEMON, so a caller that exits when build_scene returns kills it mid-flight: a script gets
+    a scene saved with imagery_status "pending" and no imagery, and a test gets its scene written into the real
+    data dir after monkeypatch has restored cache.SCENE_DIR (resolved at call time, not at launch). Any caller that
+    is not a long-lived process should pass True."""
     bb, poly = geom.normalize_area(bbox, polygon)
     sid = scene_id or uuid.uuid4().hex[:10]
     registry_upsert(sid, question=question, bbox=list(bb), polygon=poly, status="loading", series=[])
@@ -282,6 +295,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
     def _ex_glas():
         from . import glas
         a, m = glas.extract(bb, regions.DEFAULT_GLAS_WINDOW, polygon=poly, on_granule=_on_granule("GLAS"), on_plan=_on_plan("GLAS"))
+        return a, m, m["cache_key"]
+
+    def _ex_gedi():
+        from . import gedi
+        a, m = gedi.extract(bb, regions.DEFAULT_GEDI_WINDOW, polygon=poly, on_granule=_on_granule("GEDI"),
+                            on_plan=_on_plan("GEDI"))
         return a, m, m["cache_key"]
 
     def _ex_icessn():
@@ -318,6 +337,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         log_fn(f"ATL06: {m['n']:,} land-ice segments")
         _log_cache("ATL06", m)
 
+    def _int_gedi(a, m, ck):
+        scene.add_series(doc, "GEDI", a, m, ck)
+        _mark_done("GEDI", m)
+        log_fn(f"GEDI: {m['n']:,} footprints (25 m, 8 beams)")
+        _log_cache("GEDI", m)
+
     def _int_atl03(a, m, ck):
         st = m.get("access", {})
         if st.get("chunks_fetched"):
@@ -335,17 +360,35 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         ("GLAS",    with_glas,   _ex_glas,   _int_glas,   "GLAS"),
         ("ICESSN",  with_icessn, _ex_icessn, _int_icessn, "ICESSN"),
         ("ATL06",   with_atl06,  _ex_atl06,  _int_atl06,  "ATL06"),
+        ("GEDI",    with_gedi,   _ex_gedi,   _int_gedi,   "GEDI"),
         ("ICESAT2", with_atl03,  _ex_atl03,  _int_atl03,  "ATL03"),
     ]
-    enabled = [leg for leg in LEGS if leg[1]]
+    # Drop legs whose instrument never surveyed this ground. An impossible leg is not a failure worth reporting:
+    # IceBridge flew the Arctic and Antarctic only, so asking it for Nepal produced a coverage error that read like
+    # a missing index and invited a build that would find nothing. The UI disables these too; this is the guard for
+    # every other caller (MCP tools, scripts, an older UI).
+    _COLL_FOR_LEG = {"GLAS": "GLAS", "ICESSN": "ICESSN", "ATL06": "ATL06", "ICESAT2": "ATL03", "GEDI": "GEDI"}
+    enabled = []
+    for leg in LEGS:
+        if not leg[1]:
+            continue
+        if not coverage.collection_can_cover(_COLL_FOR_LEG[leg[0]], bb):
+            log_fn(f"{leg[4]}: not flown over this area — skipped")
+            log.info("%s never surveyed %s; leg skipped", leg[4], bb)
+            continue
+        enabled.append(leg)
 
     try:
         with _lock:
-            doc = scene.new_scene(sid, bb, question, polygon=poly)
+            doc = scene.new_scene(sid, bb, question, polygon=poly, markers=markers)
             cache.save_scene(sid, doc)               # persist the shell (frame/bbox) immediately -> UI opens instantly
 
             frame = doc["frame"]
-            extent = scene.bbox_extent(frame)        # computed once here (the shared _tr transformer is build-thread only)
+            # The DATA extent, not the drawn bbox: the imagery must cover the same ground as the surface mesh it is
+            # draped on. scene.set_surface sizes the mesh with data_extent, so leaving this as bbox_extent gave a
+            # 19.5 km texture on a 52.6 km mesh — texCoords ran past 1.0 and the texture REPEATED, which is what
+            # "the imagery is striped" was. Computed once here; the shared _tr transformer is build-thread only.
+            extent = scene.data_extent(frame, poly)
 
             # --- per-granule progressive streaming (cache-miss builds only) -------------------------------------------
             # An index mission's fetch_bbox calls on_granule ONCE per satellite pass as its chunks land, from the
@@ -455,13 +498,15 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
             # t=0: every independent leg starts at once. Extracts are I/O-bound (requests/DuckDB/rasterio release the
             # GIL; ATL03 spawns its own ProcessPoolExecutor internally, fine on a thread). Imagery & DEM depend only on
             # frame+extent, so they run without waiting on the z0 barrier. All `doc` mutation stays on this thread.
+            imagery_thread = None
             with ThreadPoolExecutor(max_workers=min(8, len(enabled) + 2), thread_name_prefix=f"build-{sid}") as ex:
                 cfuts = {leg[0]: ex.submit(leg[2]) for leg in enabled}
                 if with_atl03:
                     log_fn(f"ATL03: planner over {bb}" + (f" (polygon, {len(poly)} vertices)" if poly else ""))
                 if with_imagery:   # own thread, never the pool (the pool's exit would wait on it) — see _imagery_worker
                     doc["imagery_status"] = "pending"
-                    threading.Thread(target=_imagery_worker, name=f"imagery-{sid}", daemon=True).start()
+                    imagery_thread = threading.Thread(target=_imagery_worker, name=f"imagery-{sid}", daemon=True)
+                    imagery_thread.start()
                 dem_fut = ex.submit(_prefetch_dem)
 
                 # z0 + DEM surface from the DEM, up front: terrain-centred z0 (deterministic, independent of the
@@ -487,6 +532,10 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                 # scene streams. z0 is already set from the DEM above, so add_series just uses it (no collection sets
                 # it unless the DEM was absent). Each integrated series is persisted immediately -> paintable mid-build.
                 leg_by_fut = {cfuts[leg[0]]: (leg[0], leg[4], leg[3]) for leg in enabled}   # future -> (mission, display, integrator)
+                # The doc's progress note is truncated for the UI payload; keep the FULL text too, because the
+                # actionable half of a coverage refusal (the fix, and the why_not_covered command) lives past 160
+                # characters and was being cut off exactly when it was needed.
+                leg_errors: dict[str, str] = {}
                 for fut in as_completed(leg_by_fut):
                     mkey, disp, integrator = leg_by_fut[fut]
                     try:
@@ -504,6 +553,7 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                         # data whether the cause is an empty region or a TypeError on the first line.
                         log.warning("%s unavailable: %s: %s", disp, type(e).__name__, e, exc_info=True)
                         log_fn(f"{disp} unavailable: {type(e).__name__}: {e}")
+                        leg_errors[mkey] = f"{type(e).__name__}: {e}"
                         with stream_lock:   # a leg that never lands must stop showing as in-flight
                             doc.setdefault("progress", {}).setdefault(mkey, {}).update(
                                 {"phase": "unavailable", "note": f"{type(e).__name__}: {e}"[:160]})
@@ -516,9 +566,15 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                         continue
 
                 if not doc["series"]:
-                    raise RuntimeError("no collection returned data over this area (check your selection and the token)")
+                    # Every leg's own reason is already in doc["progress"][m]["note"]. Reporting them beats the
+                    # old blanket "check your selection and the token", which named neither the cause nor a fix
+                    # and sent at least one diagnosis toward auth when the truth was a coverage-gate refusal.
+                    order = [m for m in ("ATL06", "ICESAT2", "GLAS", "ICESSN", "GEDI") if m in leg_errors]
+                    detail = ("\n\n" + "\n\n".join(f"{m}: {leg_errors[m]}" for m in order)) if order else \
+                        " No collection was even attempted — check the selection and the Earthdata token."
+                    raise RuntimeError("no collection returned data over this area." + detail)
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
-                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "ICESAT2") if m in doc["series"]}
+                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "GEDI", "ICESAT2") if m in doc["series"]}
                 # Disk-budget eviction is pure housekeeping — the scene is already built, saved and streaming. Run it
                 # OFF the build path (background daemon) and ONLY when this build actually materialized new chunks, so
                 # footer-scanning never delays the response and idle/cache-hit builds skip it entirely. The synchronous
@@ -551,6 +607,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
     except Exception:
         registry_upsert(sid, status="error")
         raise
+    if wait_for_imagery and imagery_thread is not None:
+        # Bounded: the point is that the caller can safely exit, not that imagery is guaranteed. A tile source that
+        # hangs past the timeout leaves the scene exactly as the default path would -- status "pending", no imagery.
+        imagery_thread.join(timeout=IMAGERY_JOIN_TIMEOUT_S)
+        if imagery_thread.is_alive():
+            log.warning("imagery still running after %.0fs; returning the scene without it", IMAGERY_JOIN_TIMEOUT_S)
     return cache.load_scene(sid)
 
 
@@ -567,6 +629,7 @@ def start_job(params: dict, kind: str = "scene") -> dict:
                 doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"),
                                   bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
                                   with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
+                                  with_gedi=bool(params.get("with_gedi", False)),
                                   with_atl03=bool(params.get("with_atl03", False)),
                                   with_imagery=bool(params.get("with_imagery", True)), imagery_source=params.get("imagery_source"),
                                   log_fn=lambda m: job["log"].append(m), scene_id=sid)
@@ -644,6 +707,9 @@ def _index_source(collection: str):
     """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet."""
     from . import index_atl06, index_glas, index_icessn
     from . import index as atl03_index
+    if collection == "GEDI":
+        from . import index_gedi
+        return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES
     if collection == "ATL06":
         return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES
     if collection in ("ICESAT2", "ATL03"):

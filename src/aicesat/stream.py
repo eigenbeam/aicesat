@@ -26,8 +26,9 @@ second HTTP request. Bulk arrays stay raw f32 — no base64, which is a third of
 
 `tail -f` would be sound if the sidecar only ever grew. It grows all build long — and then, once, it is REPLACED:
 scene.series writes the finalized array over the streamed preview at add_series. That is not vestigial. The
-authoritative arrays are not always the same points: GLAS runs drop_glas_outliers in add_series and nowhere else, so
-its final series is a strict subset of what streamed. Whichever way, os.replace gives the path a NEW INODE while the
+authoritative array is written once, in one piece, over a buffer that was baked granule by granule. It no longer holds
+DIFFERENT points than what streamed (GLAS was filtered at finalize and is not any more), but os.replace still gives
+the path a NEW INODE while the
 client holds bytes from the old one, and size alone cannot detect it (a replacement can be LARGER than what we
 already sent — classic ABA). So identity is the inode: when it changes, emit `{"t":"reset"}` for that mission and
 restart its cursor at zero.

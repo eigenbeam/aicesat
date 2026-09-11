@@ -70,6 +70,8 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         hit[1]["cache_key"] = k
         return hit
     if not _index_covers(bbox, polygon):
-        raise RuntimeError(f"GLAS not indexed over {bbox} — build the sub-granule index first "
-                           f"(uv run scripts/build_glas_index.py)")
+        from . import coverage as _cov, index_glas as _ix
+        why = _cov.coverage_gap(_ix._index_dir(_ix.GLAS_RES), bbox, polygon) or "the coverage gate refused it"
+        raise RuntimeError(f"GLAS not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
+                           f"Build with: uv run scripts/build_glas_index.py <W> <S> <E> <N> 5 8")
     return _extract_via_index(bbox, window, polygon, k, on_granule=on_granule, on_plan=on_plan)

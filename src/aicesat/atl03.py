@@ -1,12 +1,16 @@
 """ICESat-2 ATL03 (v007) photon extraction over a bbox.
 
-Subset decisions (spec Appendix D, 1a):
-  * strong beams only, chosen from /orbit_info/sc_orient (0 -> gt?l strong, 1 -> gt?r strong, 2 -> skip)
+Subset decisions:
+  * ALL SIX beams (strong + weak). index.build_granule_index indexes every beam and the lake query applies no beam
+    predicate, so this is what the live path has always returned — the docstring and the `beam_pairs` metadata used
+    to say "strong beams only", which misreported to the user what they were looking at. Weak beams add coverage and
+    cross-mission coincidence; the signal-confidence filter below still screens their noisier returns.
   * land-ice signal confidence signal_conf_ph[:, 3] >= MIN_CONF (3 = medium, 4 = high)
   * h_ph with lon_ph / lat_ph; clipped to bbox BEFORE concatenation
-Photon index ranges are located from the 20 m segment geolocation group so only the in-bbox slice
-of the (huge) photon arrays is read from the remote file.
 Frame: ITRF2014 at observation epoch, WGS84 ellipsoid heights (ATL03 user guide).
+
+`strong_beams` and `_extract_beam` below are NOT on the query path — extract() goes planner -> lake. They are the
+whole-granule reference read, kept for scripts/bench_access.py and the byte-identity checks.
 """
 from __future__ import annotations
 
@@ -97,7 +101,7 @@ def extract(bbox, window, force: bool = False, polygon=None) -> tuple[dict[str, 
         raise RuntimeError("lake query returned no land-ice signal photons in bbox")
     meta = {"mission": "ICESAT2", "product": f"ATL03 v{coverage.ATL03_VERSION}", "bbox": list(bbox), "window": list(window),
             "native_frame": "ITRF2014", "height_ref": "WGS84 ellipsoid", "n_total_in_bbox": int(n), "n": int(n), "min_conf": MIN_CONF,
-            "granules": [{"granule": g} for g in glist], "beam_pairs": list(BEAM_PAIRS), "access_path": "index+byte-range+lake",
+            "granules": [{"granule": g} for g in glist], "beams": "all 6 (strong + weak)", "access_path": "index+byte-range+lake",
             "access": plan["stats"], "polygon": polygon, "cache_key": k}
     cache.save(k, arrays, meta)
     return arrays, meta

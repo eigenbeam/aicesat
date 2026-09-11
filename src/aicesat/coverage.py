@@ -13,6 +13,7 @@ ATL03_SHORT_NAME, ATL03_VERSION = "ATL03", "007"
 GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
 ATL06_SHORT_NAME, ATL06_VERSION = "ATL06", "007"
 ICESSN_SHORT_NAME, ICESSN_VERSION = "ILATM2", "2"
+GEDI_SHORT_NAME, GEDI_VERSION = "GEDI02_A", "003"
 
 
 def granule_name(g) -> str:
@@ -150,6 +151,12 @@ def collections() -> list[dict]:
          "version": ATL06_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL06_WINDOW), "default": True},
         {"key": "ATL03", "mission": "ICESAT2", "flag": "with_atl03", "label": "ICESat-2 photons", "short_name": ATL03_SHORT_NAME, "product": "ATL03",
          "version": ATL03_VERSION, "epoch": "2018-", "window": list(regions.DEFAULT_ATL03_WINDOW), "default": False},
+        # GEDI is OFF by default. It is the densest lidar flown (25 m footprints) and beats ATL06 on gentle ground,
+        # but its accuracy is strongly slope-dependent -- measured against the HMA 8 m DEM over Langtang, MAD ran
+        # 2.7 m under 15 deg and 14.7 m over 50 deg, with the median residual sliding -4.0 -> -12.4 m, while ATL06
+        # held 2.9-4.5 m on the same ground. Opting in should be a decision, not a default.
+        {"key": "GEDI", "mission": "GEDI", "flag": "with_gedi", "label": "GEDI (L2A)", "short_name": GEDI_SHORT_NAME, "product": "GEDI02_A",
+         "version": GEDI_VERSION, "epoch": "2019-", "window": list(regions.DEFAULT_GEDI_WINDOW), "default": False},
     ]
 
 
@@ -165,6 +172,9 @@ def _index_for(key: str):
         return index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_RES, gdate_ym
     if key == "ATL06":
         return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES, name_ym
+    if key == "GEDI":
+        from . import index_gedi
+        return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES, gdate_ym
     if key == "ATL03":
         return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES, name_ym
     return None, None, None
@@ -295,8 +305,12 @@ def cell_coverage(collection: str) -> dict[int, tuple] | None:
         return None
     con = duckdb.connect()
     try:
+        # ORDER BY is not cosmetic. DuckDB's parallel hash aggregate returns groups in an arbitrary order that
+        # varies BETWEEN IDENTICAL CALLS (measured: 8 orderings from 8 runs of this query), so index_status handed
+        # every consumer a differently-ordered `cells` list each time its mtime gate missed. That is a diffable
+        # response that never compares equal to itself; sorting 14k rows the scan has already materialised is free.
         rows = con.execute("SELECT h3_cell, count(DISTINCT granule), count(DISTINCT ym), min(ym), max(ym) "
-                           "FROM read_parquet(?) GROUP BY h3_cell", [str(manifest)]).fetchall()
+                           "FROM read_parquet(?) GROUP BY h3_cell ORDER BY h3_cell", [str(manifest)]).fetchall()
     finally:
         con.close()
     return {int(c): (int(g), int(e), y0, y1) for c, g, e, y0, y1 in rows}
@@ -384,6 +398,83 @@ def index_covers_area(d, bbox, polygon=None) -> bool:
     return atl03_index.covers_cells(d, planner.coverage_cells(bbox, polygon, res=res))
 
 
+def coverage_gap(d, bbox, polygon=None) -> str | None:
+    """WHY index_covers_area refuses this selection, as one line for an error message. None when it is covered.
+
+    The gate demands CONTAINMENT, so an index covering 99.98% of a selection still refuses it — and the message
+    users actually saw ("check your selection and the token") named neither the real cause nor a fix, sending at
+    least one diagnosis toward auth. This says which of the four cases it is, in the same terms
+    scripts/why_not_covered.py reports them, so the message and the diagnostic tool cannot drift apart.
+
+    Cheap by construction: cases 1 and 2 cost a stat and a compare, and only case 3/4 polyfills — the same work
+    index_covers_area was going to do anyway.
+    """
+    import json
+    import pathlib
+
+    from . import index as atl03_index
+    from . import planner
+
+    d = pathlib.Path(d)
+    where = " ".join(f"{v:g}" for v in bbox)
+    tail = f"; run `uv run scripts/why_not_covered.py {where}` for the full diagnosis"
+    if not d.exists():
+        return f"no index directory at {d} — nothing was ever built here{tail}"
+    mf = d / "_build.json"
+    if not mf.exists():
+        return ("granule files may exist but no coverage claim was stamped — a build killed before it finished "
+                f"leaves this state; re-run the build{tail}")
+    try:
+        doc = json.loads(mf.read_text())
+    except Exception as e:
+        return f"_build.json is unreadable ({type(e).__name__}) — re-run the build{tail}"
+
+    b, res = doc.get("bounds"), doc.get("coverage_res") or atl03_index.COVERAGE_RES
+    w, s, e, n = bbox
+    if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
+        over = ", ".join(f"{side} by {abs(v):.3f}deg" for side, v in
+                         (("west", b[0] - w), ("south", b[1] - s), ("east", e - b[2]), ("north", n - b[3])) if v > 0)
+        return (f"the selection is outside the claimed extent {[round(x, 3) for x in b]} ({over}) — "
+                f"draw inside the claim, or build over a box that contains it{tail}")
+
+    want = planner.coverage_cells(bbox, polygon, res=res)
+    if atl03_index.covers_cells(d, want):
+        return None
+    missing = sum(1 for c in want if not atl03_index.covers_cells(d, [c]))
+    return (f"the claim's extent contains this selection but {missing:,} of {len(want):,} res-{res} cells are "
+            f"unclaimed, and the gate needs every one. A selection flush with the build box's own edge lands here "
+            f"even when the build succeeded: H3 cells straddle their parents, so the claim's polyfill and the "
+            f"selection's need not agree at the boundary. Try a slightly smaller selection, or build over a box "
+            f"that contains this one{tail}")
+
+
+# Where a collection CAN have data at all, as CMR declares it (BoundingRectangles on the collection record,
+# [W, S, E, N]). IceBridge only ever flew the poles, so ILATM2 exists at 60..90 N and -90..-53 S and nowhere in
+# between: offering it over Nepal is offering a leg that cannot succeed, and the failure it produces reads like a
+# missing index rather than an impossibility. GLAS reaches +-86 and ICESat-2 is near-polar, so both are effectively
+# global for our purposes.
+FOOTPRINTS: dict[str, list[tuple[float, float, float, float]]] = {
+    "ICESSN": [(-180.0, 60.0, 180.0, 90.0), (-180.0, -90.0, 180.0, -53.0)],   # ILATM2 v2
+    "GLAS":   [(-180.0, -86.0, 180.0, 86.0)],                                  # GLAH06 v034
+    "ATL06":  [(-180.0, -88.0, 180.0, 88.0)],                                  # ICESat-2, 92 deg inclination
+    "ATL03":  [(-180.0, -88.0, 180.0, 88.0)],
+    # GEDI flies on the ISS, whose 51.6 deg inclination is a hard ceiling: there is no GEDI over any ice sheet.
+    # Offering it over Greenland would be offering a leg that cannot succeed.
+    "GEDI":   [(-180.0, -51.6, 180.0, 51.6)],
+}
+
+
+def collection_can_cover(key: str, bbox) -> bool:
+    """Could this collection have ANY data over bbox? A declared-footprint test, not an index test.
+
+    `indexed` and `covered` both answer "have we built it here"; neither distinguishes ground nobody ever flew from
+    ground we simply have not indexed yet. Overlap, not containment: a selection straddling 60 N genuinely has
+    IceBridge data in its northern half.
+    """
+    w, s, e, n = (float(v) for v in bbox)
+    return any(w < fe and fw < e and s < fn and fs < n for fw, fs, fe, fn in FOOTPRINTS.get(key, []) or [(-180.0, -90.0, 180.0, 90.0)])
+
+
 def check_coverage(bbox, **_ignored) -> dict:
     """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
     index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
@@ -408,6 +499,13 @@ def check_coverage(bbox, **_ignored) -> dict:
     out = []
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
+        row["possible"] = collection_can_cover(c["key"], bbox)
+        if not row["possible"]:
+            # No index question to ask: this instrument never flew here. Say so instead of reporting "not indexed",
+            # which invites the user to go build an index that would find nothing.
+            row.update(n_granules=0, indexed=False, covered=False, cells=0, by_month={})
+            out.append(row)
+            continue
         d, res, ym = _index_for(c["key"])
         covered = bool(d is not None and d.exists() and index_covers_area(d, bbox))
         if d is None or not d.exists():

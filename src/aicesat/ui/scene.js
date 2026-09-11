@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -8,6 +8,25 @@ AICESAT.SceneView = class {
 const {Deck, OrbitView, PointCloudLayer, PathLayer, TextLayer, SimpleMeshLayer, LightingEffect, AmbientLight, DirectionalLight} = deck;
 let params = new URLSearchParams(); let sceneId = null;
 let Z_EXAG = 1;
+// 1 = solid. The DEM used to be drawn translucent AND with depth writing off, which is what actually lets a point
+// behind a ridge draw in front of it. That is right for a near-flat ice sheet, where the surface is a reference and
+// the points are the subject; in 5,500 m of Himalayan relief it reads as seeing through mountains. Solid is the
+// default now, and the old behaviour is a drag of the Terrain slider away.
+let TERRAIN_ALPHA = 1;
+
+function surfaceAppearance(img) {
+  const a = Math.round(255 * TERRAIN_ALPHA);
+  const props = {getColor: img ? [255, 255, 255, a] : [76, 84, 100, a],   // charcoal hillshade so mission colours pop
+                 // Satellite imagery already CONTAINS the sun: the 2025-12-15 Sentinel-2 scene over Langtang was
+                 // acquired at solar azimuth 162 / elevation 36, and those shadows are in the pixels. Adding the
+                 // synthetic hillshade on top rendered two suns 27 deg apart, close enough to look plausible while
+                 // making the east/west contrast partly an artefact. Draped mesh is unlit; a BARE DEM keeps the
+                 // hillshade, because there it is the only relief cue there is.
+                 material: img ? false : {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
+                 updateTriggers: {getPosition: Z_EXAG, getColor: TERRAIN_ALPHA}};
+  if (TERRAIN_ALPHA < 0.99) props.parameters = {depthWriteEnabled: false};
+  return props;
+}
 let SHOW_IMAGERY = false;
 let SHOW_SURFACE = true;   // DEM base surface on/off (scene controls)
 let IMG_VER = 0;           // bumps on an imagery re-fetch so the draped texture URL changes and reloads
@@ -37,11 +56,16 @@ const deckgl = new Deck({
   onError: e => { console.error('[aicesat] deck error', e && e.message); if (/mesh/i.test(String(e && e.message))) { meshOk = false; render(); } },
   onLoad: () => console.log('[aicesat] deck loaded'),
   views: new OrbitView({orbitAxis: 'Z', fovy: 45}),
-  // low-angle directional light from the north-west so relief reads as shading (hillshade-like)
+  // Low-angle hillshade from the NORTH-WEST (azimuth 315, the cartographic convention — lighting from the south-east
+  // instead makes ridges read as valleys). deck.gl's `direction` is the direction light TRAVELS: the shader uses
+  // `-directionalLight.direction` as the vector toward the light, so a NW source travels east-and-south. It used to
+  // be [-1, 1, -0.6], which is azimuth 135 (SE) — the opposite of what the comment claimed, and the opposite of the
+  // LIGHT vector the ICESSN platelets shade with, so a scene showing both lit them from opposite sides.
   effects: [new LightingEffect({ambient: new AmbientLight({color: [255, 255, 255], intensity: 0.9}),
-                                sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [-1, 1, -0.6]})})],
+                                sun: new DirectionalLight({color: [255, 250, 235], intensity: 1.6, direction: [1, -1, -0.6]})})],
   initialViewState: {target: [0, 0, 0], rotationX: 35, rotationOrbit: -25, zoom: -6, minZoom: -12, maxZoom: 6},
   controller: true,
+  getTooltip: sceneTooltip,
   // track zoom for the ICESSN dots<->platelets level-of-detail; re-render only when the threshold flips (not every tick)
   onViewStateChange: ({viewState}) => {
     if (typeof viewState.zoom === 'number') { const was = plateletsNear(); curZoom = viewState.zoom; if (plateletsNear() !== was) render(); }
@@ -64,7 +88,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
-const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8};
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
 
 // --- ICESSN platelets: the ILATM2 nadir product IS a plane fit per short along-track segment, so each measurement
 // carries its own surface slope. We draw it as the geometric primitive it is — a small facet tilted to its fitted
@@ -145,7 +169,7 @@ function cloudLayers() {
       data: cloudData(m, src),
       modelMatrix: zExagMatrix(),
       getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
-      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
+      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true, pickable: true,
       updateTriggers: {getRadius: PT_SCALE},
     }));
   }
@@ -170,12 +194,10 @@ function surfaceLayers() {
   if (meshOk && memoHit) {
     const meshProps = {
       id: 'surface-mesh' + (img ? '-img' : ''), data: [{}], mesh: _meshMemo.mesh,
-      getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [76, 84, 100, 205],
-      material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
-      updateTriggers: {getPosition: Z_EXAG},
+      getPosition: () => [0, 0, 0],
+      ...surfaceAppearance(img),
     };
     if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);
-    else meshProps.parameters = {depthWriteEnabled: false};
     return [new SimpleMeshLayer(meshProps)];
   }
   if (meshOk) {
@@ -210,12 +232,10 @@ function surfaceLayers() {
       const meshProps = {
         id: 'surface-mesh' + (img ? '-img' : ''), data: [{}],
         mesh: _meshMemo.mesh,
-        getPosition: () => [0, 0, 0], getColor: img ? [255, 255, 255, 235] : [76, 84, 100, 205],   // charcoal hillshade so the mission colours pop (was light blue-grey)
-        material: {ambient: 0.5, diffuse: 0.85, shininess: 12, specularColor: [30, 30, 30]},
-        updateTriggers: {getPosition: Z_EXAG},
+        getPosition: () => [0, 0, 0],
+        ...surfaceAppearance(img),
       };
       if (img) meshProps.texture = api.imageryUrl(sceneId, IMG_VER);   // omit the key entirely when not draping; IMG_VER busts the cache after a source change
-      else meshProps.parameters = {depthWriteEnabled: false};    // translucent surface: don't occlude points behind it
       layers.push(new SimpleMeshLayer(meshProps));
     }
   }
@@ -232,6 +252,37 @@ function surfaceLayers() {
 
 // ---------------------------------------------------------------- orientation cues
 function niceStep(len) { const t = len / 4, p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
+// ---- local metres <-> lon/lat ---------------------------------------------------------------------------------
+// The scene renders in a local metric frame (aeqd centred on the bbox, or polar stereographic above 55 deg), so
+// nothing on screen carries a coordinate. These convert, using the frame's own orthonormal east/north unit
+// vectors -- the same basis plateletLayer uses -- so they hold for the rotated polar frames too. A flat-Earth
+// scaling around the bbox centre is sub-metre over a scene-sized box and is not meant for anything larger.
+const M_PER_DEG_LAT = 110574;
+function frameCentre(fr) { const b = fr.bbox; return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
+function mPerDegLon(clat) { return 111320 * Math.cos(clat * Math.PI / 180); }
+
+function localToLonLat(fr, x, y) {
+  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
+  const [clon, clat] = frameCentre(fr);
+  // SOLVE [E N][de dn]' = [x y]', do not project. E and N come from a finite difference at the bbox centre rounded
+  // to 6 decimals, so they are only APPROXIMATELY orthonormal and a dot-product inverse drifts with distance from
+  // the centre -- 0.4 m at the corner of this scene, and it grows with the box. A 2x2 solve is exact and no dearer.
+  const det = E[0] * N[1] - N[0] * E[1];
+  if (!det) return [clon, clat];                     // degenerate basis: refuse to invent a coordinate
+  const de = (N[1] * x - N[0] * y) / det, dn = (E[0] * y - E[1] * x) / det;
+  return [clon + de / mPerDegLon(clat), clat + dn / M_PER_DEG_LAT];
+}
+
+function lonLatToLocal(fr, lon, lat) {
+  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
+  const [clon, clat] = frameCentre(fr);
+  const de = (lon - clon) * mPerDegLon(clat), dn = (lat - clat) * M_PER_DEG_LAT;
+  return [de * E[0] + dn * N[0], de * E[1] + dn * N[1]];
+}
+
+const fmtLat = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'N' : 'S'}`;
+const fmtLon = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'E' : 'W'}`;
+
 // Local-metre bounds of the DEM base surface, so the axes anchor to the surface's corner (a stable frame that covers
 // the whole scene) rather than wherever the point cloud happens to fall. Falls back to the data bounds when no DEM.
 function surfaceExtent() {
@@ -246,8 +297,15 @@ function axesLayers() {
   if (!b) return [];
   const {minx, maxx, miny, maxy, minz, maxz} = b;
   const span = Math.max(maxx - minx, maxy - miny);
-  const o = [minx - 0.22 * span, miny - 0.06 * span, minz * Z_EXAG];       // corner: west of the data, level with the cue row
-  const stepXY = niceStep(span / 4), Lxy = stepXY * 2, zTrue = Math.max(maxz - minz, 1), Lz = niceStep(zTrue) * 2;
+  // The axes sit ON the scene's own corner and run the FULL edge, so they frame the block of ground you are looking
+  // at instead of floating beside it as a gnomon. They used to start 0.22 of the span outside the surface and run
+  // niceStep(span/4)*2 -- roughly half an edge -- which put every tick coordinate off the terrain it labelled.
+  // One DEM cell of outward clearance stops the lines z-fighting the mesh they now lie along; nudging beats
+  // disabling depthTest, which would show them straight through the terrain from every orbit angle.
+  const gs = scene && scene.surface;
+  const pad = (gs && gs.cell) ? gs.cell : 0.004 * span;
+  const o = [minx - pad, miny - pad, minz * Z_EXAG];
+  const Lx = Math.max(maxx - minx, 1), Ly = Math.max(maxy - miny, 1), zTrue = Math.max(maxz - minz, 1);
   const paths = [], texts = [];
   const axis = (dir, len, color, label, tickStep, fmt, scale) => {
     const end = [o[0] + dir[0] * len * scale, o[1] + dir[1] * len * scale, o[2] + dir[2] * len * scale];
@@ -259,16 +317,23 @@ function axesLayers() {
       const pt = [o[0] + dir[0] * v * scale, o[1] + dir[1] * v * scale, o[2] + dir[2] * v * scale];
       const t1 = [pt[0] + tdir[0] * tk, pt[1] + tdir[1] * tk, pt[2]];
       paths.push({p: [pt, t1], c: color, w: 1.5});
-      texts.push({position: [t1[0] + tdir[0] * tk * 1.2, t1[1] + tdir[1] * tk * 1.2, t1[2]], text: fmt(v), color, size: 11,
+      texts.push({position: [t1[0] + tdir[0] * tk * 1.2, t1[1] + tdir[1] * tk * 1.2, t1[2]], text: fmt(v, pt), color, size: 11,
                   anchor: tdir[0] < 0 ? 'end' : 'middle'});
     }
     const lab = [end[0] + dir[0] * 0.02 * span + (dir[2] ? -tk * 2.5 : 0), end[1] + dir[1] * 0.02 * span, end[2] + (dir[2] ? 0.02 * span : 0)];
     texts.push({position: lab, text: label, color, size: 13, anchor: dir[2] ? 'end' : (dir[0] ? 'start' : 'middle')});
   };
+  // Ticks read in DEGREES, not metres from an arbitrary corner: a scene is located by coordinate, and "6 km" from
+  // an origin the viewer cannot see locates nothing. The axis NAME keeps the metric span, so scale is not lost.
+  const fr = scene.frame;
   const km = v => `${(v / 1000).toFixed(v >= 1000 ? 0 : 1)} km`;
-  axis([1, 0, 0], Lxy, [235, 120, 120], 'x', stepXY, km, 1);
-  axis([0, 1, 0], Lxy, [120, 220, 140], 'y', stepXY, km, 1);
-  axis([0, 0, 1], Lz, [140, 170, 255], 'z', niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
+  const lonAt = (v, pt) => fr ? fmtLon(localToLonLat(fr, pt[0], pt[1])[0]) : km(v);
+  const latAt = (v, pt) => fr ? fmtLat(localToLonLat(fr, pt[0], pt[1])[1]) : km(v);
+  // Each axis gets its OWN tick step now that each runs its own true edge length: one shared step sized off the
+  // larger edge left the shorter axis with one or two ticks. niceStep(L) lands near L/4, i.e. about four per edge.
+  axis([1, 0, 0], Lx, [235, 120, 120], fr ? `lon \u2192 (${km(Lx)})` : 'x', niceStep(Lx), lonAt, 1);
+  axis([0, 1, 0], Ly, [120, 220, 140], fr ? `lat \u2192 (${km(Ly)})` : 'y', niceStep(Ly), latAt, 1);
+  axis([0, 0, 1], zTrue, [140, 170, 255], 'z', niceStep(zTrue), v => `${v.toFixed(0)} m`, Z_EXAG);
   return [
     new PathLayer({id: 'axes', data: paths, getPath: d => d.p, getColor: d => d.c, getWidth: d => d.w, widthUnits: 'pixels', updateTriggers: {getPath: Z_EXAG}}),
     new TextLayer({id: 'axes-text', data: texts, getPosition: d => d.position, getText: d => d.text, getColor: d => d.color, getSize: d => d.size, getTextAnchor: d => d.anchor || 'middle',
@@ -277,10 +342,312 @@ function axesLayers() {
   ];
 }
 
+
+// ---------------------------------------------------------------- lat/lon graticule, draped on the terrain
+// A scene renders in local metres, so without this the only coordinates on screen are the axis ticks along its edge.
+// Draping the graticule over the DEM carries them THROUGH the scene, so a ridge, a valley floor or a single shot can
+// be read off a coordinate where it actually sits instead of by eye against a distant axis.
+let GRAT_ON = true;
+const GRAT_LIFT_M = 8;          // lift above the mesh so a line reads on top of the terrain instead of z-fighting it
+const GRAT_MAX_SAMPLES = 400;   // cap the walk: at one sample per DEM cell a finer mesh would grow this linearly
+
+// A degree step off the 1/2/5 ladder. niceStep's shape with the target written out: a graticule wants about six
+// lines across the span, where niceStep's implicit target is four.
+function graticuleStep(spanDeg) {
+  const t = Math.max(spanDeg, 1e-12) / 6, p = Math.pow(10, Math.floor(Math.log10(t)));
+  return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a);
+}
+
+// The multiples of `step` inside [lo, hi]. Graticule lines must fall on ROUND coordinates: numbered from the range
+// start instead (28.1766, 28.2266, ...) they are unreadable, which is the whole reason not to just linspace the span.
+function ticksIn(lo, hi, step) {
+  const out = [];
+  for (let k = Math.ceil(lo / step - 1e-9); k * step <= hi + 1e-9; k++) {
+    const v = k * step;
+    if (v >= lo - 1e-9) out.push(Math.abs(v) < 1e-12 ? 0 : +v.toFixed(10));
+  }
+  return out;
+}
+
+// Split a walked line into the runs where the DEM actually has ground. surfaceHeightAt returns null over a hole and
+// its contract is that the caller must not invent ground there -- HMA has real holes on the steep faces of this very
+// scene, so a line bridged across one would draw terrain that does not exist. A run of a single sample is not a line.
+function drapeSegments(samples) {
+  const out = [];
+  let run = [];
+  for (const smp of samples) {
+    const h = smp[2];
+    if (h == null || !isFinite(h)) { if (run.length > 1) out.push(run); run = []; continue; }
+    run.push(smp);
+  }
+  if (run.length > 1) out.push(run);
+  return out;
+}
+
+// lon/lat envelope of the surface, from its four CORNERS: a polar frame is rotated, so the extreme longitude can sit
+// at a corner rather than on an edge midpoint.
+function surfaceLonLatBounds(fr, b) {
+  let loMin = Infinity, loMax = -Infinity, laMin = Infinity, laMax = -Infinity;
+  for (const c of [[b.minx, b.miny], [b.maxx, b.miny], [b.minx, b.maxy], [b.maxx, b.maxy]]) {
+    const ll = localToLonLat(fr, c[0], c[1]);
+    loMin = Math.min(loMin, ll[0]); loMax = Math.max(loMax, ll[0]);
+    laMin = Math.min(laMin, ll[1]); laMax = Math.max(laMax, ll[1]);
+  }
+  return {loMin, loMax, laMin, laMax};
+}
+
+// Where a graticule line's label goes: the run END furthest from the scene centre, i.e. out at the perimeter.
+// A line crossing DEM holes has many run ends and most are hole edges in the MIDDLE of the terrain -- labelling the
+// longest run's far end (which this did at first) stranded coordinates mid-scene, as the rendered scene showed.
+function edgeMostEnd(segs, cx, cy) {
+  let best = null, bestD = -1;
+  for (const seg of segs) {
+    for (const e of [seg[0], seg[seg.length - 1]]) {
+      const d = (e[0] - cx) * (e[0] - cx) + (e[1] - cy) * (e[1] - cy);
+      if (d > bestD) { bestD = d; best = e; }
+    }
+  }
+  return best;
+}
+
+function graticuleLayers() {
+  if (!GRAT_ON || !scene || !scene.frame) return [];
+  const b = surfaceExtent(); if (!b) return [];
+  const fr = scene.frame;
+  const {loMin, loMax, laMin, laMax} = surfaceLonLatBounds(fr, b);
+  const step = graticuleStep(Math.max(loMax - loMin, laMax - laMin));   // one step for both axes -> a square graticule
+  const g = scene.surface;
+  const cell = (g && g.cell) || 200;
+  const paths = [], texts = [];
+  const cx = (b.minx + b.maxx) / 2, cy = (b.miny + b.maxy) / 2;
+  const LON_C = [235, 120, 120, 150], LAT_C = [120, 220, 140, 150];   // the axis hues, muted: same meaning, less shout
+  const walk = (kind, v) => {
+    const a0 = kind === 'lat' ? loMin : laMin, a1 = kind === 'lat' ? loMax : laMax;
+    const edge = kind === 'lat' ? b.maxx - b.minx : b.maxy - b.miny;
+    const n = Math.max(32, Math.min(GRAT_MAX_SAMPLES, Math.round(edge / cell)));
+    const samples = [];
+    for (let i = 0; i <= n; i++) {
+      const u = a0 + (a1 - a0) * (i / n);
+      const xy = lonLatToLocal(fr, kind === 'lat' ? u : v, kind === 'lat' ? v : u);
+      samples.push([xy[0], xy[1], surfaceHeightAt(xy[0], xy[1])]);
+    }
+    const segs = drapeSegments(samples);
+    for (const seg of segs) paths.push({seg, kind, value: v});
+    const e = edgeMostEnd(segs, cx, cy);
+    if (e) {
+      texts.push({position: [e[0], e[1], (e[2] + GRAT_LIFT_M * 3) * Z_EXAG],
+                  text: kind === 'lat' ? fmtLat(v) : fmtLon(v), color: kind === 'lat' ? LAT_C : LON_C});
+    }
+  };
+  for (const v of ticksIn(laMin, laMax, step)) walk('lat', v);
+  for (const v of ticksIn(loMin, loMax, step)) walk('lon', v);
+  if (!paths.length) return [];
+  return [
+    new PathLayer({id: 'graticule', data: paths, pickable: true,
+      getPath: d => d.seg.map(s2 => [s2[0], s2[1], (s2[2] + GRAT_LIFT_M) * Z_EXAG]),
+      getColor: d => d.kind === 'lat' ? LAT_C : LON_C, getWidth: 1.4, widthUnits: 'pixels',
+      updateTriggers: {getPath: Z_EXAG}}),
+    new TextLayer({id: 'graticule-text', data: texts, getPosition: d => d.position, getText: d => d.text,
+      getColor: d => d.color, getSize: 10, sizeUnits: 'pixels', billboard: true,
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
+      background: true, getBackgroundColor: [20, 20, 26, 150], backgroundPadding: [2, 1],
+      updateTriggers: {getPosition: Z_EXAG}}),
+  ];
+}
+
+// ---------------------------------------------------------------- H3 grid overlay
+// The addressing grid the whole store is keyed on, drawn on the scene it addresses. h3-js is vendored into the bundle
+// (map.js already uses it), so cells, rings and per-mission counts are all computed here -- no server round trip and
+// nothing to memoize on the server. The binning IS O(points), so it is done once per (scene, res) and cached.
+let HEX_ON = false, HEX_RES = 8;
+let hexCache = {key: null, cells: null};
+
+// The memo key has to include HOW MANY POINTS HAVE ARRIVED, not just the scene and resolution. Point arrays fill
+// progressively over the stream, so a grid switched on mid-build binned a partial cloud -- and keyed on
+// (scene, res) alone it then served those partial counts forever. Observed as a cell reading "ATL06 27" against 48
+// in the finished scene. Lengths are the cheapest thing that changes exactly when the binning would.
+function hexCacheKey(sceneId, res, series) {
+  const lens = Object.keys(series || {}).sort()
+    .map(m => m + ':' + ((series[m] && series[m].positions) ? series[m].positions.length : 0));
+  return sceneId + '|' + res + '|' + lens.join(',');
+}
+
+function hexGrid(res) {
+  const key = hexCacheKey(scene && scene.scene_id, res, scene && scene.series);
+  if (hexCache.key === key) return hexCache.cells;
+  const fr = scene.frame, b = surfaceExtent();
+  if (!fr || !b) return [];
+  const counts = new Map();                       // h3 cell -> {mission: n}
+  for (const [m, sr] of Object.entries(scene.series)) {
+    const src = sr.positions; if (!src || !src.length) continue;
+    for (let i = 0; i < src.length; i += 3) {
+      const ll = localToLonLat(fr, src[i], src[i + 1]);
+      const c = h3.latLngToCell(ll[1], ll[0], res);
+      let e = counts.get(c); if (!e) counts.set(c, e = {});
+      e[m] = (e[m] || 0) + 1;
+    }
+  }
+  // Every cell the SURFACE covers, so the grid is the scene's footprint and not merely where points happen to fall.
+  const {loMin, loMax, laMin, laMax} = surfaceLonLatBounds(fr, b);
+  const ring = [[laMin, loMin], [laMin, loMax], [laMax, loMax], [laMax, loMin], [laMin, loMin]];
+  let ids = [];
+  try { ids = h3.polygonToCells(ring, res); } catch (e) { ids = [...counts.keys()]; }
+  const seen = new Set(ids);
+  for (const c of counts.keys()) if (!seen.has(c)) { ids.push(c); seen.add(c); }
+  const edge = h3.getHexagonEdgeLengthAvg ? h3.getHexagonEdgeLengthAvg(res, 'm') : null;
+  const cells = ids.map(c => ({cell: c, res, edge_m: edge, counts: counts.get(c) || {},
+                               ring: h3.cellToBoundary(c).map(ll => lonLatToLocal(fr, ll[1], ll[0]))}));
+  hexCache = {key, cells};
+  return cells;
+}
+
+function hexGridLayers() {
+  if (!HEX_ON || !scene || !scene.frame) return [];
+  const cells = hexGrid(HEX_RES);
+  if (!cells.length) return [];
+  // Draped: each ring vertex is lifted onto the terrain, so a cell follows the ground it addresses rather than
+  // floating on a plane through it. A vertex over a DEM hole falls back to the scene's base height.
+  const base = (surfaceExtent() || {minz: 0}).minz;
+  return [new deck.PolygonLayer({
+    id: 'hexgrid', data: cells, pickable: true, stroked: true, filled: true, extruded: false,
+    getPolygon: d => d.ring.map(xy => {
+      const h = surfaceHeightAt(xy[0], xy[1]);
+      return [xy[0], xy[1], ((h == null || !isFinite(h) ? base : h) + GRAT_LIFT_M) * Z_EXAG];
+    }),
+    getFillColor: d => Object.keys(d.counts).length ? [120, 225, 255, 12] : [0, 0, 0, 0],
+    getLineColor: [150, 190, 230, 110], lineWidthUnits: 'pixels', getLineWidth: 1,
+    updateTriggers: {getPolygon: Z_EXAG},
+  })];
+}
+
+// H3 edge length per resolution comes from h3 itself, so the label cannot drift from the grid it describes.
+function hexResLabel() {
+  const e = h3.getHexagonEdgeLengthAvg ? h3.getHexagonEdgeLengthAvg(HEX_RES, 'm') : null;
+  const el = $('hexResLbl'); if (!el) return;
+  el.textContent = 'res ' + HEX_RES + (e ? ' \u00b7 ~' + Math.round(e) + ' m' : '');
+}
+
+// ---------------------------------------------------------------- hover readouts
+// One formatter per pickable thing. Kept as pure string builders so they are unit-testable without a GPU: the only
+// job of the deck getTooltip below is to route an `info` to the right one.
+const nfmt = n => n.toLocaleString('en-US');
+// 5 decimals, not fmtLat/fmtLon's 3: a degree's third decimal is ~100 m, so at 3 two points a footprint apart print
+// the SAME coordinate. The axis ticks keep 3 (they label a whole edge); a point readout locates one measurement.
+const fmtLat5 = v => `${Math.abs(v).toFixed(5)}\u00b0${v >= 0 ? 'N' : 'S'}`;
+const fmtLon5 = v => `${Math.abs(v).toFixed(5)}\u00b0${v >= 0 ? 'E' : 'W'}`;
+const pointTip = (mission, lon, lat, hTrue) => `${mission}\n${fmtLat5(lat)}  ${fmtLon5(lon)}\n${nfmt(Math.round(hTrue))} m (WGS84 ellipsoid)`;
+function gridTip(cell, res, edgeM, counts) {
+  const rows = Object.entries(counts).sort();
+  const body = rows.length ? rows.map(e => `${e[0]} ${nfmt(e[1])}`).join('  ') : 'no points in this cell';
+  const size = edgeM ? `  ~${nfmt(Math.round(edgeM))} m edge` : '';
+  return `H3 res ${res}  ${cell}${size}\n${body}`;
+}
+const lineTip = (kind, v) => (kind === 'lat' ? fmtLat(v) : fmtLon(v)) + (kind === 'lat' ? '  (parallel)' : '  (meridian)');
+
+// Route a deck pick to a readout. Points carry no date: the position sidecar holds x/y/z only, so inventing one here
+// would mean guessing. Height is un-exaggerated and put back on the absolute datum before it is shown.
+function sceneTooltip(info) {
+  if (!info || !info.layer || info.index == null || info.index < 0) return null;
+  const id = info.layer.id, fr = scene && scene.frame;
+  let text = null;
+  if (id === 'graticule' && info.object) {
+    text = lineTip(info.object.kind, info.object.value);
+  } else if (id === 'hexgrid' && info.object) {
+    text = gridTip(info.object.cell, info.object.res, info.object.edge_m, info.object.counts);
+  } else if (id.startsWith('pc-') || id.startsWith('pl-') || id.startsWith('paired-')) {
+    const m = id.slice(id.indexOf('-') + 1);
+    const sr = scene && scene.series && scene.series[m];
+    const src = sr && sr.positions;
+    if (!src || !fr) return null;
+    const i = info.index;
+    if (3 * i + 2 >= src.length) return null;
+    const ll = localToLonLat(fr, src[3 * i], src[3 * i + 1]);
+    text = pointTip(m, ll[0], ll[1], src[3 * i + 2] + (scene.z0 || 0));
+  }
+  if (!text) return null;
+  return {text, style: {backgroundColor: 'rgba(14,18,26,0.94)', color: '#e8ecf4', fontSize: '11.5px',
+                        padding: '5px 7px', borderRadius: '4px', whiteSpace: 'pre',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        border: '1px solid rgba(150,190,230,0.35)'}};
+}
+
+
+// Terrain height (TRUE metres, pre-exaggeration) under a local x/y, bilinear over the DEM grid. null outside the
+// grid or over nodata — the caller must not invent ground where the DEM has none.
+function surfaceHeightAt(x, y) {
+  const g = scene && scene.surface;
+  if (!g || g.z == null) return null;
+  const {x0, y0, cell, nx, ny, z} = g;
+  const fi = (x - x0) / cell, fj = (y - y0) / cell;
+  if (!(fi >= 0 && fj >= 0 && fi <= nx - 1 && fj <= ny - 1)) return null;
+  const i0 = Math.floor(fi), j0 = Math.floor(fj);
+  const i1 = Math.min(i0 + 1, nx - 1), j1 = Math.min(j0 + 1, ny - 1);
+  const tx = fi - i0, ty = fj - j0;
+  const q = [z[j0 * nx + i0], z[j0 * nx + i1], z[j1 * nx + i0], z[j1 * nx + i1]];
+  if (q.some(v => v == null || !isFinite(v))) return null;   // a hole in the DEM: say so, do not average around it
+  return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty;
+}
+
+// ---- markers: "look HERE" -------------------------------------------------------------------------------------
+// Axis ticks orient you; they do not point at anything. A marker is a named coordinate -- a lake, an avalanche
+// source, a gauge -- drawn as a pin PLANTED ON THE TERRAIN: the stick starts at the DEM height under the point and
+// rises a short way above it. An earlier version spanned the scene's whole vertical extent, which drove the stick
+// down through the imagery and out below the ground, reading as an artefact rather than a location.
+// scene.markers is [{lon, lat, label}]; absent or empty renders nothing.
+// The label sits above the HIGHEST terrain in the scene, not a fixed distance above its own ground: a pin in a
+// valley had its label swallowed by the ridge behind it from most camera angles. The stick still starts on the
+// ground, so the pin stays planted and you can see which point the label belongs to — it just grows to reach clear
+// air. Tall sticks in deep valleys are the intended look.
+const MARKER_HEADROOM_FRAC = 0.07;   // clearance above max terrain, as a fraction of the scene's true relief
+const MARKER_HEADROOM_MIN_M = 150;   // ...but never so little that the label grazes the summit
+function markerLayers() {
+  const ms = (scene && scene.markers) || [];
+  const fr = scene && scene.frame;
+  const b = surfaceExtent() || bounds;
+  if (!ms.length || !fr || !b) return [];
+  const relief = Math.max(b.maxz - b.minz, 1);
+  const topZ = b.maxz + Math.max(relief * MARKER_HEADROOM_FRAC, MARKER_HEADROOM_MIN_M);
+  const span = Math.max(b.maxx - b.minx, b.maxy - b.miny);
+  const sticks = [], dots = [], labels = [];
+  ms.forEach(m => {
+    const [x, y] = lonLatToLocal(fr, m.lon, m.lat);
+    // Off-scene markers are dropped rather than clamped to the edge: a pin on the boundary pointing at something
+    // outside it is worse than no pin, because it reads as a location.
+    if (x < b.minx - 0.02 * span || x > b.maxx + 0.02 * span || y < b.miny - 0.02 * span || y > b.maxy + 0.02 * span) return;
+    // Plant on the terrain. With no DEM under the point, sit on the scene floor rather than guessing a height --
+    // and the label still carries the coordinate, which is the part that has to be right.
+    const ground = surfaceHeightAt(x, y);
+    const z0 = (ground == null ? b.minz : ground) * Z_EXAG;
+    const z1 = topZ * Z_EXAG;                     // every label at the same height, clear of all terrain
+    sticks.push({s: [x, y, z0], t: [x, y, z1]});
+    dots.push({p: [x, y, z1]});
+    labels.push({position: [x, y, z1], text: m.label || `${fmtLat(m.lat)} ${fmtLon(m.lon)}`});
+  });
+  if (!sticks.length) return [];
+  return [
+    new deck.LineLayer({id: 'marker-halo', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: [10, 10, 14, 210], getWidth: 5, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
+    new deck.LineLayer({id: 'marker-stick', data: sticks, getSourcePosition: d => d.s, getTargetPosition: d => d.t,
+      getColor: [255, 190, 60, 240], getWidth: 2, widthUnits: 'pixels', updateTriggers: {getSourcePosition: Z_EXAG, getTargetPosition: Z_EXAG}}),
+    new deck.ScatterplotLayer({id: 'marker-dot', data: dots, getPosition: d => d.p, getFillColor: [255, 190, 60, 255],
+      getRadius: 4.5, radiusUnits: 'pixels', stroked: true, getLineColor: [10, 10, 14, 220], lineWidthUnits: 'pixels',
+      getLineWidth: 1.5, updateTriggers: {getPosition: Z_EXAG}}),
+    new TextLayer({id: 'marker-label', data: labels, getPosition: d => d.position, getText: d => d.text,
+      getColor: [255, 215, 130], getSize: 13, sizeUnits: 'pixels', billboard: true, getPixelOffset: [0, -14],
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto', background: true,
+      getBackgroundColor: [20, 20, 26, 200], backgroundPadding: [4, 2], updateTriggers: {getPosition: Z_EXAG}}),
+  ];
+}
+
+
 // ---------------------------------------------------------------- render / view
 function render() {
   if (!scene) return;
-  deckgl.setProps({layers: [...surfaceLayers(), ...cloudLayers(), ...candidateLayers(), ...axesLayers()]});
+  // Order is PICKING PRECEDENCE as well as draw order, most specific last: a point beats the graticule line it sits
+  // on, and the line beats the hex cell under it. With the graticule below the hex grid (as it first was) a line
+  // could not be hovered at all while the grid was on.
+  deckgl.setProps({layers: [...surfaceLayers(), ...hexGridLayers(), ...graticuleLayers(), ...cloudLayers(),
+                            ...candidateLayers(), ...axesLayers(), ...markerLayers()]});
 }
 
 function fitView() {
@@ -442,7 +809,10 @@ function applyDoc(doc) {
   const keys = Object.keys(scene.series);
   keys.forEach(m => { if (!(m in visible)) visible[m] = true; });   // each mission defaults on as it appears
   $('zexag').value = Z_EXAG; $('zexagVal').textContent = Z_EXAG; syncExag();
+  $('terrAlpha').value = TERRAIN_ALPHA; $('terrAlphaVal').textContent = terrLabel();
   $('demOn').checked = SHOW_SURFACE;
+  $('gratOn').checked = GRAT_ON;
+  $('hexOn').checked = HEX_ON; $('hexRes').value = HEX_RES; $('hexRes').disabled = !HEX_ON; hexResLabel();
   $('imagery').checked = SHOW_IMAGERY;
   const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
   if (!didFit && hasPositions && fitView()) didFit = true;   // frame the data once, on the first series to arrive
@@ -594,8 +964,14 @@ function finishLoad() {
 
 const syncExag = () => { const w = $('exagWarn'); if (w) { w.hidden = Z_EXAG <= 1; w.textContent = 'Heights exaggerated \u00d7' + Z_EXAG + ' \u2014 vertical only'; } };
 $('zexag').oninput = e => { Z_EXAG = parseFloat(e.target.value); $('zexagVal').textContent = Z_EXAG; syncExag(); render(); updateLabels(); };
+const terrLabel = () => TERRAIN_ALPHA >= 0.99 ? 'solid' : `${Math.round(TERRAIN_ALPHA * 100)}%`;
+$('terrAlpha').oninput = e => { TERRAIN_ALPHA = parseFloat(e.target.value); $('terrAlphaVal').textContent = terrLabel(); render(); };
 $('ptSize').oninput = e => { PT_SCALE = parseFloat(e.target.value); $('ptSizeVal').textContent = PT_SCALE; render(); };
 $('demOn').onchange = e => { SHOW_SURFACE = e.target.checked; render(); };
+$('gratOn').onchange = e => { GRAT_ON = e.target.checked; render(); };
+$('hexOn').onchange = e => { HEX_ON = e.target.checked; $('hexRes').disabled = !HEX_ON; render(); };
+// oninput, not onchange: the binning is O(points) but memoized per (scene, res), so dragging re-bins once per stop.
+$('hexRes').oninput = e => { HEX_RES = parseInt(e.target.value, 10); hexResLabel(); render(); };
 $('imagery').onchange = e => { SHOW_IMAGERY = e.target.checked; render(); };
 
 
@@ -716,6 +1092,10 @@ this.open = async (id, query) => {
   if (id !== sceneId) {
     stopPoll(); stopStream(); clearLayerMemos();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
+    // Candidate cells belong to the scene that produced them. initTimeSeries() clears them, but it needs
+    // scene.series so it cannot run until the doc lands — which left the PREVIOUS scene's cells painted over the
+    // new one for the whole load. Cleared here, before the wait, not after it.
+    candidates = []; candSel = -1;
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them

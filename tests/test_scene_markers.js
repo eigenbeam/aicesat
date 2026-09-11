@@ -1,0 +1,223 @@
+// The coordinate helpers scene.js uses for axis ticks and markers, exercised in isolation.
+// Extracted by regex rather than imported: scene.js is a browser classic script with no module boundary.
+const fs = require('fs'), assert = require('assert');
+
+const src = fs.readFileSync('src/aicesat/ui/scene.js', 'utf8');
+function at(name) {
+  const i = src.indexOf(name);
+  assert.ok(i > 0, `${name} not found in scene.js`);
+  return i;
+}
+// A `function f() {...}` body ends at the first `\n}` in column 0. A one-line `const f = ...;` ends at its newline.
+// Using the brace rule for both swallowed everything up to the NEXT function's closing brace, which redeclared
+// half the file — so the two cases are separate on purpose.
+function grabFn(name) {
+  const rest = src.slice(at(name));
+  const end = rest.indexOf('\n}\n');
+  assert.ok(end > 0, `no closing brace for ${name}`);
+  return rest.slice(0, end + 2);
+}
+// `const`/`let` declared inside a sloppy-mode eval stay in the eval's own scope; `var` and function declarations
+// leak to the enclosing one. The arrow-function one-liners are referenced from module scope below, so they are
+// rewritten to var. (The functions' closures keep seeing the eval scope, which is why the consts they read work.)
+function grabLine(name) {
+  const rest = src.slice(at(name));
+  return rest.slice(0, rest.indexOf('\n') + 1).replace(/^const /, 'var ');
+}
+const code = [
+  'const M_PER_DEG_LAT = 110574;',
+  grabFn('function frameCentre'),
+  grabFn('function mPerDegLon'),
+  grabFn('function localToLonLat'),
+  grabFn('function lonLatToLocal'),
+  grabLine('const fmtLat ='),
+  grabLine('const fmtLon ='),
+].join('\n');
+eval(code);
+
+// the real frame of the Langtang scene: aeqd on the bbox centre, axis-aligned
+const AEQD = {bbox: [85.44, 28.21, 85.62, 28.37], east_xy: [1, 4.1e-5], north_xy: [0, 1]};
+// a polar frame is ROTATED: projected +y is not north. These helpers must hold there too.
+const POLAR = {bbox: [-51.0, 69.0, -49.0, 69.4], east_xy: [0.7071, 0.7071], north_xy: [-0.7071, 0.7071]};
+
+// The inverse is a 2x2 SOLVE, not a projection, so the round trip is exact to floating point even though
+// east_xy/north_xy are only approximately orthonormal (finite differences rounded to 6 decimals). Projecting
+// instead drifted 0.4 m at this scene's corner and worse on a larger box -- hence this tolerance, which would
+// fail immediately if anyone swapped the solve back for a dot product.
+const TOL = 1e-11;
+function roundtrip(fr, lon, lat, tolDeg) {
+  const [x, y] = lonLatToLocal(fr, lon, lat);
+  const [lo2, la2] = localToLonLat(fr, x, y);
+  assert.ok(Math.abs(lo2 - lon) < tolDeg, `lon ${lon} -> ${lo2}`);
+  assert.ok(Math.abs(la2 - lat) < tolDeg, `lat ${lat} -> ${la2}`);
+}
+
+// --- round trip is exact to floating point, in both frame shapes -------------------------------------------------
+roundtrip(AEQD, 85.52515462, 28.28531746, TOL);   // the avalanche source
+roundtrip(AEQD, 85.44, 28.21, TOL);               // bbox corners
+roundtrip(AEQD, 85.62, 28.37, TOL);
+roundtrip(POLAR, -50.0, 69.2, TOL);
+roundtrip(POLAR, -51.0, 69.4, TOL);
+
+// --- the centre of the bbox is the frame origin ------------------------------------------------------------------
+{
+  const [x, y] = lonLatToLocal(AEQD, 85.53, 28.29);
+  assert.ok(Math.hypot(x, y) < 1e-6, `bbox centre should be the origin, got ${x},${y}`);
+}
+
+// --- direction sanity: east is +east, north is +north ------------------------------------------------------------
+{
+  const [xe] = lonLatToLocal(AEQD, 85.55, 28.29);
+  assert.ok(xe > 0, 'moving east must increase the east component');
+  const [, yn] = lonLatToLocal(AEQD, 85.53, 28.31);
+  assert.ok(yn > 0, 'moving north must increase the north component');
+  // in the rotated polar frame, due north must NOT be pure +y
+  const [xp, yp] = lonLatToLocal(POLAR, -50.0, 69.3);
+  assert.ok(Math.abs(xp) > 1, 'a rotated frame puts due north into BOTH components');
+  assert.ok(Math.abs(yp) > 1, 'a rotated frame puts due north into BOTH components');
+}
+
+// --- scale is right: 0.01 deg of latitude is ~1.1 km ------------------------------------------------------------
+{
+  const [, y0] = lonLatToLocal(AEQD, 85.53, 28.29);
+  const [, y1] = lonLatToLocal(AEQD, 85.53, 28.30);
+  const d = Math.abs(y1 - y0);
+  assert.ok(d > 1050 && d < 1160, `0.01 deg lat should be ~1106 m, got ${d}`);
+}
+
+// --- hemisphere suffixes ----------------------------------------------------------------------------------------
+assert.strictEqual(fmtLat(28.2853), '28.285°N');
+assert.strictEqual(fmtLat(-77.8), '77.800°S');
+assert.strictEqual(fmtLon(85.5252), '85.525°E');
+assert.strictEqual(fmtLon(-49.5), '49.500°W');
+
+// --- a missing basis falls back to axis-aligned rather than throwing ---------------------------------------------
+roundtrip({bbox: [0, 0, 1, 1]}, 0.5, 0.5, TOL);
+
+// --- surfaceHeightAt: markers are PLANTED on the terrain, not driven through it ----------------------------------
+// Spanning the scene's whole vertical extent sent the stick down through the imagery and out below the ground.
+var scene = null;   // the helper reads the module-scoped `scene`; eval'd code sees this one
+eval(grabFn('function surfaceHeightAt'));
+
+// a 3x3 grid, 100 m cells, origin (0,0), heights rising 10 m per cell eastward
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 3, ny: 3,
+                   z: [0, 10, 20, 0, 10, 20, 0, 10, 20]}};
+assert.strictEqual(surfaceHeightAt(0, 0), 0, 'grid corner');
+assert.strictEqual(surfaceHeightAt(200, 200), 20, 'far corner');
+assert.ok(Math.abs(surfaceHeightAt(50, 0) - 5) < 1e-9, 'bilinear halfway between 0 and 10');
+assert.ok(Math.abs(surfaceHeightAt(150, 150) - 15) < 1e-9, 'bilinear in the far cell');
+
+// outside the grid -> null, so the caller falls back instead of extrapolating off the edge
+assert.strictEqual(surfaceHeightAt(-1, 0), null, 'west of the grid');
+assert.strictEqual(surfaceHeightAt(0, -1), null, 'south of the grid');
+assert.strictEqual(surfaceHeightAt(201, 0), null, 'east of the grid');
+assert.strictEqual(surfaceHeightAt(0, 201), null, 'north of the grid');
+
+// a DEM hole must report null, NOT an average of the cells around it
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 2, ny: 2, z: [0, null, 0, 0]}};
+assert.strictEqual(surfaceHeightAt(50, 50), null, 'nodata corner poisons the cell, by design');
+
+// no surface at all (meta arrives before the chunked z) -> null, not a throw
+scene = {surface: {x0: 0, y0: 0, cell: 100, nx: 2, ny: 2}};
+assert.strictEqual(surfaceHeightAt(50, 50), null, 'surface without z');
+scene = {};
+assert.strictEqual(surfaceHeightAt(0, 0), null, 'no surface');
+
+// --- surfaceAppearance: solid by default, and depth writing is what makes terrain occlude --------------------------
+// The DEM was drawn translucent AND with depth writing off, so points behind a ridge drew in front of it. Right for
+// a near-flat ice sheet, disorienting in 5,500 m of Himalayan relief.
+var TERRAIN_ALPHA = 1, Z_EXAG = 1;
+eval(grabFn('function surfaceAppearance'));
+
+{
+  TERRAIN_ALPHA = 1;
+  const solidImg = surfaceAppearance(true), solidDem = surfaceAppearance(false);
+  assert.strictEqual(solidImg.getColor[3], 255, 'solid means fully opaque, imagery draped');
+  assert.strictEqual(solidDem.getColor[3], 255, 'solid means fully opaque, bare DEM');
+  assert.ok(!solidImg.parameters, 'solid must WRITE depth, or terrain still does not occlude');
+  // Imagery already contains the sun (S2 2025-12-15 over Langtang: azimuth 162, elevation 36). A synthetic
+  // hillshade on top is a second sun and makes the east/west contrast partly an artefact.
+  assert.strictEqual(solidImg.material, false, 'a draped mesh must be UNLIT');
+  assert.ok(solidDem.material && solidDem.material.diffuse > 0,
+            'a bare DEM must keep the hillshade — it is the only relief cue there');
+  assert.ok(!solidDem.parameters, 'solid must WRITE depth, or terrain still does not occlude');
+  assert.deepStrictEqual(solidDem.getColor.slice(0, 3), [76, 84, 100], 'charcoal hillshade retained');
+  assert.deepStrictEqual(solidImg.getColor.slice(0, 3), [255, 255, 255], 'imagery drapes on white');
+}
+{
+  TERRAIN_ALPHA = 0.5;
+  const a = surfaceAppearance(false);
+  assert.strictEqual(a.getColor[3], 128, 'alpha tracks the slider');
+  assert.strictEqual(a.parameters.depthWriteEnabled, false, 'translucent must stop writing depth to show points behind');
+}
+{
+  // the boundary: 0.95 is visibly translucent and must behave as such
+  TERRAIN_ALPHA = 0.95;
+  assert.strictEqual(surfaceAppearance(false).parameters.depthWriteEnabled, false);
+  TERRAIN_ALPHA = 1;
+  assert.ok(!surfaceAppearance(false).parameters);
+}
+{
+  // getColor must be in the update triggers or deck.gl keeps the old colour when the slider moves
+  TERRAIN_ALPHA = 0.7;
+  const a = surfaceAppearance(false);
+  assert.strictEqual(a.updateTriggers.getColor, 0.7);
+}
+
+// --- marker labels clear the highest terrain in the scene -------------------------------------------------------
+// A pin in a valley had its label swallowed by the ridge behind it. The stick still starts on the ground so the pin
+// stays planted; the TOP is common to every marker and sits above max terrain.
+{
+  const relief = 3054 - (-2632);
+  const headroomFrac = 0.07, headroomMin = 150;
+  const topZ = 3054 + Math.max(relief * headroomFrac, headroomMin);
+  assert.ok(topZ > 3054, 'the label must sit above the highest terrain, not on it');
+  assert.ok(topZ - 3054 >= headroomMin, 'and clear it by at least the floor');
+  // a flat scene must still get usable clearance from the floor, not a fraction of nothing
+  const flatTop = 10 + Math.max(1 * headroomFrac, headroomMin);
+  assert.strictEqual(flatTop - 10, headroomMin, 'flat scene falls back to the minimum clearance');
+}
+{
+  // the constants the renderer actually uses, read from source so the test cannot drift from them
+  const frac = parseFloat(/MARKER_HEADROOM_FRAC = ([0-9.]+)/.exec(src)[1]);
+  const min = parseFloat(/MARKER_HEADROOM_MIN_M = ([0-9.]+)/.exec(src)[1]);
+  assert.ok(frac > 0 && min > 0, 'headroom constants must be positive');
+  // the old behaviour keyed the top off each marker's OWN ground, which is what let a ridge hide it
+  assert.ok(!/MARKER_RISE_FRAC/.test(src), 'per-marker rise replaced by a scene-wide label height');
+  assert.ok(/const z1 = topZ \* Z_EXAG/.test(src), 'every marker label must share the same top');
+  assert.ok(/const z0 = \(ground == null \? b\.minz : ground\) \* Z_EXAG/.test(src),
+            'the stick must still START on the terrain, or the pin stops being planted');
+}
+
+// --- the two synthetic lights must agree on a direction, and on the cartographic convention ---------------------
+// deck.gl's `direction` is the direction light TRAVELS (the shader uses -direction as the vector toward the light).
+// The mesh light was [-1, 1, -0.6] = azimuth 135 (SE): the opposite of its own comment AND the opposite of the
+// vector the ICESSN platelets shade with, so a scene showing both lit them from opposite sides.
+{
+  const azimuthOf = toward => (Math.atan2(toward[0], toward[1]) * 180 / Math.PI + 360) % 360;  // x=east, y=north
+
+  const dir = JSON.parse(/DirectionalLight\(\{[^}]*direction: (\[[^\]]+\])/.exec(src)[1]);
+  const meshAz = azimuthOf(dir.map(v => -v));            // toward the light = -direction
+  assert.ok(Math.abs(meshAz - 315) < 1, `terrain light should be NW (315), got ${meshAz.toFixed(0)}`);
+
+  const L = JSON.parse(/const LIGHT = \(\(\) => \{ const v = (\[[^\]]+\])/.exec(src)[1]);
+  const platAz = azimuthOf(L);                            // LIGHT is already a toward-light vector
+  assert.ok(Math.abs(platAz - 315) < 1, `platelet light should be NW (315), got ${platAz.toFixed(0)}`);
+
+  assert.ok(Math.abs(meshAz - platAz) < 1,
+            `the terrain mesh and the ICESSN platelets must be lit from the SAME side (${meshAz} vs ${platAz})`);
+  assert.ok(dir[2] < 0, 'the sun must be above the scene, so the light travels downward');
+}
+
+// --- scene switch clears per-scene state before the wait, not after ---------------------------------------------
+// initTimeSeries() clears the candidate cells, but it reads scene.series so it cannot run until the doc lands.
+// That left the PREVIOUS scene's cells painted over the new one for the whole load.
+{
+  const resetAt = src.indexOf('sceneId = id; scene = null;');
+  assert.ok(resetAt > 0, 'could not find the scene-switch reset');
+  const window = src.slice(resetAt, resetAt + 700);
+  assert.ok(/candidates = \[\]; candSel = -1;/.test(window),
+            'the scene-switch reset must clear candidates, or stale cells paint over the new scene while it loads');
+}
+
+console.log('ok');

@@ -38,8 +38,10 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
     # Index-only: byte-range fetch just the chunks whose H3 cell touches the bbox. The sub-granule index is
     # always built for the area of interest first, so there is no whole-granule fallback.
     if not _index_covers(bbox, polygon):
-        raise RuntimeError(f"ATL06 not indexed over {bbox} \u2014 build the sub-granule index first "
-                           f"(uv run scripts/build_atl06_index.py)")
+        from . import coverage as _cov, index_atl06 as _ix
+        why = _cov.coverage_gap(_ix._index_dir(_ix.ATL06_RES), bbox, polygon) or "the coverage gate refused it"
+        raise RuntimeError(f"ATL06 not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
+                           f"Build with: uv run scripts/build_atl06_index.py <W> <S> <E> <N> 5 8")
     from . import index_atl06
     # All 6 beams (strong + weak). The index already stores every beam; weak beams add coverage/cross-mission
     # coincidence, and atl06_quality_summary==0 (quality_zero) still filters their higher-noise returns.

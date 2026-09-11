@@ -178,9 +178,16 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     return tbl
 
 
+# GPS - UTC leap seconds since 2017-01-01, valid for the whole ICESat-2 mission. atlas_sdp_gps_epoch is GPS
+# seconds, so adding it to the GPS epoch lands 18 s AHEAD of the SDP epoch's true UTC instant (2018-01-01T00:00:00Z).
+# Omitting this put every ATL06 timestamp 18 s late and, worse, 18 s out of step with the ATL03 path, which has
+# always subtracted it (planner.GPS_EPOCH_MS, atl03.GPS_UTC_LEAP) — the same overpass dated differently per product.
+GPS_UTC_LEAP_S = 18
+
+
 def _atlas_epoch_years(delta_time: np.ndarray, sdp_epoch_gps_s: float) -> np.ndarray:
-    """delta_time (s since the ATLAS SDP epoch) -> datetime64[ms]; sdp epoch is GPS seconds since 1980-01-06."""
-    gps0 = np.datetime64("1980-01-06T00:00:00", "ms")
+    """delta_time (s since the ATLAS SDP epoch) -> datetime64[ms] UTC; sdp epoch is GPS seconds since 1980-01-06."""
+    gps0 = np.datetime64("1980-01-06T00:00:00", "ms") - np.timedelta64(GPS_UTC_LEAP_S * 1000, "ms")
     base = gps0 + np.timedelta64(int(round(sdp_epoch_gps_s * 1000)), "ms")
     return base + (delta_time * 1000.0).astype("timedelta64[ms]")
 
@@ -249,6 +256,59 @@ def _decode_chunk(raws: dict, r: dict) -> dict:
             for ds in ATL06_DATASETS}
 
 
+def plan_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, force: bool = False,
+              polygon=None, settle: bool = True) -> dict:
+    """What a fetch over (bbox|polygon, window) WOULD read, decided without touching the network.
+
+    This is the first half of fetch_bbox, lifted so that callers who only want to inspect the plan -- a dry run, a
+    byte-range map -- answer with the real planner instead of a paraphrase of it that drifts out of step. Keys:
+
+      want_cells   the res-`res` cells the selection touches
+      rows         one index row per (granule, beam, chunk, cell), carrying that chunk's byte refs
+      names, beams the granules and beams those rows select
+      chunk_cells  (granule, beam, chunk) -> the wanted cells it touches
+      chunk_row    (granule, beam, chunk) -> a representative row (byte refs are identical across a chunk's cells)
+      have         the (granule, beam, chunk, cell) tuples already materialized
+      todo         the chunks that must be fetched: ANY wanted cell of theirs is not yet materialized
+      n_lake       chunks already materialized, i.e. the ones the lake serves
+      by_url       `todo` grouped by access URL -- byte ranges coalesce per URL, NEVER across granules
+      want_only    the cells writes are narrowed to, or None when adjacent cells are precached
+
+    `settle` drains pending background writes over these cells first, so `have` and the files on disk agree. Pass
+    False for a read-only inspection that must not block on the writer.
+    """
+    from . import lake
+    from .access import access_url
+
+    want_cells, rows = _index_rows(bbox, window, res, strong_only, polygon=polygon)
+    out = {"want_cells": want_cells, "rows": rows,
+           "names": sorted({r["granule"] for r in rows}), "beams": sorted({r["beam"] for r in rows}),
+           "chunk_cells": {}, "chunk_row": {}, "have": set(), "todo": [], "n_lake": 0, "by_url": {},
+           # Write only the cells the request covers, discarding the rest of the decoded strip (see
+           # precache_adjacent). Coverage stays consistent: mark_cells is the chunk's WANTED cells, so we never
+           # claim to hold what we dropped.
+           "want_only": None if precache_adjacent() else tuple(sorted(int(c) for c in want_cells))}
+    if not rows:
+        return out
+    if settle:
+        # Settle any background write over these cells before reading them, so `have` and the files agree.
+        lake.drain_writes(MISSION, want_cells)
+    have = set() if force else lake.ingested_chunk_cells(MISSION, out["names"])
+
+    chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
+    for r in rows:
+        k = (r["granule"], r["beam"], r["chunk_index"])
+        chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+    # cell-aware skip (like ATL03): fetch a chunk if ANY of its wanted cells is not yet materialized
+    todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
+    by_url: dict[str, list] = {}
+    for k in todo:
+        r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
+    out.update(chunk_cells=chunk_cells, chunk_row=chunk_row, have=have, todo=todo,
+               n_lake=len(chunk_cells) - len(todo), by_url=by_url)
+    return out
+
+
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
                force: bool = False, clip_cells: bool = False, polygon=None, on_granule=None, on_plan=None) -> tuple[dict, dict]:
     """Lake-first index-driven ATL06 fetch (mirrors the ATL03 planner). Only the chunks whose wanted cells are NOT yet
@@ -277,16 +337,13 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
                          pool_size)
 
-    want_cells, rows = _index_rows(bbox, window, res, strong_only, polygon=polygon)
+    plan = plan_bbox(bbox, window, res, strong_only, force=force, polygon=polygon)
+    want_cells, rows = plan["want_cells"], plan["rows"]
     if not rows:
         return {k: np.array([]) for k in _EMPTY}, {"chunks_from_lake": 0, "chunks_from_nasa": 0, "cells": len(want_cells)}
-    names = sorted({r["granule"] for r in rows})
-    beams = sorted({r["beam"] for r in rows})   # exactly the beams the query selected (strong-only vs all-6)
+    names, beams = plan["names"], plan["beams"]   # exactly the beams the query selected (strong-only vs all-6)
+    have = plan["have"]
     want_arr = np.asarray(sorted(int(c) for c in want_cells), dtype="u8")
-
-    # Settle any background write over these cells before reading them, so `have` and the files agree.
-    lake.drain_writes(MISSION, want_cells)
-    have = set() if force else lake.ingested_chunk_cells(MISSION, names)
 
     # READ FIRST. On `force` skip it: every chunk is re-fetched below, so the fresh points already cover the whole
     # request and reading the pre-existing rows too would double them.
@@ -295,23 +352,13 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",),
         quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
 
-    chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
-    for r in rows:
-        k = (r["granule"], r["beam"], r["chunk_index"])
-        chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
-    # cell-aware skip (like ATL03): fetch a chunk if ANY of its wanted cells is not yet materialized
-    todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
-    n_lake = len(chunk_cells) - len(todo)
-
-    # Write only the cells the request covers, discarding the rest of the decoded strip (see precache_adjacent).
-    # Coverage stays consistent: mark_cells is the chunk's WANTED cells, so we never claim to hold what we dropped.
-    want_only = None if precache_adjacent() else tuple(sorted(int(c) for c in want_cells))
+    chunk_cells, chunk_row = plan["chunk_cells"], plan["chunk_row"]
+    todo, n_lake = plan["todo"], plan["n_lake"]
+    want_only = plan["want_only"]
     reader, fresh_parts = None, []
     if todo:
         reader = RangeReader()
-        by_url: dict[str, list] = {}
-        for k in todo:
-            r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
+        by_url = plan["by_url"]
         reader.presign_all([u for u in by_url if not u.startswith("s3://")])
         if on_plan is not None:   # the denominator the progress UI needs, known before any network
             on_plan({"granules": len(by_url), "chunks": len(todo), "cached": n_lake})
