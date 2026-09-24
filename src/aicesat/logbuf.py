@@ -12,7 +12,8 @@ _LOCK = threading.Lock()
 _BUF: deque = deque(maxlen=500)
 _SEQ = 0
 _LOGGERS = ("aicesat.lake", "aicesat.planner", "aicesat.access", "aicesat.index", "aicesat.coverage",
-            "aicesat.atl03", "aicesat.glas", "aicesat.atl06", "aicesat.icessn", "aicesat.dem", "aicesat.api")
+            "aicesat.atl03", "aicesat.glas", "aicesat.atl06", "aicesat.icessn", "aicesat.gedi", "aicesat.dem",
+            "aicesat.api")
 _installed = False
 
 

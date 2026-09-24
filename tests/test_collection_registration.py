@@ -92,6 +92,13 @@ def test_build_progress_reads_the_plan_for_every_collection(c):
     assert "flagOf" in m.group(1) or f"'{c['flag']}'" in m.group(1), f"{c['key']}: absent from explore.js hasPlan"
 
 
+@pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
+def test_collection_logs_reach_the_lake_activity_log(c):
+    """The Lake page's running log only captures the loggers logbuf lists by name."""
+    from aicesat import logbuf
+    assert f"aicesat.{c['key'].lower()}" in logbuf._LOGGERS, f"{c['key']}: its logger is not in logbuf._LOGGERS"
+
+
 def test_the_footprint_gate_actually_excludes_somewhere():
     """A sanity check on the mechanism itself: GEDI flies on the ISS (51.6 deg), so it must be refused over an ice
     sheet, and ICESSN only ever flew the poles, so it must be refused over Nepal."""
