@@ -385,7 +385,7 @@ def show_photons(region: str | None = None, bbox: list[float] | None = None, pol
     later calls hit the lake. Returns the widget URL to open plus extraction/access provenance."""
     if region and not (bbox or polygon):
         bbox = list(regions.resolve_bbox(region))
-    doc = build_scene(bbox, polygon, question, with_glas=False)
+    doc = build_scene(bbox, polygon, question, with_glas=False, with_atl03=True)
     meta = doc["series"]["ICESAT2"]["meta"]
     return {"scene_id": doc["scene_id"], "widget_url": widget_url(doc["scene_id"]), "n_photons": meta["n"],
             "product": meta["product"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
@@ -421,7 +421,7 @@ def add_glas(scene_id: str, time_window: list[str] | None = None) -> dict:
         cache.save_scene(scene_id, doc)
     return {"scene_id": scene_id, "widget_url": widget_url(scene_id), "n_shots": meta["n"],
             "campaigns": meta["campaigns"], "native_frame": meta["native_frame"], "height_ref": meta["height_ref"],
-            "ellipsoid_correction": meta["ellipsoid_correction"], "granules": meta["granules"]}
+            "ellipsoid_correction": meta["ellipsoid_correction"], "access": meta.get("access")}
 
 
 @apps.tool(resource_uri=UI_URI, name="coregister")
