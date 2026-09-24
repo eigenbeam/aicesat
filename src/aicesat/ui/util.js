@@ -13,9 +13,9 @@ window.AICESAT = window.AICESAT || {};
     plate: 'Plate motion: the tectonic plate drifts between the mission dates; removing it keeps that drift from looking like elevation change.',
     gia: 'GIA (glacial isostatic adjustment): slow vertical bedrock rebound after past ice loss; removing it separates ice-surface change from ground motion.',
     dh: 'The height difference at the same spot, here ICESat-2 minus ICESat-1. Negative means ICESat-2 is lower (surface lowering).',
-    granules: 'Granules are the data files a mission publishes over an area and time span; max granules caps how many the build fetches.',
-    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), and ICESat-2 (ATL03 photons / ATL06 land ice).',
-    coverage: 'Asks the NASA catalog how many granules of each mission exist over your area, before you fetch anything.',
+    granules: 'Granules are the data files a mission publishes over an area and time span. A build reads only the parts of each granule that cover your area.',
+    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), and GEDI (L2A).',
+    coverage: 'Counts, from the local index, the granules of each mission that have data in your area, before anything is fetched.',
   };
   // A small "?" affordance that reveals a plain-language explanation on hover/click. Returns a DOM node to append.
   U.help = (text) => {
