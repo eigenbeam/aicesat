@@ -141,3 +141,36 @@ def test_ecef_roundtrip():
     x, y, z = coreg._geodetic_to_ecef(lon, lat, h)
     lo, la, hh = coreg._ecef_to_geodetic(x, y, z)
     assert np.allclose(lo, lon, atol=1e-10) and np.allclose(la, lat, atol=1e-10) and np.allclose(hh, h, atol=1e-6)
+
+
+# --- the plate-motion constants are PROJ's, not ours (#8) ---------------------------------------------------------
+def _proj_noam_rates():
+    import pathlib
+    import re
+    import pyproj
+    line = next(ln for ln in (pathlib.Path(pyproj.datadir.get_data_dir()) / "ITRF2014").read_text().splitlines()
+                if ln.startswith("<NOAM>"))
+    return {k: float(v) for k, v in re.findall(r"\+(dr[xyz])=([-\d.]+)", line)}
+
+
+def test_noam_rates_are_the_ones_proj_ships():
+    """Both propagation engines use NOAM_RATES, so the existing numpy-vs-pyproj test only proves they agree with
+    each other. This ties the constants to the ITRF2014-PMM entry PROJ itself ships."""
+    assert coreg.NOAM_RATES == _proj_noam_rates()
+
+
+def test_propagation_matches_projs_own_noam_pipeline():
+    """An independent pipeline built from PROJ's +init=ITRF2014:NOAM, not from our constants."""
+    from pyproj import Transformer
+    lon, lat, h = np.array([-40.0, -50.0]), np.array([70.0, 69.2]), np.array([2600.0, 1500.0])
+    t_obs, epoch = np.array([2011.4, 2011.4]), 2005.0
+    ref = Transformer.from_pipeline(
+        "+proj=pipeline +ellps=GRS80 +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=cart +ellps=GRS80 "
+        "+step +init=ITRF2014:NOAM +t_epoch=2011.4 "
+        "+step +inv +proj=cart +ellps=GRS80 +step +proj=unitconvert +xy_in=rad +xy_out=deg")
+    x, y, z, _ = ref.transform(lon, lat, h, np.full(2, epoch))
+    for engine in ("pyproj", "auto"):                     # "auto" is the numpy path for ITRF2014 input
+        out = coreg.propagate(lon, lat, h, t_obs, epoch, "ITRF2014", engine=engine)
+        assert coreg.horizontal_displacement_m(x, y, out[0], out[1]).max() < 1e-4, engine
+        assert np.abs(z - out[2]).max() < 1e-4, engine
+    assert coreg.horizontal_displacement_m(lon, lat, x, y).min() > 0.05   # it did move: ~13 cm over 6.4 yr

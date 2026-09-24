@@ -47,9 +47,39 @@ def _reference_set(ref_missions, present) -> set:
     return {DEFAULT_REF_MISSION} if DEFAULT_REF_MISSION in present else present
 
 
+def _propagate_series(arrays: dict, lon, lat, h, yr, common_epoch: float, native: str):
+    """Propagate one series to the common epoch. Returns (lon, lat, h, note): `note` is None when every point was
+    propagated, else which points could not be and why (those stay at their observed positions).
+
+    Rows carrying `itrf_year` go through their own realization, because one ICESSN extract spans campaigns in
+    different frames (ITRF2005 for 2011, ITRF2008 for 2012-2016, ITRF2014 from 2017). Year 0 means the granule
+    header named no frame, which cannot be propagated and is reported as such."""
+    years = arrays.get("itrf_year")
+    if years is None:
+        try:
+            plon, plat, ph = coreg.propagate(lon, lat, h, yr, common_epoch, native)
+            return plon, plat, ph, None
+        except Exception as e:
+            return lon, lat, h, f"{native}: {e}"
+    years = np.asarray(years)
+    lon, lat, h = lon.copy(), lat.copy(), h.copy()
+    failed = []
+    for y in np.unique(years):
+        m = years == y
+        frame = f"ITRF{int(y)}" if y else "no frame in the granule header"
+        try:
+            lon[m], lat[m], h[m] = coreg.propagate(lon[m], lat[m], h[m], yr[m], common_epoch, frame)
+        except Exception as e:
+            failed.append(f"{int(m.sum())} points in {frame}: {e}")
+    return lon, lat, h, ("; ".join(failed) or None)
+
+
 def _load_all(doc: dict, common_epoch: float) -> list[dict]:
     """Reload every scene series' full arrays (lon/lat/h/t), propagate to the common epoch, project to
-    the scene's local frame. Returns one record per mission with x/y/h/yr arrays."""
+    the scene's local frame. Returns one record per mission with x/y/h/yr arrays, plus `propagated` and, when it is
+    False, `frame_note` saying which points were left at their observed positions and why. A failure used to be a
+    log line only, so an unpropagated series (every IceBridge point, while its frame label was vague) looked the same
+    in the output as a propagated one."""
     frame = doc["frame"]
     recs = []
     for mission, s in doc["series"].items():
@@ -65,13 +95,13 @@ def _load_all(doc: dict, common_epoch: float) -> list[dict]:
         # subsampling — true of the median, false of the COUNTS around it: _MIN_BIN_PTS, _MIN_REF_PTS and the n_ref
         # term in _confidence are thresholds, so thinning moved which cells qualified as candidates at all.
         native = meta.get("native_frame", "ITRF2014")
-        try:
-            lon, lat, h = coreg.propagate(lon, lat, h, yr, common_epoch, native)
-        except Exception as e:
-            log.warning("propagate %s failed: %s; using raw positions", mission, e)
+        lon, lat, h, note = _propagate_series(arrays, lon, lat, h, yr, common_epoch, native)
+        if note:
+            log.warning("%s not fully plate-motion propagated (observed positions kept): %s", mission, note)
         x, y = scene_mod.to_local(frame, lon, lat)
         recs.append({"mission": mission, "lat": np.asarray(lat, "f8"), "lon": np.asarray(lon, "f8"),
-                     "x": np.asarray(x, "f8"), "y": np.asarray(y, "f8"), "h": np.asarray(h, "f8"), "yr": np.asarray(yr, "f8")})
+                     "x": np.asarray(x, "f8"), "y": np.asarray(y, "f8"), "h": np.asarray(h, "f8"), "yr": np.asarray(yr, "f8"),
+                     "propagated": note is None, "frame_note": note})
     return recs
 
 
@@ -121,10 +151,15 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
     recs = _load_all(doc, common_epoch)
     present = [r["mission"] for r in recs]
     ref_set = _reference_set(ref_missions, present)
+    not_propagated = {r["mission"]: r.get("frame_note") for r in recs if not r.get("propagated", True)}
+    propagation = ("positions plate-motion propagated" if not not_propagated else
+                   "positions plate-motion propagated EXCEPT " + ", ".join(sorted(not_propagated)) +
+                   " (observed positions used; see not_propagated)")
     params = {"h3_res": int(h3_res), "delta_t": float(delta_t), "min_bins": int(min_bins),
               "common_epoch": common_epoch, "ref_missions": sorted(ref_set), "missions_present": present,
+              "not_propagated": not_propagated,
               "notes": "residuals about a per-cell reference plane fit to ref_missions (default GLAS: earliest epoch, "
-                       "single sensor); positions plate-motion propagated; "
+                       f"single sensor); {propagation}; "
                        "no inter-campaign/inter-sensor bias adjustment and no GIA correction applied"}
     if not recs:
         return {"params": params, "candidates": []}

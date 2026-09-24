@@ -103,3 +103,55 @@ def test_trend_cm_yr_matches_a_least_squares_fit_of_the_series(monkeypatch):
     x = np.array([p["year"] for p in c["series"]]); y = np.array([p["value_m"] for p in c["series"]])
     expect = 100.0 * np.polyfit(x, y, 1)[0]
     assert abs(c["trend_cm_yr"] - expect) < 0.01, (c["trend_cm_yr"], expect)
+
+
+# --- plate-motion propagation is per realization, and a failure is reported (#8) -----------------------------------
+def _icessn_doc(monkeypatch, arrays, meta):
+    from aicesat import coreg, scene as scene_mod
+    monkeypatch.setattr(coreg, "_reload_arrays", lambda s: (arrays, meta))
+    return {"frame": scene_mod.local_frame((-49.6, 68.9, -49.2, 69.1)), "series": {"ICESSN": {"cache_key": "k"}}}
+
+
+def _icessn_arrays(n=40, itrf_years=None):
+    rng = np.random.default_rng(3)
+    a = {"lon": -49.4 + rng.uniform(-0.05, 0.05, n), "lat": 69.0 + rng.uniform(-0.02, 0.02, n),
+         "h": 1500.0 + rng.normal(0, 0.3, n), "t": np.full(n, np.datetime64("2011-05-01"), "datetime64[ms]")}
+    if itrf_years is not None:
+        a["itrf_year"] = np.asarray(itrf_years, "i2")
+    return a
+
+
+def test_each_itrf_realization_is_propagated_through_its_own_frame(monkeypatch):
+    from aicesat import coreg
+    years = [2005] * 20 + [2008] * 20
+    a = _icessn_arrays(itrf_years=years)
+    doc = _icessn_doc(monkeypatch, a, {"native_frame": "ITRF (mixed: ITRF2005, ITRF2008; see itrf_year per row)"})
+    rec = timeseries._load_all(doc, 2005.0)[0]
+    assert rec["propagated"] is True and rec["frame_note"] is None
+    moved = coreg.horizontal_displacement_m(a["lon"], a["lat"], rec["lon"], rec["lat"])
+    assert (moved > 0.01).all(), "a point was left at its observed position"
+    yr = coreg.decimal_year(a["t"])
+    for y in (2005, 2008):
+        m = np.asarray(years) == y
+        want = coreg.propagate(a["lon"][m], a["lat"][m], a["h"][m], yr[m], 2005.0, f"ITRF{y}")
+        assert np.allclose(rec["lon"][m], want[0], atol=1e-10) and np.allclose(rec["h"][m], want[2], atol=1e-6)
+
+
+def test_a_series_that_cannot_be_propagated_is_reported_not_hidden(monkeypatch):
+    """ICESSN's frame label was "ITRF (campaign-dependent)", which the frame step rightly refuses; the time series
+    used to catch that, log it and carry on with raw positions, indistinguishable in its output from a propagated
+    series."""
+    a = _icessn_arrays()
+    doc = _icessn_doc(monkeypatch, a, {"native_frame": "ITRF (campaign-dependent)"})
+    rec = timeseries._load_all(doc, 2005.0)[0]
+    assert rec["propagated"] is False and "campaign-dependent" in rec["frame_note"]
+    params = timeseries.candidates(doc)["params"]
+    assert "ICESSN" in params["not_propagated"]
+    assert "EXCEPT ICESSN" in params["notes"]
+
+
+def test_rows_with_no_frame_in_their_header_are_reported(monkeypatch):
+    a = _icessn_arrays(itrf_years=[2008] * 30 + [0] * 10)
+    doc = _icessn_doc(monkeypatch, a, {"native_frame": "ITRF (mixed)"})
+    rec = timeseries._load_all(doc, 2005.0)[0]
+    assert rec["propagated"] is False and "10 points in no frame in the granule header" in rec["frame_note"]
