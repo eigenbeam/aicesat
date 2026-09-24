@@ -72,14 +72,20 @@ def _frame_pipeline(from_frame: str) -> Transformer | None:
     """
     if from_frame == "ITRF2014":
         return None
-    if not _ITRF_RE.match(from_frame or ""):
+    m = _ITRF_RE.match(from_frame or "")
+    if not m:
         raise ValueError(f"unsupported native frame {from_frame!r}: need an exact ITRFyyyy realization")
+    # PROJ ships one init file per realization, each giving THAT realization -> older ones, forward. An older native
+    # frame is therefore the inverse of an entry in the ITRF2014 file; a newer one (ITRF2020) is a forward entry in
+    # its own file.
+    step = (f"+step +inv +init=ITRF2014:{from_frame} " if int(m.group(1)) < 2014
+            else f"+step +init={from_frame}:ITRF2014 ")
     try:
         return Transformer.from_pipeline(
             "+proj=pipeline +ellps=GRS80 "
             "+step +proj=unitconvert +xy_in=deg +xy_out=rad "
             "+step +proj=cart +ellps=GRS80 "
-            f"+step +inv +init=ITRF2014:{from_frame} "
+            + step +
             "+step +inv +proj=cart +ellps=GRS80 "
             "+step +proj=unitconvert +xy_in=rad +xy_out=deg")
     except Exception as ex:

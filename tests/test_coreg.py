@@ -80,6 +80,20 @@ def test_frame_pipeline_rejects_a_vague_frame_label():
         with pytest.raises(ValueError):
             coreg._frame_pipeline(bad)
 
+
+def test_itrf2020_comes_from_its_own_init_file_in_the_right_direction():
+    """ITRF2020 is newer than the target frame, so its step is the FORWARD <ITRF2014> entry of PROJ's ITRF2020 file
+    (T = -1.4, -0.9, +1.4 mm and D = -0.42 ppb at 2015.0), not an inverted ITRF2014-file entry. At (0 E, 0 N, 0 m)
+    ECEF x is the semi-major axis, so y and z move by the translation alone and x also by the scale (-2.7 mm)."""
+    from pyproj import Transformer
+    tr = coreg._frame_pipeline("ITRF2020")
+    to_cart = Transformer.from_pipeline("+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=cart +ellps=GRS80")
+    x0, y0, z0 = to_cart.transform([0.0], [0.0], [0.0])
+    lo, la, hh, _ = tr.transform([0.0], [0.0], [0.0], [2015.0])
+    x1, y1, z1 = to_cart.transform(lo, la, hh)
+    assert abs((y1[0] - y0[0]) - (-0.0009)) < 2e-4 and abs((z1[0] - z0[0]) - 0.0014) < 2e-4
+    assert abs((x1[0] - x0[0]) - (-0.0014 - 0.42e-9 * 6378137.0)) < 2e-4
+
 def test_slope_fit():
     rng = np.random.default_rng(0)
     x, y = rng.uniform(-1000, 1000, 500), rng.uniform(-1000, 1000, 500)
