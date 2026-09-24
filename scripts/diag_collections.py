@@ -17,14 +17,18 @@ import sys
 import time
 import traceback
 
-from aicesat import cache, regions
+from aicesat import cache, coverage
 
-# collection -> (module name, extract window, the module attr holding its index-coverage predicate)
-LEGS = (
-    ("GLAS",   "glas",   "DEFAULT_GLAS_WINDOW"),
-    ("ICESSN", "icessn", "DEFAULT_ICESSN_WINDOW"),
-    ("ATL06",  "atl06",  "DEFAULT_ATL06_WINDOW"),
-)
+
+def _legs():
+    """(collection, extract module, default window) for every registered collection whose extract gates on its own
+    index (_index_covers). ATL03 is gated by the planner instead, so it is not a leg here."""
+    out = []
+    for c in coverage.collections():
+        mod = __import__(f"aicesat.{c['key'].lower()}", fromlist=["x"])
+        if hasattr(mod, "_index_covers"):
+            out.append((c["key"], mod, tuple(c["window"])))
+    return out
 
 
 def _index_report(mod, name):
@@ -32,10 +36,7 @@ def _index_report(mod, name):
     the slow CMR + whole-granule fallback, which fails in completely different ways."""
     import json
     try:
-        idx = {"GLAS": "index_glas", "ICESSN": "index_icessn", "ATL06": "index_atl06"}[name]
-        m = __import__(f"aicesat.{idx}", fromlist=["x"])
-        res = getattr(m, {"GLAS": "GLAS_RES", "ICESSN": "ICESSN_RES", "ATL06": "ATL06_RES"}[name])
-        d = m._index_dir(res)
+        d, res, _ym = coverage._index_for(name)
         n = len(list(d.glob("*.parquet"))) if d.exists() else 0
         mf = d / "_build.json"
         built = json.loads(mf.read_text()) if mf.exists() else None
@@ -61,10 +62,8 @@ def main() -> None:
     else:
         raise SystemExit("give W S E N, or --scene <id>")
 
-    for name, modname, winattr in LEGS:
+    for name, mod, window in _legs():
         print("\n" + "=" * 100)
-        mod = __import__(f"aicesat.{modname}", fromlist=["x"])
-        window = getattr(regions, winattr)
         d, res, nfiles, built = _index_report(mod, name)
         covers = mod._index_covers(bbox)
         print(f"{name}: window={window}")
@@ -82,7 +81,7 @@ def main() -> None:
             # IceBridge flight lines both over-report in CMR, and the scene point-filters. Cell counts settle it.
             if arr["lon"].size:
                 from aicesat import planner
-                res_of = {"GLAS": 5, "ICESSN": 5, "ATL06": 5}[name]
+                res_of = coverage._index_for(name)[1]
                 cells = planner._cells_vectorized(arr["lat"], arr["lon"], res_of)
                 fine = planner._cells_vectorized(arr["lat"], arr["lon"], 9)
                 print(f"  spread         {len(set(cells.tolist())):,} cells at res {res_of}, "

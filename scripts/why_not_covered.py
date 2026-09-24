@@ -78,14 +78,10 @@ def main() -> int:
     a = ap.parse_args()
     bbox = tuple(a.bbox)
 
-    from aicesat import index_atl06, index_glas, index_icessn
+    from aicesat import coverage
 
     print(f"selection: {bbox}")
-    results = {
-        "ATL06": report("ATL06", index_atl06._index_dir(index_atl06.ATL06_RES), bbox),
-        "GLAS": report("GLAS", index_glas._index_dir(index_glas.GLAS_RES), bbox),
-        "ICESSN": report("ICESSN", index_icessn._index_dir(index_icessn.ICESSN_RES), bbox),
-    }
+    results = {c["key"]: report(c["key"], coverage._index_for(c["key"])[0], bbox) for c in coverage.collections()}
     good = [k for k, v in results.items() if v]
     print("\n" + "=" * 70)
     if good:

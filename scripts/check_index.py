@@ -26,20 +26,13 @@ import sys
 
 import pyarrow.parquet as pq
 
-from aicesat import index, index_atl06, index_glas, index_icessn
+from aicesat import coverage, index
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 
-# (label, dir, current version, the schema-metadata key that stamps it)
-COLLECTIONS = (
-    ("ATL03", index.ATL03_INDEX_DIR, index.INDEX_SCHEMA_VERSION, b"aicesat_index_version"),
-    ("ATL06", index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_INDEX_VERSION,
-     b"aicesat_atl06_index_version"),
-    ("GLAS", index_glas._index_dir(index_glas.GLAS_RES), index_glas.GLAS_INDEX_VERSION,
-     b"aicesat_glas_index_version"),
-    ("ICESSN", index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_INDEX_VERSION,
-     b"aicesat_icessn_index_version"),
-)
+# (label, dir, current version, the schema-metadata key that stamps it), for every registered collection
+COLLECTIONS = tuple((c["key"], coverage._index_for(c["key"])[0], *coverage.index_version(c["key"]))
+                    for c in coverage.collections())
 
 
 def survey(d, version: str, key: bytes) -> dict:

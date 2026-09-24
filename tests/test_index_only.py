@@ -7,6 +7,7 @@ different datasets depending on which path happened to run, and they hid an unbu
 
 An unindexed area is now an explicit error telling you to build the index.
 """
+import importlib
 import pathlib
 import re
 
@@ -15,6 +16,12 @@ import pytest
 from aicesat import atl06, cache, coverage, glas, icessn, index, planner, regions
 
 UNINDEXED = (-100.0, -70.0, -99.0, -69.0)      # nothing is ever indexed here
+
+# Every registered collection's extract module, so a new collection is held to these rules without being listed.
+EXTRACTS = [pytest.param(importlib.import_module(f"aicesat.{c['key'].lower()}"), tuple(c["window"]), id=c["key"])
+            for c in coverage.collections()]
+# ATL03 is gated by the planner rather than by its own extract (test_planner_refuses_an_unindexed_area).
+INDEX_GATED = [p for p in EXTRACTS if p.id != "ATL03"]
 
 
 @pytest.fixture(autouse=True)
@@ -25,11 +32,7 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(coverage, "search", _boom)
 
 
-@pytest.mark.parametrize("mod, window", [
-    (glas, regions.DEFAULT_GLAS_WINDOW),
-    (icessn, regions.DEFAULT_ICESSN_WINDOW),
-    (atl06, regions.DEFAULT_ATL06_WINDOW),
-])
+@pytest.mark.parametrize("mod, window", INDEX_GATED)
 def test_extract_refuses_an_unindexed_area(mod, window, tmp_path, monkeypatch):
     monkeypatch.setattr(mod.cache, "CACHE_DIR", tmp_path / "c")
     with pytest.raises(RuntimeError, match="index"):
@@ -96,8 +99,8 @@ def test_no_dead_atl03_extraction_path():
     assert "max_photons" not in inspect.signature(atl03.extract).parameters
 
 
-@pytest.mark.parametrize("mod", [glas, icessn, atl06])
-def test_extract_takes_no_granule_cap(mod):
+@pytest.mark.parametrize("mod, window", EXTRACTS)
+def test_extract_takes_no_granule_cap(mod, window):
     import inspect
     assert "max_granules" not in inspect.signature(mod.extract).parameters
 
