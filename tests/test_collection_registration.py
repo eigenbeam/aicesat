@@ -69,8 +69,7 @@ def test_collection_has_a_default_window_that_matches_its_epoch(c):
     start, end = c["window"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", end)
     assert start < end
-    epoch_year = c["epoch"][:4]
-    assert start[:4] <= epoch_year or epoch_year <= start[:4], c["epoch"]
+    assert start[:4] == c["epoch"][:4], f"{c['key']}: window starts {start}, epoch says {c['epoch']}"
 
 
 @pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
