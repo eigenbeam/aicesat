@@ -319,6 +319,15 @@ COVERAGE_RES = 9   # the resolution a build CLAIMS at. Addressing stays coarse (
 # collapses to a handful of parents: a 3,930-cell corridor stores as 1,188.
 
 
+def _compact(cells) -> list[str]:
+    """Compact a mixed-resolution cell set per resolution, WITHOUT uncompacting first: a coarse claim would explode
+    into millions of ids, and cells_within matches by ancestry, so a mixed set is answered correctly as it stands."""
+    by_res: dict[int, set] = {}
+    for c in cells:
+        by_res.setdefault(h3.get_resolution(c), set()).add(c)
+    return sorted(c for _r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
+
+
 def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granules: int | None = None,
                          cells=None, coverage_res: int = COVERAGE_RES) -> dict:
     """Record WHICH GROUND an index was built over, as a compacted H3 cell set at `coverage_res`.
@@ -326,7 +335,13 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
     `cells` are the fine (claim-resolution) cells the build searched and indexed. Sets from repeated builds are
     UNIONED: indexing a neighbouring region adds ground, never retracts it. `bbox` is provenance only — nothing
     reads it for coverage.
+
+    `n_granules == 0` claims nothing. An empty CMR search is not evidence of empty ground — a filter or `version=`
+    mismatch returns zero just as quietly as ground no pass ever crossed — and a claim over it made the area read as
+    indexed, so a scene there reported "no data" instead of "the search found nothing". The search is recorded under
+    `empty_searches` instead, which coverage_gap and check_coverage report, and the claim is left as it was.
     """
+    import datetime
     import json
 
     d = pathlib.Path(d)
@@ -339,13 +354,19 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
             have = {h3.int_to_str(int(c)) for c in (prev.get("cells") or [])}
         except Exception:
             log.warning("unreadable %s; replacing", mf)
-    # Union WITHOUT uncompacting: a coarse claim would explode into millions of ids, and covers_cells matches by
-    # ancestry, so a set holding mixed resolutions is answered correctly as it stands.
     new = {h3.int_to_str(int(c)) if not isinstance(c, str) else c for c in (cells or [])}
-    by_res: dict[int, set] = {}
-    for c in have | new:
-        by_res.setdefault(h3.get_resolution(c), set()).add(c)
-    packed = sorted(c for r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
+    if n_granules == 0:
+        rec = {"cells": [h3.str_to_int(c) for c in _compact(new)], "coverage_res": coverage_res,
+               "window": list(window) if window else None, "requested": list(bbox) if bbox is not None else None,
+               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        prev["empty_searches"] = list(prev.get("empty_searches") or []) + [rec]
+        prev.setdefault("cells", [])
+        mf.write_text(json.dumps(prev))
+        log.warning("%s: the granule search returned nothing over %s; recorded the search, claimed no coverage. "
+                    "Expected where the instrument never passed; otherwise check the product version and re-run.",
+                    d.name, list(bbox) if bbox is not None else "the requested area")
+        return prev
+    packed = _compact(have | new)
     bounds = None
     if packed:
         bs = [h3.cell_to_boundary(c) for c in packed]
@@ -356,8 +377,27 @@ def write_build_manifest(d, bbox, res: int | None = None, window=None, n_granule
            "window": list(window) if window else prev.get("window"),
            "target": n_granules if n_granules is not None else prev.get("target"),
            "requested": (list(prev.get("requested") or []) + [list(bbox)]) if bbox is not None else prev.get("requested")}
+    if prev.get("empty_searches"):
+        doc["empty_searches"] = prev["empty_searches"]      # history; only consulted where the claim does not reach
     mf.write_text(json.dumps(doc))
     return doc
+
+
+def empty_search_covering(d, cells) -> dict | None:
+    """The most recent recorded empty search whose ground contains every one of `cells`, or None."""
+    import json
+
+    mf = pathlib.Path(d) / "_build.json"
+    if not mf.exists():
+        return None
+    try:
+        recs = json.loads(mf.read_text()).get("empty_searches") or []
+    except Exception:
+        return None
+    for rec in reversed(recs):
+        if cells_within({h3.int_to_str(int(c)) for c in rec.get("cells") or []}, cells):
+            return rec
+    return None
 
 
 def invalidate_claim(d, reason: str) -> None:
