@@ -82,6 +82,16 @@ def test_collection_is_offered_by_the_explore_panel(c):
     assert f"'{c['flag']}'" in m.group(1), f"{c['key']}: explore.js does not map it to {c['flag']!r}"
 
 
+@pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
+def test_build_progress_reads_the_plan_for_every_collection(c):
+    """hasPlan decides whether the build card trusts the submitted plan or falls back to sniffing log lines. A
+    collection its list leaves out makes a build of only that collection take the log-sniffing path."""
+    src = (UI / "explore.js").read_text()
+    m = re.search(r"const hasPlan = ([^;]*);", src)
+    assert m, "explore.js no longer has a hasPlan expression; this test needs updating"
+    assert "flagOf" in m.group(1) or f"'{c['flag']}'" in m.group(1), f"{c['key']}: absent from explore.js hasPlan"
+
+
 def test_the_footprint_gate_actually_excludes_somewhere():
     """A sanity check on the mechanism itself: GEDI flies on the ISS (51.6 deg), so it must be refused over an ice
     sheet, and ICESSN only ever flew the poles, so it must be refused over Nepal."""

@@ -154,7 +154,7 @@ AICESAT.ExploreView = class {
     const log = j.log || [];
     const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
     const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi'};
-    const hasPlan = plan && ['with_glas', 'with_icessn', 'with_atl06', 'with_atl03'].some(f => plan[f] !== undefined);
+    const hasPlan = plan && Object.values(flagOf).some(f => plan[f] !== undefined);
     const wanted = k => {
       if (k === 'surface' || k === 'imagery') return true;
       if (k === 'coreg') return plan.with_coreg || log.some(l => /co-registration/i.test(l));
