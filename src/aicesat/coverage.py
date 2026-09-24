@@ -129,6 +129,10 @@ def search(short_name: str, version: str, bbox, window, use_cache: bool = True, 
                         short_name, version, len(granules))
     log.info("%s v%s: %d granules over %s %s", short_name, version, len(granules),
              f"a {len(polygon)}-vertex polygon" if polygon else bbox, window)
+    if not granules:
+        # Not cached: an empty answer is the one a re-run should re-ask, not repeat for 24 h. It may be a real
+        # absence or a search that quietly matched nothing (write_build_manifest records it either way).
+        return granules
     try:
         cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path.write_bytes(pickle.dumps(granules))
@@ -398,6 +402,26 @@ def index_covers_area(d, bbox, polygon=None) -> bool:
     return atl03_index.covers_cells(d, planner.coverage_cells(bbox, polygon, res=res))
 
 
+def searched_empty(d, bbox, polygon=None) -> dict | None:
+    """{at, window} of the recorded empty search covering this selection, or None. Reads the manifest first and only
+    polyfills when it holds an empty search, so the common case costs one small JSON read."""
+    import json
+
+    from . import index as atl03_index
+    from . import planner
+
+    mf = d / "_build.json"
+    try:
+        recs = json.loads(mf.read_text()).get("empty_searches") if mf.exists() else None
+    except Exception:
+        return None
+    if not recs:
+        return None
+    res = recs[-1].get("coverage_res") or atl03_index.COVERAGE_RES
+    rec = atl03_index.empty_search_covering(d, planner.coverage_cells(bbox, polygon, res=res))
+    return {"at": rec.get("at"), "window": rec.get("window")} if rec else None
+
+
 def coverage_gap(d, bbox, polygon=None) -> str | None:
     """WHY index_covers_area refuses this selection, as one line for an error message. None when it is covered.
 
@@ -430,6 +454,17 @@ def coverage_gap(d, bbox, polygon=None) -> str | None:
         return f"_build.json is unreadable ({type(e).__name__}) — re-run the build{tail}"
 
     b, res = doc.get("bounds"), doc.get("coverage_res") or atl03_index.COVERAGE_RES
+    if doc.get("empty_searches"):
+        # Checked before the extent test: an area whose last build found no granules is most usefully told THAT,
+        # whether or not a claim exists elsewhere. Rare, so the polyfill here costs nothing in the common case.
+        want = planner.coverage_cells(bbox, polygon, res=res)
+        rec = None if atl03_index.covers_cells(d, want) else atl03_index.empty_search_covering(d, want)
+        if rec:
+            win = f" for {rec['window'][0]}..{rec['window'][1]}" if rec.get("window") else ""
+            return (f"the last build here ({str(rec.get('at', ''))[:10]}) found no granules in NASA's catalog{win}, "
+                    f"so it claimed no coverage. That is expected where the instrument never passed over this "
+                    f"ground; if it should have data, check the product version the build searched for and re-run "
+                    f"the build{tail}")
     w, s, e, n = bbox
     if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
         over = ", ".join(f"{side} by {abs(v):.3f}deg" for side, v in
@@ -492,7 +527,11 @@ def check_coverage(bbox, **_ignored) -> dict:
     view is right that cells are indexed there, AND a build will still refuse. Reporting only the containment (the
     old behaviour) claimed "not indexed" over hundreds of genuinely indexed cells.
 
-    Returns {bbox, collections:[{key,label,product,version,epoch,window,n_granules,indexed,covered,cells,by_month}]}."""
+    A third fact, `searched_empty` ({at, window} or None): the last build over this area found no granules at all,
+    so it claimed nothing. Without it that area reads as merely "not indexed", and re-building finds nothing again.
+
+    Returns {bbox, collections:[{key,label,product,version,epoch,window,n_granules,indexed,covered,cells,by_month,
+    searched_empty}]}."""
     import duckdb
 
     from . import planner
@@ -500,6 +539,7 @@ def check_coverage(bbox, **_ignored) -> dict:
     for c in collections():
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         row["possible"] = collection_can_cover(c["key"], bbox)
+        row["searched_empty"] = None   # {at, window} when the last build here found no granules (see write_build_manifest)
         if not row["possible"]:
             # No index question to ask: this instrument never flew here. Say so instead of reporting "not indexed",
             # which invites the user to go build an index that would find nothing.
@@ -508,6 +548,8 @@ def check_coverage(bbox, **_ignored) -> dict:
             continue
         d, res, ym = _index_for(c["key"])
         covered = bool(d is not None and d.exists() and index_covers_area(d, bbox))
+        if d is not None and d.exists() and not covered:
+            row["searched_empty"] = searched_empty(d, bbox)
         if d is None or not d.exists():
             row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)

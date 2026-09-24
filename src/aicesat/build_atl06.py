@@ -78,8 +78,10 @@ def build_bbox(bbox, res: int = index_atl06.ATL06_RES, workers: int = 8, window=
     ok = err = rows = 0
     timed_out = False
     if not todo:
-        index_mod_.write_build_manifest(d, bbox, res, window, len(names), cells=fine)   # already complete: claim it
-        log.info("nothing to do -- index complete")
+        # already complete: claim it. write_build_manifest claims nothing when the search itself came back empty.
+        index_mod_.write_build_manifest(d, bbox, res, window, len(names), cells=fine)
+        if names:
+            log.info("nothing to do -- index complete")
     else:
         # A wall-clock budget for the run. Without one a single stalled remote read wedges the whole build: an
         # ATL06 rebuild sat at 185/207 for 101 minutes with no output and had to be killed. map()'s timeout is
@@ -109,5 +111,5 @@ def build_bbox(bbox, res: int = index_atl06.ATL06_RES, workers: int = 8, window=
     # small manifest instead of every granule parquet, and no user request is billed for the re-read.
     rollup = coverage.build_manifest("ATL06")
     return {**plan, "ok": ok, "err": err, "rows": rows, "timed_out": timed_out,
-            "claimed": not todo or (err == 0 and ok == len(todo)),
+            "claimed": bool(names) and (not todo or (err == 0 and ok == len(todo))),
             "seconds": round(time.time() - t0, 1), "rollup": rollup}

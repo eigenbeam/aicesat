@@ -65,8 +65,9 @@ def main():
     # here (which this did) meant an interrupted build left a claim covering granules it never got to, so coverage
     # reported the whole region indexed and scenes over the unbuilt part came back quietly short.
     if not todo:
-        index.write_build_manifest(md, bbox, res, None, len(names), cells=fine)   # already complete: claim it
-        log.info("nothing to do — index complete")
+        index.write_build_manifest(md, bbox, res, None, len(names), cells=fine)   # already complete: claim it (not if the search was empty)
+        if names:
+            log.info("nothing to do — index complete")
         log.info("coverage rollup: %s", coverage.build_manifest("GLAS"))
         return
 

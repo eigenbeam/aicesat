@@ -68,8 +68,9 @@ def build_bbox(bbox, res: int = index_gedi.GEDI_RES, workers: int = 8, window=No
     ok = err = rows = 0
     timed_out = False
     if not todo:
-        index_mod_.write_build_manifest(d, bbox, res, window, len(names), cells=fine)
-        log.info("nothing to do -- index complete")
+        index_mod_.write_build_manifest(d, bbox, res, window, len(names), cells=fine)   # claims nothing if the search was empty
+        if names:
+            log.info("nothing to do -- index complete")
     else:
         budget = PER_GRANULE_TIMEOUT_S * (len(todo) / max(1, workers) + 2)
         with cf.ProcessPoolExecutor(max_workers=workers) as ex:
@@ -93,5 +94,5 @@ def build_bbox(bbox, res: int = index_gedi.GEDI_RES, workers: int = 8, window=No
                         len(todo) - ok, len(todo))
     rollup = coverage.build_manifest("GEDI")
     return {**plan, "ok": ok, "err": err, "rows": rows, "timed_out": timed_out,
-            "claimed": not todo or (err == 0 and ok == len(todo)),
+            "claimed": bool(names) and (not todo or (err == 0 and ok == len(todo))),
             "seconds": round(time.time() - t0, 1), "rollup": rollup}
