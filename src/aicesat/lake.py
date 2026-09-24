@@ -102,8 +102,7 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
 
 def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: int,
                  extras: tuple[str, ...], only_cells) -> dict[int, "pa.Table"]:
-    """One chunk's points split into {cell: Arrow table}. Shared by the per-chunk and per-granule write paths so both
-    produce byte-identical column layouts."""
+    """One chunk's points split into {cell: Arrow table}, one table per H3 cell the chunk touches."""
     from . import planner
 
     lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8")
