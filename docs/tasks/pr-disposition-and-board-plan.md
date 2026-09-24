@@ -1,8 +1,22 @@
 # Task: carry PRs #15 and #18 forward onto main, and reconcile the board with the code
 
-**Status:** assessed 2026-09-10, re-verified 2026-09-17 and 2026-09-24 (main unmoved at `99782a7`,
-both PRs open with no new activity). One decision made, three open. No code changed, no PR comments
-posted.
+**Status (2026-09-24): resolved into tickets.** Assessed 2026-09-10, re-verified 2026-09-17. On
+2026-09-24 every remaining part of both PRs became a ticket, the comments to Ben were posted on #15 and
+#18, and the board was triaged. See "Where it landed" below. #18 closes once Ben has seen its comment;
+#15 closes when the port (#40) merges. The analysis below is kept as the record of why.
+
+## Where it landed (2026-09-24)
+
+| From | Now |
+|---|---|
+| PR #18 Part 1, native slopes | #35 (`slope_deg_median`, co-authored), #36 (ATL06 `fit_statistics` chunk-layout spike), #19 (ATL06 slopes + ribbons), #38 (ICESSN σ) |
+| PR #18 Part 2, six beams | already on main; the yaw-flip "unknown" label is #28 |
+| PR #18 Part 3, ITRF | #8 (frame generalisation, per-row `itrf_year`, loud failure, plate-motion constants pinned to PROJ) |
+| PR #15, GPS traverse | #40 (port onto the index contract, Ben as co-author), after #30, #34 and #8's frame work |
+| #14 (Ben) | epic; children #27 (time-series plane conditioning) and #37 (coreg across-track offset) |
+| The estimator finding below | #27 |
+| Registration surface below | #34; the `hasPlan` and `logbuf` gaps were fixed in #29 |
+| Board reconciliation below | done: #1–#5, #22, #24, #25 closed; #6, #7, #11 closed with reasons; #9, #10, #12, #13, #19, #20, #23 rewritten |
 
 Baseline: `uv run pytest` → **547 passed, 1 skipped**. Run it with the sandbox disabled; the
 sandbox blocks server binds and produces 9 spurious failures + 4 errors.
@@ -272,23 +286,15 @@ before the next collection lands, whoever does the port.
 
 ---
 
-## Open decisions
+## Decisions (resolved 2026-09-24 unless marked open)
 
-1. **PR #15.** Every option keeps Ben's parser and findings intact: ask Ben whether he would like to
-   port it onto main's index contract himself; port it in-house with Ben as co-author (keep
-   `gpstruth.py` verbatim, write `index_gpstruth`, rewrite `extract`, wire ~20 points — the largest
-   single piece of work here); land `summit_traverse` plus a `docs/notes/` write-up of his findings
-   now and the collection later; or hold the collection until #9 is scheduled, with the PR as the
-   reference implementation. The code question is settled; what is open is Ben's availability and
-   preference, and whether a 6th collection is wanted now.
-2. **Priority for the next block.** Science correctness (#14/#8/#12/σ) vs representational geometry
-   (#19/#20/#21) vs foundation hardening vs perf (#23/#10/#11). Less either/or than it looks — one
-   `dh_fit_dx` re-index serves #19 and #14 together.
-3. **ICESSN rebuild scope.** One small box (e.g. `egig_west_flank`) with `itrf_year` added in the
-   same pass, vs full Greenland, vs defer. Blocked on wall-clock for a Greenland ICESSN index build
-   on the target hardware, and whether it runs locally or on the box.
-4. **Does the timeseries conditioning defect jump the queue?** It is not on the board at all, and
-   its incidence on real cells is unmeasured.
+1. **PR #15:** ported in-house now (#40), with Ben as co-author on every commit.
+2. **Priority:** the #15 port's critical path first (#30 → #34 → #8's frame work → #40), then science
+   correctness (#8, #37, #27, #39, #35, #38, #28, #36).
+3. **ICESSN rebuild scope:** *still open.* It gates #8's per-row `itrf_year` column (part 2); the rest
+   of #8 is offline.
+4. **The timeseries conditioning defect:** filed as #27, in Ready. The fix comes first; measuring how
+   often it happens on real cells needs a Greenland index and is a follow-up.
 
 ---
 

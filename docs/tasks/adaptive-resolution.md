@@ -1,6 +1,7 @@
 # Task: adaptive DEM / imagery resolution as the camera zooms
 
-**Status:** scoped, not started (2026-09-09). Depends on the footprint change below, which is written but uncommitted.
+**Status:** scoped, not started (2026-09-09). Its prerequisite, the footprint change below, landed the same day in
+`ca641c3`; phasing step 1 is done.
 
 ## Why
 
@@ -171,7 +172,7 @@ action with a progress bar, not a camera response — 274 s cannot hide behind a
 4. Client: `onViewStateChange` → node selection → detail layer. This is where the seam risk shows up.
 5. Decide on `MAX_CELLS` once real node sizes exist, not before.
 
-## Prerequisite, already written but uncommitted
+## Prerequisite (landed in `ca641c3`)
 
 `scene.data_extent(frame, polygon, res=5)` computes the local extent of the res-5 cells a query actually reads, and
 `add_imagery` / `set_surface` now call it instead of `bbox_extent`. Effect on scene `0941a429aa`: footprint

@@ -1,8 +1,20 @@
 """Offline unit tests for the GLAS + ICESSN sub-granule indexers (pure logic; end-to-end byte-identity is validated
 against live NASA data separately)."""
 import numpy as np
+import pytest
 
 from aicesat import index_glas, index_icessn, api
+
+
+def test_icessn_granule_date_comes_from_the_name():
+    assert index_icessn._granule_date("ILATM2_20110412_142002.atm4cT3.csv") == "20110412"
+
+
+def test_icessn_granule_name_without_a_date_fails_loudly():
+    """The date gates every window query (gdate BETWEEN ...). A name the pattern does not match used to become
+    gdate "00000000", so the granule was indexed and then silently never returned for any window."""
+    with pytest.raises(ValueError, match="no 8-digit date"):
+        index_icessn._granule_date("BLATM2_930623_142002.csv")
 
 
 # ---- ICESSN line-offset index: span union + CSV field parsing --------------------------------------------------

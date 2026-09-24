@@ -69,8 +69,7 @@ def test_collection_has_a_default_window_that_matches_its_epoch(c):
     start, end = c["window"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", end)
     assert start < end
-    epoch_year = c["epoch"][:4]
-    assert start[:4] <= epoch_year or epoch_year <= start[:4], c["epoch"]
+    assert start[:4] == c["epoch"][:4], f"{c['key']}: window starts {start}, epoch says {c['epoch']}"
 
 
 @pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
@@ -81,6 +80,23 @@ def test_collection_is_offered_by_the_explore_panel(c):
     assert m, "explore.js no longer has a flagOf map; this test needs updating"
     assert f"{c['key']}:" in m.group(1), f"{c['key']}: absent from explore.js flagOf"
     assert f"'{c['flag']}'" in m.group(1), f"{c['key']}: explore.js does not map it to {c['flag']!r}"
+
+
+@pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
+def test_build_progress_reads_the_plan_for_every_collection(c):
+    """hasPlan decides whether the build card trusts the submitted plan or falls back to sniffing log lines. A
+    collection its list leaves out makes a build of only that collection take the log-sniffing path."""
+    src = (UI / "explore.js").read_text()
+    m = re.search(r"const hasPlan = ([^;]*);", src)
+    assert m, "explore.js no longer has a hasPlan expression; this test needs updating"
+    assert "flagOf" in m.group(1) or f"'{c['flag']}'" in m.group(1), f"{c['key']}: absent from explore.js hasPlan"
+
+
+@pytest.mark.parametrize("c", COLLECTIONS, ids=KEYS)
+def test_collection_logs_reach_the_lake_activity_log(c):
+    """The Lake page's running log only captures the loggers logbuf lists by name."""
+    from aicesat import logbuf
+    assert f"aicesat.{c['key'].lower()}" in logbuf._LOGGERS, f"{c['key']}: its logger is not in logbuf._LOGGERS"
 
 
 def test_the_footprint_gate_actually_excludes_somewhere():

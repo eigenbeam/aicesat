@@ -9447,9 +9447,9 @@ window.__extApps={getDocumentTheme:CN,applyHostStyleVariables:yN,applyHostFonts:
     plate: 'Plate motion: the tectonic plate drifts between the mission dates; removing it keeps that drift from looking like elevation change.',
     gia: 'GIA (glacial isostatic adjustment): slow vertical bedrock rebound after past ice loss; removing it separates ice-surface change from ground motion.',
     dh: 'The height difference at the same spot, here ICESat-2 minus ICESat-1. Negative means ICESat-2 is lower (surface lowering).',
-    granules: 'Granules are the data files a mission publishes over an area and time span; max granules caps how many the build fetches.',
-    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), and ICESat-2 (ATL03 photons / ATL06 land ice).',
-    coverage: 'Asks the NASA catalog how many granules of each mission exist over your area, before you fetch anything.',
+    granules: 'Granules are the data files a mission publishes over an area and time span. A build reads only the parts of each granule that cover your area.',
+    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), and GEDI (L2A).',
+    coverage: 'Counts, from the local index, the granules of each mission that have data in your area, before anything is fetched.',
   };
   // A small "?" affordance that reveals a plain-language explanation on hover/click. Returns a DOM node to append.
   U.help = (text) => {
@@ -10263,7 +10263,7 @@ AICESAT.ExploreView = class {
     const log = j.log || [];
     const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
     const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi'};
-    const hasPlan = plan && ['with_glas', 'with_icessn', 'with_atl06', 'with_atl03'].some(f => plan[f] !== undefined);
+    const hasPlan = plan && Object.values(flagOf).some(f => plan[f] !== undefined);
     const wanted = k => {
       if (k === 'surface' || k === 'imagery') return true;
       if (k === 'coreg') return plan.with_coreg || log.some(l => /co-registration/i.test(l));
@@ -10667,7 +10667,7 @@ let curZoom = -6;
 const plateletsNear = () => PLATELET_M * PT_SCALE * Math.pow(2, curZoom) >= PX_PLATELET;
 
 let scene = null, coreg = null, bounds = null, meshOk = true;
-const adj = {plate_motion: true, gia: true};   // which corrections are applied (toggled in the controls)
+const adj = {plate_motion: true, gia: true};   // corrections the Δh readout applies: always both (db499a3 removed the toggles)
 const $ = id => root.querySelector('#' + id);
 const PAIR_RING = [220, 200, 150, 180];
 let SHOW_PAIRS = true;
@@ -10716,6 +10716,8 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
 const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
+// ATL03 photons stay points at every zoom, deliberately: each is a single detection with no footprint or slope at
+// scene scale, so a point is the honest primitive (#21). Missions whose product IS a fitted surface get facets.
 
 // --- ICESSN platelets: the ILATM2 nadir product IS a plane fit per short along-track segment, so each measurement
 // carries its own surface slope. We draw it as the geometric primitive it is — a small facet tilted to its fitted

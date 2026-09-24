@@ -78,6 +78,14 @@ def _parse_fields(ln: bytes):
     return lat, lon, elev, rms, track, sn, we
 
 
+def _granule_date(name: str) -> str:
+    """YYYYMMDD from an ILATM2/BLATM2 granule name. Raises rather than guessing: the date gates every window query."""
+    m = _NAME_RE.search(name)
+    if not m:
+        raise ValueError(f"{name}: no 8-digit date in the granule name; cannot place it in time")
+    return m.group(1)
+
+
 def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
     """Scan one ILATM2 CSV once (the only full read) into per-(cell) byte-span rows. Pass `cells` to index only the
     nadir platelets inside it (a regional index)."""
@@ -89,8 +97,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
     url = granule.data_links()[0]
     name = granule_name(granule)
     s3 = (granule.data_links(access="direct") or [""])[0]
-    m = _NAME_RE.search(name)
-    gdate = m.group(1) if m else "00000000"
+    gdate = _granule_date(name)
     t0 = time.time()
 
     data = RangeReader().read_all(access_url(url, s3))   # in-region: S3-direct whole-file GET; else cloud presign+GET
