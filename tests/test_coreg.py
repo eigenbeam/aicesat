@@ -61,6 +61,39 @@ def test_itrf2008_step_is_mm_level_and_inverted_correctly():
     assert x1[0] - x0[0] < -0.001 and y1[0] - y0[0] < -0.001 and z1[0] - z0[0] < -0.002
 
 
+
+def test_frame_pipeline_accepts_any_itrf_realization():
+    """ATM granules report ITRF05/08/14 depending on campaign, so the frame step must not be hardcoded to
+    ITRF2008. ITRF2014 is the target frame and needs no step."""
+    assert coreg._frame_pipeline("ITRF2014") is None
+    for f in ("ITRF2000", "ITRF2005", "ITRF2008"):
+        tr = coreg._frame_pipeline(f)
+        assert tr is not None
+        lon, lat, h, _ = tr.transform([-40.0], [70.0], [2600.0], [2010.0])
+        moved = coreg.horizontal_displacement_m([-40.0], [70.0], lon, lat)[0]
+        assert 0 < moved < 0.05, (f, moved)          # realizations differ at mm-cm, never metres
+
+
+def test_frame_pipeline_rejects_a_vague_frame_label():
+    """"ITRF (campaign-dependent)" must raise rather than silently transform with the wrong realization."""
+    for bad in ("ITRF (campaign-dependent)", "ITRF (mixed: ITRF2005, ITRF2008)", "", "WGS84", "ITRF08"):
+        with pytest.raises(ValueError):
+            coreg._frame_pipeline(bad)
+
+
+def test_itrf2020_comes_from_its_own_init_file_in_the_right_direction():
+    """ITRF2020 is newer than the target frame, so its step is the FORWARD <ITRF2014> entry of PROJ's ITRF2020 file
+    (T = -1.4, -0.9, +1.4 mm and D = -0.42 ppb at 2015.0), not an inverted ITRF2014-file entry. At (0 E, 0 N, 0 m)
+    ECEF x is the semi-major axis, so y and z move by the translation alone and x also by the scale (-2.7 mm)."""
+    from pyproj import Transformer
+    tr = coreg._frame_pipeline("ITRF2020")
+    to_cart = Transformer.from_pipeline("+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=cart +ellps=GRS80")
+    x0, y0, z0 = to_cart.transform([0.0], [0.0], [0.0])
+    lo, la, hh, _ = tr.transform([0.0], [0.0], [0.0], [2015.0])
+    x1, y1, z1 = to_cart.transform(lo, la, hh)
+    assert abs((y1[0] - y0[0]) - (-0.0009)) < 2e-4 and abs((z1[0] - z0[0]) - 0.0014) < 2e-4
+    assert abs((x1[0] - x0[0]) - (-0.0014 - 0.42e-9 * 6378137.0)) < 2e-4
+
 def test_slope_fit():
     rng = np.random.default_rng(0)
     x, y = rng.uniform(-1000, 1000, 500), rng.uniform(-1000, 1000, 500)
@@ -122,3 +155,36 @@ def test_ecef_roundtrip():
     x, y, z = coreg._geodetic_to_ecef(lon, lat, h)
     lo, la, hh = coreg._ecef_to_geodetic(x, y, z)
     assert np.allclose(lo, lon, atol=1e-10) and np.allclose(la, lat, atol=1e-10) and np.allclose(hh, h, atol=1e-6)
+
+
+# --- the plate-motion constants are PROJ's, not ours (#8) ---------------------------------------------------------
+def _proj_noam_rates():
+    import pathlib
+    import re
+    import pyproj
+    line = next(ln for ln in (pathlib.Path(pyproj.datadir.get_data_dir()) / "ITRF2014").read_text().splitlines()
+                if ln.startswith("<NOAM>"))
+    return {k: float(v) for k, v in re.findall(r"\+(dr[xyz])=([-\d.]+)", line)}
+
+
+def test_noam_rates_are_the_ones_proj_ships():
+    """Both propagation engines use NOAM_RATES, so the existing numpy-vs-pyproj test only proves they agree with
+    each other. This ties the constants to the ITRF2014-PMM entry PROJ itself ships."""
+    assert coreg.NOAM_RATES == _proj_noam_rates()
+
+
+def test_propagation_matches_projs_own_noam_pipeline():
+    """An independent pipeline built from PROJ's +init=ITRF2014:NOAM, not from our constants."""
+    from pyproj import Transformer
+    lon, lat, h = np.array([-40.0, -50.0]), np.array([70.0, 69.2]), np.array([2600.0, 1500.0])
+    t_obs, epoch = np.array([2011.4, 2011.4]), 2005.0
+    ref = Transformer.from_pipeline(
+        "+proj=pipeline +ellps=GRS80 +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=cart +ellps=GRS80 "
+        "+step +init=ITRF2014:NOAM +t_epoch=2011.4 "
+        "+step +inv +proj=cart +ellps=GRS80 +step +proj=unitconvert +xy_in=rad +xy_out=deg")
+    x, y, z, _ = ref.transform(lon, lat, h, np.full(2, epoch))
+    for engine in ("pyproj", "auto"):                     # "auto" is the numpy path for ITRF2014 input
+        out = coreg.propagate(lon, lat, h, t_obs, epoch, "ITRF2014", engine=engine)
+        assert coreg.horizontal_displacement_m(x, y, out[0], out[1]).max() < 1e-4, engine
+        assert np.abs(z - out[2]).max() < 1e-4, engine
+    assert coreg.horizontal_displacement_m(lon, lat, x, y).min() > 0.05   # it did move: ~13 cm over 6.4 yr
