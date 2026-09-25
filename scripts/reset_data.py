@@ -21,16 +21,11 @@ import json
 import shutil
 from pathlib import Path
 
-from aicesat import cache
+from aicesat import cache, coverage
 
 SUBDIRS = ("lake", "index", "cache", "scenes", "raw")
-# collection -> (index subdir, the build script that rebuilds it)
-INDEXES = {
-    "ATL06": ("atl06", "scripts/build_atl06_index.py"),
-    "GLAS": ("glas", "scripts/build_glas_index.py"),
-    "ICESSN": ("icessn", "scripts/build_icessn_index.py"),
-    "ATL03": ("atl03", "scripts/build_index.py"),
-}
+# collection -> (index subdir, the build script that rebuilds it), for every registered collection
+INDEXES = {c["key"]: (c["key"].lower(), coverage.build_script(c["key"])) for c in coverage.collections()}
 
 
 def _du(p: Path) -> int:

@@ -6,6 +6,7 @@ and app-visible, the MCP Apps "app adapter"). Nothing here knows which transport
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import logging
 import os
@@ -229,10 +230,10 @@ def _enforce_lake_limit(bb, poly, log_fn=lambda m: None) -> list[dict]:
     """After a build, evict LRU cells across ALL missions until the lake is under the Lake UI disk budget, protecting
     this scene's cells. The scene touches each mission at its own H3 resolution, so the protect set is the union of the
     area's cells at every resolution in play (res 6 for ATL03, res 5 for the index missions)."""
-    from . import index, index_atl06, index_glas, index_icessn, lake, planner
+    from . import coverage, lake, planner
     try:
         protect = set()
-        for res in {index.H3_RES, index_atl06.ATL06_RES, index_glas.GLAS_RES, index_icessn.ICESSN_RES}:
+        for res in {coverage._index_for(c["key"])[1] for c in coverage.collections()}:
             protect |= set(planner.cells_for_bbox(bb, res=res, polygon=poly))
         evicted = lake.enforce_global_limit(protect=protect, reason="limit (scene build)")
         if evicted:
@@ -367,7 +368,7 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
     # IceBridge flew the Arctic and Antarctic only, so asking it for Nepal produced a coverage error that read like
     # a missing index and invited a build that would find nothing. The UI disables these too; this is the guard for
     # every other caller (MCP tools, scripts, an older UI).
-    _COLL_FOR_LEG = {"GLAS": "GLAS", "ICESSN": "ICESSN", "ATL06": "ATL06", "ICESAT2": "ATL03", "GEDI": "GEDI"}
+    _COLL_FOR_LEG = {c["mission"]: c["key"] for c in coverage.collections()}
     enabled = []
     for leg in LEGS:
         if not leg[1]:
@@ -569,12 +570,15 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
                     # Every leg's own reason is already in doc["progress"][m]["note"]. Reporting them beats the
                     # old blanket "check your selection and the token", which named neither the cause nor a fix
                     # and sent at least one diagnosis toward auth when the truth was a coverage-gate refusal.
-                    order = [m for m in ("ATL06", "ICESAT2", "GLAS", "ICESSN", "GEDI") if m in leg_errors]
+                    # Preferred order first, then any mission it does not name: a mission left out of a hand-written
+                    # tuple here used to have its error dropped, and the message fell through to "not attempted".
+                    pref = ("ATL06", "ICESAT2", "GLAS", "ICESSN", "GEDI")
+                    order = sorted(leg_errors, key=lambda m: pref.index(m) if m in pref else len(pref))
                     detail = ("\n\n" + "\n\n".join(f"{m}: {leg_errors[m]}" for m in order)) if order else \
                         " No collection was even attempted — check the selection and the Earthdata token."
                     raise RuntimeError("no collection returned data over this area." + detail)
                 # streaming used arrival order; normalise the final series-dict to the canonical priority order
-                doc["series"] = {m: doc["series"][m] for m in ("GLAS", "ICESSN", "ATL06", "GEDI", "ICESAT2") if m in doc["series"]}
+                doc["series"] = {m: doc["series"][m] for m in (leg[0] for leg in LEGS) if m in doc["series"]}
                 # Disk-budget eviction is pure housekeeping — the scene is already built, saved and streaming. Run it
                 # OFF the build path (background daemon) and ONLY when this build actually materialized new chunks, so
                 # footer-scanning never delays the response and idle/cache-hit builds skip it entirely. The synchronous
@@ -616,6 +620,11 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
     return cache.load_scene(sid)
 
 
+# build_scene's own defaults for the collection flags, read once from the real function, so start_job can pass every
+# collection's flag through without listing them (and a stubbed build_scene in a test does not change them).
+_FLAG_DEFAULTS = {n: p.default for n, p in inspect.signature(build_scene).parameters.items() if n.startswith("with_")}
+
+
 def start_job(params: dict, kind: str = "scene") -> dict:
     """Run a build in a background thread; kind = 'scene' (area -> scene) or 'cells' (materialize H3 cells)."""
     jid = uuid.uuid4().hex[:8]
@@ -626,13 +635,13 @@ def start_job(params: dict, kind: str = "scene") -> dict:
     def run():
         try:
             if kind == "scene":
+                # One flag per collection, defaulting to build_scene's own default, so a new collection is passed
+                # through without being listed here.
+                flags = {c["flag"]: bool(params.get(c["flag"], _FLAG_DEFAULTS[c["flag"]])) for c in coverage.collections()}
                 doc = build_scene(params.get("bbox"), params.get("polygon"), params.get("question"),
-                                  bool(params.get("with_glas", True)), bool(params.get("with_coreg", False)),
-                                  with_atl06=bool(params.get("with_atl06", False)), with_icessn=bool(params.get("with_icessn", False)),
-                                  with_gedi=bool(params.get("with_gedi", False)),
-                                  with_atl03=bool(params.get("with_atl03", False)),
+                                  with_coreg=bool(params.get("with_coreg", False)),
                                   with_imagery=bool(params.get("with_imagery", True)), imagery_source=params.get("imagery_source"),
-                                  log_fn=lambda m: job["log"].append(m), scene_id=sid)
+                                  log_fn=lambda m: job["log"].append(m), scene_id=sid, **flags)
                 job.update(status="done", widget_url=_widget_url(doc["scene_id"]))
             else:
                 from . import planner
@@ -704,21 +713,11 @@ def _index_lock(collection: str) -> threading.Lock:
 
 
 def _index_source(collection: str):
-    """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet."""
-    from . import index_atl06, index_glas, index_icessn
-    from . import index as atl03_index
-    if collection == "GEDI":
-        from . import index_gedi
-        return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES
-    if collection == "ATL06":
-        return index_atl06._index_dir(index_atl06.ATL06_RES), index_atl06.ATL06_RES
-    if collection in ("ICESAT2", "ATL03"):
-        return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES
-    if collection == "GLAS":
-        return index_glas._index_dir(index_glas.GLAS_RES), index_glas.GLAS_RES
-    if collection == "ICESSN":
-        return index_icessn._index_dir(index_icessn.ICESSN_RES), index_icessn.ICESSN_RES
-    return None, None
+    """(index_dir, res) for a collection's sub-granule H3 index, or (None, None) if it has none yet. Accepts the
+    mission name ICESAT2 for ATL03. One switch, coverage._index_for, rather than a second copy of it."""
+    from . import coverage
+    d, res, _ym = coverage._index_for("ATL03" if collection == "ICESAT2" else collection)
+    return d, res
 
 
 def index_status(collection: str = "ATL06") -> dict:

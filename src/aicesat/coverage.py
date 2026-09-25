@@ -164,6 +164,28 @@ def collections() -> list[dict]:
     ]
 
 
+# Naming convention for a collection's index, so scripts and tests can iterate collections() instead of keeping their
+# own lists (a hand-written list is where a new collection goes missing -- GEDI did, from eight of them). Every
+# collection follows it except ATL03, whose index predates the convention and lives in aicesat.index.
+def index_module(key: str):
+    """The module that builds and reads a collection's sub-granule index."""
+    import importlib
+    return importlib.import_module("aicesat.index" if key == "ATL03" else f"aicesat.index_{key.lower()}")
+
+
+def index_version(key: str) -> tuple[str, bytes]:
+    """(current schema version, the Parquet schema-metadata key it is stamped under) for a collection's index."""
+    m = index_module(key)
+    if key == "ATL03":
+        return m.INDEX_SCHEMA_VERSION, b"aicesat_index_version"
+    return getattr(m, f"{key}_INDEX_VERSION"), f"aicesat_{key.lower()}_index_version".encode()
+
+
+def build_script(key: str) -> str:
+    """The script (relative to the repo root) that builds a collection's index."""
+    return "scripts/build_index.py" if key == "ATL03" else f"scripts/build_{key.lower()}_index.py"
+
+
 def _index_for(key: str):
     """(index_dir, h3_res, SQL 'YYYY-MM' expr) for a collection's sub-granule index, or (None, None, None)."""
     from . import index_atl06, index_glas, index_icessn
