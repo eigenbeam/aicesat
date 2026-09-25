@@ -134,7 +134,10 @@ def test_each_itrf_realization_is_propagated_through_its_own_frame(monkeypatch):
     for y in (2005, 2008):
         m = np.asarray(years) == y
         want = coreg.propagate(a["lon"][m], a["lat"][m], a["h"][m], yr[m], 2005.0, f"ITRF{y}")
-        assert np.allclose(rec["lon"][m], want[0], atol=1e-10) and np.allclose(rec["h"][m], want[2], atol=1e-6)
+        # rtol=0: allclose's default relative tolerance allows ~20 m in longitude and ~1.5 cm in height, far more
+        # than the mm between realizations this is checking.
+        np.testing.assert_allclose(rec["lon"][m], want[0], rtol=0, atol=1e-10)
+        np.testing.assert_allclose(rec["h"][m], want[2], rtol=0, atol=1e-6)
 
 
 def test_a_series_that_cannot_be_propagated_is_reported_not_hidden(monkeypatch):
