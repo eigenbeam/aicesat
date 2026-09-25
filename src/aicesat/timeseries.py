@@ -23,7 +23,7 @@ from .access import pool_size
 log = logging.getLogger("aicesat.timeseries")
 
 MISSION_LABEL = {"GLAS": "ICESat-1", "ICESSN": "IceBridge ATM", "ATL06": "ICESat-2 land ice",
-                 "ICESAT2": "ICESat-2 photons", "GEDI": "GEDI"}
+                 "ICESAT2": "ICESat-2 photons", "GEDI": "GEDI", "GPSTRUTH": "Summit GPS traverse"}
 _MIN_BIN_PTS = 3                # a time window needs this many points in the cell to be a usable series point
 _MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median

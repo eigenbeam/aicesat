@@ -88,7 +88,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
-const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25, GPSTRUTH: 2};   // GEDI's footprint is a real 25 m; a GPS epoch is a point
 // ATL03 photons stay points at every zoom, deliberately: each is a single detection with no footprint or slope at
 // scene scale, so a point is the honest primitive (#21). Missions whose product IS a fitted surface get facets.
 

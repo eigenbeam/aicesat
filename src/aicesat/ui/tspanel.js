@@ -10,16 +10,17 @@ window.AICESAT = window.AICESAT || {};
   // series name; ICESat-2 appears as two products (ATL03 photons + ATL06 land ice).
   const MISSIONS = {
     GLAS:    {name: 'ICESat-1 (GLAS)',          epoch: '2003–2009', gloss: 'ICESat / GLAS laser-altimeter surface heights'},
+    GPSTRUTH: {name: 'Summit GPS traverse',     epoch: '2006–',     gloss: 'IS2TGPSSS monthly kinematic-GPS surface elevations along a 15 km transect at Summit — ground truth, not altimetry'},
     ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
     GEDI:    {name: 'GEDI',                     epoch: '2019–',     gloss: 'GEDI L2A full-waveform lidar, 25 m footprints — accurate on gentle ground, slope-sensitive above ~30°'},
     ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
     ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
   };
-  const MISSION_ORDER = ['GLAS', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
+  const MISSION_ORDER = ['GLAS', 'GPSTRUTH', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
   // Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, high-contrast against the charcoal DEM.
   // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before it.
   // GLAS yellow, IceBridge vermillion, ATL06 blue — yellow/blue is the CVD-safe axis; ATL03 (rare) takes green.
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235]};
+  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,
