@@ -9448,7 +9448,7 @@ window.__extApps={getDocumentTheme:CN,applyHostStyleVariables:yN,applyHostFonts:
     gia: 'GIA (glacial isostatic adjustment): slow vertical bedrock rebound after past ice loss; removing it separates ice-surface change from ground motion.',
     dh: 'The height difference at the same spot, here ICESat-2 minus ICESat-1. Negative means ICESat-2 is lower (surface lowering).',
     granules: 'Granules are the data files a mission publishes over an area and time span. A build reads only the parts of each granule that cover your area.',
-    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), and GEDI (L2A).',
+    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), GEDI (L2A), and the Summit GPS traverse (ground truth).',
     coverage: 'Counts, from the local index, the granules of each mission that have data in your area, before anything is fetched.',
   };
   // A small "?" affordance that reveals a plain-language explanation on hover/click. Returns a DOM node to append.
@@ -10268,8 +10268,8 @@ AICESAT.ExploreView = class {
   // ---- build progress: rendered inside the building scene's card in the Scenes list (not the build panel)
   progressHTML(j, plan = {}) {
     const log = j.log || [];
-    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
-    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi'};
+    const ALL = [['GLAS', 'ICESat-1 · GLAS'], ['ICESSN', 'IceBridge · ATM'], ['ATL06', 'ICESat-2 · land ice'], ['ATL03', 'ICESat-2 · photons'], ['GEDI', 'GEDI · L2A'], ['GPSTRUTH', 'Summit GPS traverse'], ['surface', 'DEM surface'], ['imagery', 'Satellite imagery'], ['coreg', 'Co-registration']];
+    const flagOf = {GLAS: 'with_glas', ICESSN: 'with_icessn', ATL06: 'with_atl06', ATL03: 'with_atl03', GEDI: 'with_gedi', GPSTRUTH: 'with_gpstruth'};
     const hasPlan = plan && Object.values(flagOf).some(f => plan[f] !== undefined);
     const wanted = k => {
       if (k === 'surface' || k === 'imagery') return true;
@@ -10544,16 +10544,17 @@ window.AICESAT = window.AICESAT || {};
   // series name; ICESat-2 appears as two products (ATL03 photons + ATL06 land ice).
   const MISSIONS = {
     GLAS:    {name: 'ICESat-1 (GLAS)',          epoch: '2003–2009', gloss: 'ICESat / GLAS laser-altimeter surface heights'},
+    GPSTRUTH: {name: 'Summit GPS traverse',     epoch: '2006–',     gloss: 'IS2TGPSSS monthly kinematic-GPS surface elevations along a 15 km transect at Summit — ground truth, not altimetry'},
     ICESSN:  {name: 'IceBridge (ATM)',          epoch: '2009–2019', gloss: 'Operation IceBridge airborne ATM elevations (ICESSN)'},
     GEDI:    {name: 'GEDI',                     epoch: '2019–',     gloss: 'GEDI L2A full-waveform lidar, 25 m footprints — accurate on gentle ground, slope-sensitive above ~30°'},
     ICESAT2: {name: 'ICESat-2 photons (ATL03)', epoch: '2018–',     gloss: 'ICESat-2 ATL03 individual signal photons'},
     ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
   };
-  const MISSION_ORDER = ['GLAS', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
+  const MISSION_ORDER = ['GLAS', 'GPSTRUTH', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
   // Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, high-contrast against the charcoal DEM.
   // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before it.
   // GLAS yellow, IceBridge vermillion, ATL06 blue — yellow/blue is the CVD-safe axis; ATL03 (rare) takes green.
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235]};
+  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,
@@ -10722,7 +10723,7 @@ function cloudLayer(id, flat, color, size, opts = {}) {
 // Rough ground-footprint radius per mission (metres). Points are drawn in WORLD units and clamped in pixels, so at
 // scene overview they're crisp small dots (not blobs) and grow toward the true footprint as you zoom in — a physical
 // cue, not a precise footprint. The pixel floor stops them vanishing when zoomed out; the cap stops fat blobs.
-const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25};   // GEDI's footprint is a real 25 m
+const FOOTPRINT_M = {GLAS: 35, ICESSN: 12, ATL06: 16, ICESAT2: 8, GEDI: 25, GPSTRUTH: 2};   // GEDI's footprint is a real 25 m; a GPS epoch is a point
 // ATL03 photons stay points at every zoom, deliberately: each is a single detection with no footprint or slope at
 // scene scale, so a point is the honest primitive (#21). Missions whose product IS a fitted surface get facets.
 
