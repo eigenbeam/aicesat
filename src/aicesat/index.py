@@ -43,7 +43,7 @@ _NAME_RE = re.compile(r"ATL03_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5
 # granule's parquet schema-identical to a full one, which also retires the "copy the schema off a sibling file" hack
 # (which had no answer for the FIRST granule of a fresh index).
 _I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient",
-              "byte_start", "byte_end", "n_lines"}
+              "byte_start", "byte_end", "n_lines", "itrf_year"}
 _F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch", "arp_to_sled_m", "track_depth_cm"}
 
 

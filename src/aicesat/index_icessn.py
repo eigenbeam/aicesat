@@ -21,12 +21,12 @@ import pyarrow.parquet as pq
 
 from . import auth, cache
 from . import index as index_mod   # shared index-table typing
-from .icessn import MAX_RMS_CM, _NAME_RE
+from .icessn import ITRF_UNKNOWN, MAX_RMS_CM, _NAME_RE, itrf_year_from_bytes
 
 log = logging.getLogger(__name__)
 
 ICESSN_RES = 5   # match ATL06/GLAS so a query cell maps to the same index cells across missions
-ICESSN_INDEX_VERSION = "2"  # v2: cells filtered whole, not platelets clipped to a bbox
+ICESSN_INDEX_VERSION = "3"  # v3: per-granule ITRF realization (itrf_year); v2: cells filtered whole
 ICESSN_INDEX_DIR = cache.DATA_DIR / "index" / "icessn"
 
 
@@ -102,6 +102,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
 
     data = RangeReader().read_all(access_url(url, s3))   # in-region: S3-direct whole-file GET; else cloud presign+GET
     size = len(data)
+    itrf_year = itrf_year_from_bytes(data)   # the header names the realization; a byte-range fetch never sees it
 
     lats, lons, starts, ends = [], [], [], []
     pos = 0
@@ -135,8 +136,8 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
         m = np.isin(cell_a, keep_arr)
         lat_a, lon_a, st_a, en_a, cell_a = lat_a[m], lon_a[m], st_a[m], en_a[m], cell_a[m]
 
-    base = {k: [] for k in ("granule", "url", "s3url", "gdate", "h3_cell",
-                            "byte_start", "byte_end", "n_lines", "lat_min", "lat_max", "lon_min", "lon_max")}
+    base = {k: [] for k in ("granule", "url", "s3url", "gdate", "h3_cell", "byte_start", "byte_end", "n_lines",
+                            "lat_min", "lat_max", "lon_min", "lon_max", "itrf_year")}
     for c in np.unique(cell_a):
         mk = cell_a == c
         base["granule"].append(name); base["url"].append(url); base["s3url"].append(s3); base["gdate"].append(gdate)
@@ -145,6 +146,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
         base["n_lines"].append(int(mk.sum()))
         base["lat_min"].append(float(lat_a[mk].min())); base["lat_max"].append(float(lat_a[mk].max()))
         base["lon_min"].append(float(lon_a[mk].min())); base["lon_max"].append(float(lon_a[mk].max()))
+        base["itrf_year"].append(int(itrf_year))
 
     tbl = index_mod.typed_table(base)
     tbl = tbl.replace_schema_metadata({"aicesat_icessn_index_version": ICESSN_INDEX_VERSION, "h3_res": str(res),
@@ -174,7 +176,8 @@ MISSION = "ICESSN"
 BEAM = "na"          # ILATM2 has no beam; chunk_index is fixed at 0 — the cache unit is the (granule, cell) pair
 CHUNK = 0
 _EMPTY = ("lon", "lat", "h", "t")
-_DIRECT = (*_EMPTY, "sn_slope", "we_slope")   # the direct golden also carries platelet slopes, so it stays key-for-key equal to the lake path
+EXTRAS = ("sn_slope", "we_slope", "itrf_year")   # platelet plane-fit slopes; the granule's ITRF realization
+_DIRECT = (*_EMPTY, *EXTRAS)   # the direct golden carries the same extras, so it stays key-for-key equal to the lake path
 
 
 def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[dict]]:
@@ -189,7 +192,7 @@ def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[d
     if not d.exists():
         raise RuntimeError(f"no ICESSN index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
-    cols = ["granule", "url", "s3url", "gdate", "h3_cell", "byte_start", "byte_end"]
+    cols = ["granule", "url", "s3url", "gdate", "h3_cell", "byte_start", "byte_end", "itrf_year"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
     if window:
         lo, hi = window[0].replace("-", ""), window[1].replace("-", "")
@@ -201,13 +204,17 @@ def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[d
     src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
-        rows = con.execute(f"SELECT DISTINCT {', '.join(cols)} FROM {src} WHERE {where}").fetchall()
+        # An index file from before v3 has no itrf_year column, and selecting a column no file has is a binder
+        # error. Until the builder replaces those files, read their realization as unknown instead of failing.
+        have = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()}
+        sel = [c if c in have or c != "itrf_year" else f"{ITRF_UNKNOWN} AS itrf_year" for c in cols]
+        rows = con.execute(f"SELECT DISTINCT {', '.join(sel)} FROM {src} WHERE {where}").fetchall()
     finally:
         con.close()
     return want_cells, [dict(zip(cols, r)) for r in rows]
 
 
-def _parse_span_points(blobs, gdate: str, res: int) -> dict:
+def _parse_span_points(blobs, gdate: str, res: int, itrf_year: int = ITRF_UNKNOWN) -> dict:
     """Parse fetched line spans into the FULL set of usable nadir platelets (track==0, finite, RMS<50 — every filter
     except the bbox), each tagged with its own H3 cell at `res`. Returns lon/lat/h/t + cell, plus the platelet
     plane-fit slopes sn_slope/we_slope (S->N, W->E; used to render each platelet as a tilted facet)."""
@@ -230,7 +237,8 @@ def _parse_span_points(blobs, gdate: str, res: int) -> dict:
     cell = planner._cells_vectorized(lat, lon, res) if lon.size else np.array([], "u8")
     return {"lon": lon, "lat": lat, "h": np.asarray(h, "f8"),
             "t": np.asarray(t, "datetime64[ms]") if t else np.array([], "datetime64[ms]"), "cell": cell,
-            "sn_slope": np.asarray(sn, "f8"), "we_slope": np.asarray(we, "f8")}
+            "sn_slope": np.asarray(sn, "f8"), "we_slope": np.asarray(we, "f8"),
+            "itrf_year": np.full(lon.size, int(itrf_year or ITRF_UNKNOWN), "i2")}
 
 
 def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, clip_cells: bool = False,
@@ -270,7 +278,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
     _stream = (lambda r: on_granule({"granule": "lake", **r})) if on_granule is not None else None
     cached = None if force else lake.query_points(
         bbox, want_cells, MISSION, granules=names, beams=[BEAM], clip_cells=clip_cells,
-        extra_cols=("sn_slope", "we_slope"), on_batch=_stream)
+        extra_cols=EXTRAS, on_batch=_stream)
 
     # group the MISSING (granule, cell) spans by granule URL; a cached cell contributes no span (no re-fetch)
     by_url: dict[str, dict] = {}
@@ -279,7 +287,8 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         if not force and (r["granule"], BEAM, CHUNK, int(r["h3_cell"])) in have:
             n_lake += 1; continue
         u = by_url.setdefault(access_url(r["url"], r["s3url"]),
-                              {"granule": r["granule"], "gdate": r["gdate"], "cells": set(), "spans": []})
+                              {"granule": r["granule"], "gdate": r["gdate"], "itrf_year": r["itrf_year"],
+                               "cells": set(), "spans": []})
         u["cells"].add(int(r["h3_cell"])); u["spans"].append((int(r["byte_start"]), int(r["byte_end"])))
 
     reader, fresh_parts = None, []
@@ -297,12 +306,12 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
             u = by_url[url]
             merged = _merge(u["spans"])                    # union the spans so every physical line is fetched once
             blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
-            pts = _parse_span_points(blobs, u["gdate"], res)
+            pts = _parse_span_points(blobs, u["gdate"], res, u["itrf_year"])
             # mark every fetched cell (even one whose platelets all fail RMS -> no file) so it is never re-fetched
             lake.submit_writes(MISSION, res,
                                [lake.ChunkWrite(u["granule"], BEAM, CHUNK, pts, only_cells=tuple(sorted(u["cells"])),
                                                 mark_cells=tuple(sorted(u["cells"])))],
-                               want_cells, extras=("sn_slope", "we_slope"))   # platelet plane-fit orientation
+                               want_cells, extras=EXTRAS)   # platelet plane-fit orientation + ITRF realization
             lon, lat = pts["lon"], pts["lat"]
             if lon.size:                                   # exactly the platelets query_points would return for the
                 keep = np.isin(pts["cell"], np.asarray(sorted(u["cells"]), dtype="u8"))   # cells fetched here
@@ -352,7 +361,7 @@ def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]
         return {k: np.array([]) for k in _EMPTY}, {}
     by_url: dict[str, dict] = {}
     for r in rows:
-        u = by_url.setdefault(access_url(r["url"], r["s3url"]), {"gdate": r["gdate"], "spans": []})
+        u = by_url.setdefault(access_url(r["url"], r["s3url"]), {"gdate": r["gdate"], "itrf_year": r["itrf_year"], "spans": []})
         u["spans"].append((int(r["byte_start"]), int(r["byte_end"])))
     reader = RangeReader()
     reader.presign_all([u for u in by_url if not u.startswith("s3://")])
@@ -361,7 +370,7 @@ def _fetch_direct(bbox, window=None, res: int = ICESSN_RES) -> tuple[dict, dict]
         u = by_url[url]
         merged = _merge(u["spans"])
         blobs = reader.fetch(url, [(a, b - a) for a, b in merged])
-        pts = _parse_span_points(blobs, u["gdate"], res)
+        pts = _parse_span_points(blobs, u["gdate"], res, u["itrf_year"])
         m = (pts["lat"] >= s) & (pts["lat"] <= n) & (pts["lon"] >= w) & (pts["lon"] <= e) if pts["lon"].size else np.array([], bool)
         return {k: pts[k][m] for k in _DIRECT}
 
