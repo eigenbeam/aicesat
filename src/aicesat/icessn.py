@@ -22,6 +22,57 @@ log = logging.getLogger(__name__)
 
 MAX_RMS_CM = 50.0          # platelets whose plane-fit RMS exceeds 0.5 m are rough/unreliable -> drop
 _NAME_RE = re.compile(r"(?:ILATM2|BLATM2)_(\d{8})_(\d{6})")
+# "# International Terrestrial Reference Frame: ITRF05". Case varies across campaigns (2019 granules say
+# "itrf14"), and the year is written two-digit. (Ben Smith, PR #18.)
+_ITRF_RE = re.compile(r"International\s+Terrestrial\s+Reference\s+Frame\s*:\s*ITRF\s*(\d{2,4})", re.I)
+ITRF_UNKNOWN = 0           # itrf_year sentinel when the header carries no frame line
+
+
+def _itrf_year_from_lines(lines) -> int:
+    """The ITRF realization year named in the leading '#' header block, or ITRF_UNKNOWN."""
+    for line in lines:
+        if not line.startswith("#"):
+            break                                   # header is the leading '#' block only
+        m = _ITRF_RE.search(line)
+        if m:
+            y = int(m.group(1))
+            if y < 100:                             # two-digit: ITRF97 -> 1997, ITRF05 -> 2005
+                y += 1900 if y >= 80 else 2000
+            return y
+    return ITRF_UNKNOWN
+
+
+def _itrf_year(path: str) -> int:
+    """The granule's ITRF realization year from its header, or ITRF_UNKNOWN.
+
+    The frame is campaign-dependent and really does change mid-record: over the EGIG box, ILATM2 reports ITRF05
+    for 2011, ITRF08 for 2012-2016 and ITRF14 from 2017 — so this must be read per granule, not assumed.
+    """
+    try:
+        with open(path, errors="replace") as fh:
+            return _itrf_year_from_lines(fh)
+    except OSError as ex:
+        log.debug("%s: could not read header for ITRF: %s", path, ex)
+    return ITRF_UNKNOWN
+
+
+def itrf_year_from_bytes(data: bytes) -> int:
+    """_itrf_year for the file's bytes, as the index builder holds them (a whole-file GET)."""
+    return _itrf_year_from_lines(data.decode("utf-8", "replace").splitlines())
+
+
+def _frame_name(year: int) -> str:
+    return f"ITRF{year}" if year else "ITRF (unknown; granule header carried no frame)"
+
+
+def _native_frame(itrf_years) -> tuple[str, list[int]]:
+    """(native_frame label, the realizations present). One realization is named exactly, so coreg can transform it;
+    several are labelled "mixed" -- deliberately not a name the frame step accepts -- and the per-row itrf_year
+    carries them, which timeseries propagates realization by realization."""
+    ys = sorted({int(v) for v in np.asarray(itrf_years).ravel()})
+    if len(ys) == 1:
+        return _frame_name(ys[0]), ys
+    return "ITRF (mixed: " + ", ".join(_frame_name(y) for y in ys) + "; see itrf_year per row)", ys
 
 
 def _index_covers(bbox, polygon=None) -> bool:
@@ -48,9 +99,16 @@ def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) 
     arrays = {"lon": arr["lon"], "lat": arr["lat"], "h": arr["h"], "t": arr["t"]}
     if "sn_slope" in arr and "we_slope" in arr:   # platelet plane-fit slopes -> tilted-facet rendering (may be NaN for pre-slope cached cells)
         arrays["sn_slope"] = arr["sn_slope"]; arrays["we_slope"] = arr["we_slope"]
+    # Per-row ITRF realization. Cells cached before it was indexed read back NaN, which is "unknown" (0): reported
+    # as unpropagated by the time series rather than guessed.
+    itrf = np.asarray(arr.get("itrf_year", np.zeros(arrays["lon"].size)), "f8")
+    arrays["itrf_year"] = np.where(np.isfinite(itrf), itrf, ITRF_UNKNOWN).astype("i2")
+    native_frame, frame_years = _native_frame(arrays["itrf_year"])
     years = np.unique(arrays["t"].astype("datetime64[Y]")).astype(str).tolist()
     meta = {"mission": "ICESSN", "product": f"ILATM2 v{coverage.ICESSN_VERSION}", "bbox": list(bbox),
-            "window": list(window), "native_frame": "ITRF (campaign-dependent)", "height_ref": "WGS84 ellipsoid",
+            "window": list(window), "native_frame": native_frame, "native_frame_years": frame_years,
+            "native_frame_source": "granule header 'International Terrestrial Reference Frame'",
+            "height_ref": "WGS84 ellipsoid",
             "ellipsoid_correction": "none (icessn elevation native WGS84 ellipsoid)",
             "quality_filter": f"track==0 (nadir), plane-fit RMS < {MAX_RMS_CM:.0f} cm", "years": years,
             "n": int(arrays["lon"].size), "source": "sub-granule H3 index (byte-range)", "access": st,
@@ -63,7 +121,8 @@ def _extract_via_index(bbox, window, polygon, k, on_granule=None, on_plan=None) 
 def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[dict[str, np.ndarray], dict]:
     """Index-only: byte-range the indexed line spans the area's H3 cells point at. The index is a PRECONDITION, not
     an optimisation — no CMR search, no whole-file download. See scripts/build_icessn_index.py."""
-    k = cache.key("icessn", coverage.ICESSN_VERSION, bbox, window, MAX_RMS_CM, polygon)
+    from .index_icessn import ICESSN_INDEX_VERSION
+    k = cache.key("icessn", coverage.ICESSN_VERSION, bbox, window, MAX_RMS_CM, polygon, ICESSN_INDEX_VERSION)
     hit = cache.load(k)
     if hit:
         log.info("icessn cache hit %s", k)
