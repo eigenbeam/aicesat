@@ -223,6 +223,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .map-legend i { width:11px; height:11px; border-radius:3px; flex:0 0 auto; }
 .map-legend i.swf { background:var(--c); }
 .map-legend i.swo { border:2px solid var(--c); background:transparent; }
+.map-legend i.swd { border-style:dashed; }
 .hist-cap { font-size:11px; }
 
 /* Scene: elevation time-series / coincident-cell panel */
@@ -298,3 +299,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .tscell-id code { user-select: all; font-size: 11px; }
 .tsgoto { gap: 6px; margin: 4px 0; }
 .tsgoto input { flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px; }
+
+/* Explore: why Build is off, or what a build will skip, and the fit that fixes it */
+.gate { margin:4px 0 6px; color:var(--amber); line-height:1.35; }
+.gate button { margin-left:4px; }

@@ -8,7 +8,7 @@ AICESAT.MapView = class {
     const Globe = GlobeView || _GlobeView;
     this.opts = Object.assign({grid: false, gridStats: true, selectCells: false, draw: true, footprints: true}, opts);
     this.container = container;
-    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, cells: null, indexCells: null, cellStats: {},
+    this.state = {mode: 'pan', drawing: false, box: null, poly: [], polyClosed: false, cursor: null, cells: null, indexCells: null, claims: [], cellStats: {},
                   scenes: [], grid: this.opts.grid, gridRes: 3, selected: new Set(), hover: null, viewState: {longitude: -42, latitude: 66, zoom: 1.3}};
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
@@ -51,6 +51,8 @@ AICESAT.MapView = class {
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
   flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
   setGrid(on) { this.state.grid = on; this.render(); }
+  // [{outer, holes, label, color}]: where a build is accepted (the collections' index claims), drawn dashed
+  setClaims(list) { this.state.claims = list || []; this.render(); }
   setIndexCells(cells, pct, spanMax) { this.state.indexCells = cells; this.state.indexPct = pct; this.state.indexSpanMax = spanMax || 0; this.render(); }
   click(info) {
     const s = this.state;
@@ -68,6 +70,7 @@ AICESAT.MapView = class {
     let html = null;
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
+    else if (info.layer && info.layer.id === 'claims' && info.object) html = `<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
     this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
@@ -210,6 +213,12 @@ AICESAT.MapView = class {
       layers.push(new GeoJsonLayer({id: 'lake', data: s.cells, stroked: true, filled: true, getFillColor: [55, 138, 221, 40], getLineColor: [55, 138, 221, 140], lineWidthMinPixels: 1, pickable: true}));
     }
     // (sub-granule index coverage is drawn by colouring the grid itself in gridLayers — no separate layer)
+    // Index CLAIMS are a different fact from those rows: the ground a build will accept. Dashed, so they read as a
+    // boundary to draw inside, not as another scene.
+    if (s.claims.length) layers.push(new PolygonLayer({id: 'claims', data: s.claims, pickable: true, filled: true, stroked: true,
+      getPolygon: d => d.holes && d.holes.length ? [d.outer, ...d.holes] : d.outer,
+      getFillColor: d => [...d.color, 18], getLineColor: d => [...d.color, 230], lineWidthMinPixels: 1.5,
+      getDashArray: [6, 4], dashJustified: true, extensions: [new deck.PathStyleExtension({dash: true})]}));
     if (s.selected.size) layers.push(new H3HexagonLayer({id: 'selected', data: [...s.selected].map(hexagon => ({hexagon})), getHexagon: d => d.hexagon, highPrecision: true, filled: true, stroked: true,
       getFillColor: [224, 160, 48, 90], getLineColor: [224, 160, 48, 220], lineWidthMinPixels: 2}));
     if (this.opts.footprints && s.scenes.length) {

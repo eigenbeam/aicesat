@@ -19,6 +19,7 @@ dependencies = [
     "h3ronpy>=0.22.0",
     "rasterio>=1.5.1",
     "rich>=14",
+    "shapely>=2.1",
 ]
 
 [project.scripts]

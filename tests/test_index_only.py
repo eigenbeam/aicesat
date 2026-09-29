@@ -161,7 +161,7 @@ def test_planner_refuses_when_the_claim_does_not_cover_the_area(tmp_path, monkey
     bbox = (-45.5, 71.8, -45.4, 71.9)
     _claim(index.ATL03_INDEX_DIR, (-46.5, 70.8, -46.4, 70.9))     # a claim somewhere else entirely
     # Matched on the CAUSE, not on a phrase: the message is meant to be improved, the refusal is not.
-    with pytest.raises(RuntimeError, match="outside the claimed extent"):
+    with pytest.raises(RuntimeError, match="nothing is indexed here"):
         planner.ensure(bbox, regions.DEFAULT_ATL03_WINDOW)
 
 
@@ -552,11 +552,12 @@ def test_coverage_gap_names_the_four_cases(tmp_path, monkeypatch):
     (d / "_build.json").write_text("{not json")
     assert "unreadable" in coverage.coverage_gap(d, bbox)
 
-    # (2) selection outside the claimed extent — the cheap reject, before any polyfill
+    # (2) selection outside the claim — measured against the claim PIECE nearest it, in km (see
+    # tests/test_coverage_visibility.py for the overhang case)
     far = (-1.0, 1.0, -0.9, 1.1)
     index.write_build_manifest(d, far, 5, cells=planner.coverage_cells(far))
     gap = coverage.coverage_gap(d, bbox)
-    assert "outside the claimed extent" in gap and "deg" in gap
+    assert "nothing is indexed here" in gap and "km away" in gap
 
     # (4) covered -> None
     (d / "_build.json").unlink()

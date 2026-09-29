@@ -8,7 +8,8 @@ must be in the built claim. So an index that covers 95% of your area still refus
 "not indexed over <bbox> — build the index first" — reads as if nothing was built at all. The four cases:
 
   1. no _build.json          the build never stamped a claim (never ran here, or was killed before stamping)
-  2. bbox outside bounds     the claim's own extent does not contain the selection — cheap reject, before any cells
+  2. outside the index       the selection reaches past the claim piece nearest it (km per side, and the box
+                             Explore's "Fit to indexed area" would give), or overlaps no piece at all
   3. bounds ok, cells short  the extent contains it but specific cells were never built — the usual case, and the
                              one the error message hides. Reported as "missing N of M cells".
   4. covered                 this collection is fine; something else failed. Check the job log.
@@ -42,17 +43,32 @@ def report(name: str, d, bbox, polygon=None) -> bool:
         print(f"  VERDICT (1): _build.json is unreadable ({type(e).__name__}). Re-run the build script.")
         return False
 
-    b, res = doc.get("bounds"), doc.get("coverage_res") or atl03_index.COVERAGE_RES
-    print(f"  claim: bounds={b} coverage_res={res} granules={doc.get('granules')} target={doc.get('target')}")
-    w, s, e, n = bbox
-    if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
-        print(f"  VERDICT (2): the selection is NOT inside the claimed extent.")
+    from aicesat import coverage
+
+    res = doc.get("coverage_res") or atl03_index.COVERAGE_RES
+    pieces = coverage.claim_regions(d)
+    rb = lambda p: [round(v, 4) for v in p["bbox"]]
+    print(f"  claim: {len(pieces)} piece(s) {[rb(p) for p in pieces]} coverage_res={res} target={doc.get('target')}")
+    # Measured against the claim piece this selection is about, as coverage_gap does. The claim's overall extent
+    # (`bounds`) spans every build ever stamped, so with one in Nepal and one in Greenland it hides an overhang.
+    piece = coverage.claim_piece_for(pieces, bbox)
+    if piece is None:
+        print("  VERDICT (1): the claim is EMPTY — its rows were dropped (a schema change invalidates the claim).")
+        print("     Re-run the build script.")
+        return False
+    over = coverage.overhang_km(bbox, piece["bbox"])
+    if not coverage._overlap(bbox, piece["bbox"]) or over:
+        print(f"  VERDICT (2): the selection is NOT inside the indexed area.")
         print(f"     selection {list(bbox)}")
-        print(f"     claimed   {b}")
-        over = [f"{side} by {abs(v):.4f}deg" for side, v in
-                (("west", b[0] - w), ("south", b[1] - s), ("east", e - b[2]), ("north", n - b[3])) if v > 0]
-        print(f"     overshoots: {', '.join(over)}")
-        print("     Fix: rebuild the index over a bbox that CONTAINS the scene, or draw the scene inside the claim.")
+        print(f"     nearest indexed piece {rb(piece)}")
+        if not coverage._overlap(bbox, piece["bbox"]):
+            print(f"     no overlap: {coverage._km_apart(bbox, piece['bbox']):,.0f} km apart")
+        else:
+            print(f"     overshoots: {', '.join(f'{side} by {km:.2f} km' for side, km in over.items())}")
+            fit = coverage.fit_to_coverage(bbox, [name])
+            if fit["bbox"]:
+                print(f"     fitted box (what Explore's 'Fit to indexed area' gives): {fit['bbox']}")
+        print("     Fix: draw the scene inside the indexed area, or rebuild the index over a bbox that CONTAINS it.")
         return False
 
     want = planner.coverage_cells(bbox, polygon, res=res)
