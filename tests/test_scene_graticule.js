@@ -19,12 +19,11 @@ function grabLine(name) {
   const rest = src.slice(at(name));
   return rest.slice(0, rest.indexOf('\n') + 1).replace(/^const /, 'var ');
 }
+// The lon/lat <-> scene-metre helpers live in geo.js (these synthetic frames carry no CRS: its fallback path).
+global.window = global;
+require(require('path').resolve('src/aicesat/ui/geo.js'));
+var {lonLatToLocal, localToLonLat} = AICESAT.geo;
 const code = [
-  'const M_PER_DEG_LAT = 110574;',
-  grabFn('function frameCentre'),
-  grabFn('function mPerDegLon'),
-  grabFn('function localToLonLat'),
-  grabFn('function lonLatToLocal'),
   grabLine('const fmtLat ='),
   grabLine('const fmtLon ='),
   grabFn('function graticuleStep'),

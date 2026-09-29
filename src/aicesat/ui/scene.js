@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -37,9 +37,13 @@ let PT_SCALE = 1;          // user "Points ×" multiplier (scales both dots and 
 const PLATELET_M = 42;     // drawn facet side (m); ICESSN nadir platelets are ~tens of m along/across track
 const PX_PLATELET = 6;     // switch dots -> platelets once a facet spans at least this many screen px
 let curZoom = -6;
+let curView = null;        // the camera as the user left it, so "go to" can move the target without resetting the rest
 const plateletsNear = () => PLATELET_M * PT_SCALE * Math.pow(2, curZoom) >= PX_PLATELET;
 
 let scene = null, coreg = null, bounds = null, meshOk = true;
+// The scene renders in its frame's projected CRS (scene.frame_crs), shifted to origin_xy, so nothing on screen carries
+// a coordinate. geo.js converts with the same projection the server placed the points with (proj4 = pyproj).
+const {lonLatToLocal, localToLonLat, drapedZ} = AICESAT.geo;
 const adj = {plate_motion: true, gia: true};   // corrections the Δh readout applies: always both (db499a3 removed the toggles)
 const $ = id => root.querySelector('#' + id);
 const PAIR_RING = [220, 200, 150, 180];
@@ -68,6 +72,7 @@ const deckgl = new Deck({
   getTooltip: sceneTooltip,
   // track zoom for the ICESSN dots<->platelets level-of-detail; re-render only when the threshold flips (not every tick)
   onViewStateChange: ({viewState}) => {
+    curView = viewState;
     if (typeof viewState.zoom === 'number') { const was = plateletsNear(); curZoom = viewState.zoom; if (plateletsNear() !== was) render(); }
   },
   layers: [],
@@ -255,33 +260,6 @@ function surfaceLayers() {
 // ---------------------------------------------------------------- orientation cues
 function niceStep(len) { const t = len / 4, p = Math.pow(10, Math.floor(Math.log10(t))); return [1, 2, 5, 10].map(m => m * p).reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a); }
 // ---- local metres <-> lon/lat ---------------------------------------------------------------------------------
-// The scene renders in a local metric frame (aeqd centred on the bbox, or polar stereographic above 55 deg), so
-// nothing on screen carries a coordinate. These convert, using the frame's own orthonormal east/north unit
-// vectors -- the same basis plateletLayer uses -- so they hold for the rotated polar frames too. A flat-Earth
-// scaling around the bbox centre is sub-metre over a scene-sized box and is not meant for anything larger.
-const M_PER_DEG_LAT = 110574;
-function frameCentre(fr) { const b = fr.bbox; return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
-function mPerDegLon(clat) { return 111320 * Math.cos(clat * Math.PI / 180); }
-
-function localToLonLat(fr, x, y) {
-  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
-  const [clon, clat] = frameCentre(fr);
-  // SOLVE [E N][de dn]' = [x y]', do not project. E and N come from a finite difference at the bbox centre rounded
-  // to 6 decimals, so they are only APPROXIMATELY orthonormal and a dot-product inverse drifts with distance from
-  // the centre -- 0.4 m at the corner of this scene, and it grows with the box. A 2x2 solve is exact and no dearer.
-  const det = E[0] * N[1] - N[0] * E[1];
-  if (!det) return [clon, clat];                     // degenerate basis: refuse to invent a coordinate
-  const de = (N[1] * x - N[0] * y) / det, dn = (E[0] * y - E[1] * x) / det;
-  return [clon + de / mPerDegLon(clat), clat + dn / M_PER_DEG_LAT];
-}
-
-function lonLatToLocal(fr, lon, lat) {
-  const E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
-  const [clon, clat] = frameCentre(fr);
-  const de = (lon - clon) * mPerDegLon(clat), dn = (lat - clat) * M_PER_DEG_LAT;
-  return [de * E[0] + dn * N[0], de * E[1] + dn * N[1]];
-}
-
 const fmtLat = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'N' : 'S'}`;
 const fmtLon = v => `${Math.abs(v).toFixed(3)}\u00b0${v >= 0 ? 'E' : 'W'}`;
 
@@ -512,10 +490,7 @@ function hexGridLayers() {
   const base = (surfaceExtent() || {minz: 0}).minz;
   return [new deck.PolygonLayer({
     id: 'hexgrid', data: cells, pickable: true, stroked: true, filled: true, extruded: false,
-    getPolygon: d => d.ring.map(xy => {
-      const h = surfaceHeightAt(xy[0], xy[1]);
-      return [xy[0], xy[1], ((h == null || !isFinite(h) ? base : h) + GRAT_LIFT_M) * Z_EXAG];
-    }),
+    getPolygon: d => d.ring.map(xy => [xy[0], xy[1], drapedZ(surfaceHeightAt, xy[0], xy[1], base, GRAT_LIFT_M) * Z_EXAG]),
     getFillColor: d => Object.keys(d.counts).length ? [120, 225, 255, 12] : [0, 0, 0, 0],
     getLineColor: [150, 190, 230, 110], lineWidthUnits: 'pixels', getLineWidth: 1,
     updateTriggers: {getPolygon: Z_EXAG},
@@ -524,9 +499,9 @@ function hexGridLayers() {
 
 // H3 edge length per resolution comes from h3 itself, so the label cannot drift from the grid it describes.
 function hexResLabel() {
-  const e = h3.getHexagonEdgeLengthAvg ? h3.getHexagonEdgeLengthAvg(HEX_RES, 'm') : null;
+  const e = AICESAT.ts.cellEdgeM(HEX_RES);
   const el = $('hexResLbl'); if (!el) return;
-  el.textContent = 'res ' + HEX_RES + (e ? ' \u00b7 ~' + Math.round(e) + ' m' : '');
+  el.textContent = 'res ' + HEX_RES + (e ? ' \u00b7 ~' + e + ' m' : '');
 }
 
 // ---------------------------------------------------------------- hover readouts
@@ -1008,8 +983,7 @@ $('stats').addEventListener('reopen', () => updateStats());
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1;
-const H3_EDGE_M = AICESAT.ts.H3_EDGE_M;
-function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (H3_EDGE_M[r] || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
+function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (AICESAT.ts.cellEdgeM(r) || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {
   candidates = []; candSel = -1;
@@ -1017,7 +991,7 @@ function initTimeSeries() {
   const defRef = present.includes('GLAS') ? ['GLAS'] : present;   // same rule as timeseries._reference_set: earliest-epoch, single-sensor anchor
   $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '"' + (defRef.includes(m) ? ' checked' : '') + '> ' + ((MISSIONS[m] || {}).name || m) + '</label>').join('');
   $('tsRef').querySelectorAll('input').forEach(i => i.onchange = () => findCandidates());
-  tsLabels(); renderCandList(); renderConf(null); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = '';
+  tsLabels(); renderCandList(); renderConf(null); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = ''; $('tsGoto').value = '';
 }
 async function findCandidates() {
   if (!scene) return;
@@ -1038,7 +1012,11 @@ function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
 function drawChart() { AICESAT.ts.drawChart($('tsChart'), candSel < 0 ? null : candidates[candSel], colorOf, $('tsReadout')); }
 function candidateLayers() {
   if (!candidates.length) return [];
-  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], c.center[2] * Z_EXAG]), sel: i === candSel}));
+  // Draped on the terrain like the H3 grid, so the two line up. They used to sit at the cell's reference-plane
+  // height (the GLAS-era surface: 40-70 m above today's ice on a thinning glacier), and perspective then shifted and
+  // enlarged them against the grid. The plane height stays the fallback over a DEM hole.
+  const onGround = (x, y, c) => drapedZ(surfaceHeightAt, x, y, c.center[2], GRAT_LIFT_M) * Z_EXAG;
+  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], onGround(xy[0], xy[1], c)]), sel: i === candSel}));
   const layers = [new deck.PolygonLayer({id: 'cands', data: rings, getPolygon: d => d.poly, filled: true, stroked: true, pickable: true,
     getFillColor: d => d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24],   // faint fills only — no cyan blob on the selected hex; emphasis is the outline + leader marker
     getLineColor: d => d.sel ? [150, 235, 255, 255] : [200, 214, 245, 180],
@@ -1055,8 +1033,8 @@ function candidateLayers() {
     // Tall enough that the tether reads as a clear leader line: the vertical relief alone is tiny vs the km-wide scene,
     // so scale with the horizontal span — but well short of the ~6 km "orbit" that 0.32*span produced.
     const stickH = Math.max(span * 0.06, (bounds.maxz - bounds.minz) * Z_EXAG * 1.3);
-    const base = [c.center[0], c.center[1], c.center[2] * Z_EXAG];
-    const top = [c.center[0], c.center[1], c.center[2] * Z_EXAG + stickH];
+    const base = [c.center[0], c.center[1], onGround(c.center[0], c.center[1], c)];
+    const top = [c.center[0], c.center[1], base[2] + stickH];
     const MARK = [150, 235, 255];
     // Tether hex -> label as LineLayer segments (bright core over a dark halo) — LineLayer draws a single segment
     // reliably where a 2-point PathLayer did not. depthTest off so it's ALWAYS visible over the dense points and the
@@ -1082,6 +1060,21 @@ function candidateLayers() {
 $('tsRes').oninput = tsLabels; $('tsDt').oninput = tsLabels;
 $('tsRes').onchange = () => findCandidates(); $('tsDt').onchange = () => findCandidates();
 $('tsFind').onclick = () => findCandidates();
+// Go to a cell by H3 id or "lat, lon": select it, centre the camera on it, and say so if it is only the nearest.
+function gotoCell() {
+  const r = AICESAT.ts.findCandidate(candidates, $('tsGoto').value, +$('tsRes').value);
+  if (!r) { $('tsStatus').textContent = 'find candidates first'; return; }
+  if (r.error) { $('tsStatus').textContent = r.error; return; }
+  selectCand(r.index);
+  const c = candidates[r.index];
+  const z = drapedZ(surfaceHeightAt, c.center[0], c.center[1], c.center[2], 0) * Z_EXAG;
+  deckgl.setProps({initialViewState: {...(curView || {rotationX: 35, rotationOrbit: -25, zoom: curZoom}),
+                                      target: [c.center[0], c.center[1], z], transitionDuration: 700}});
+  $('tsStatus').textContent = r.exact ? 'found' : 'not a candidate at this cell size; nearest is ' + r.km.toFixed(1) + ' km away';
+  const el = $('tsList').querySelector('.tscand.on'); if (el) el.scrollIntoView({block: 'nearest'});
+}
+$('tsGo').onclick = gotoCell;
+$('tsGoto').onkeydown = e => { if (e.key === 'Enter') gotoCell(); };
 
 void back;   // Back now lives in the top bar; the legacy in-legend button was removed
 

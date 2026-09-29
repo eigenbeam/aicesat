@@ -24,16 +24,12 @@ function grabLine(name) {
   const rest = src.slice(at(name));
   return rest.slice(0, rest.indexOf('\n') + 1).replace(/^const /, 'var ');
 }
-const code = [
-  'const M_PER_DEG_LAT = 110574;',
-  grabFn('function frameCentre'),
-  grabFn('function mPerDegLon'),
-  grabFn('function localToLonLat'),
-  grabFn('function lonLatToLocal'),
-  grabLine('const fmtLat ='),
-  grabLine('const fmtLon ='),
-].join('\n');
-eval(code);
+// The lon/lat <-> scene-metre helpers live in geo.js. These synthetic frames carry no CRS, so they exercise its
+// fallback approximation; the exact-projection path is checked against pyproj in test_scene_geo.js.
+global.window = global;
+require(require('path').resolve('src/aicesat/ui/geo.js'));
+const {lonLatToLocal, localToLonLat} = AICESAT.geo;
+eval([grabLine('const fmtLat ='), grabLine('const fmtLon =')].join('\n'));
 
 // the real frame of the Langtang scene: aeqd on the bbox centre, axis-aligned
 const AEQD = {bbox: [85.44, 28.21, 85.62, 28.37], east_xy: [1, 4.1e-5], north_xy: [0, 1]};
