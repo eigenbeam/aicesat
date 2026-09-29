@@ -958,12 +958,25 @@ def list_regions() -> dict:
 
 
 def check_coverage(bbox=None, polygon=None, **_ignored) -> dict:
-    bb, _ = geom.normalize_area(bbox, polygon)
-    return coverage.check_coverage(bb)
+    bb, poly = geom.normalize_area(bbox, polygon)
+    return coverage.check_coverage(bb, polygon=poly)
 
 
 def list_collections() -> list[dict]:
     return coverage.collections()
+
+
+def claim_regions() -> dict:
+    """Where a build will be accepted, per collection: {key: [piece, ...]} (coverage.claim_regions). Explore outlines
+    these so a box can be drawn inside them, instead of discovering the edge from a refused build."""
+    return {c["key"]: coverage.claim_regions(coverage._index_for(c["key"])[0]) for c in coverage.collections()}
+
+
+def fit_to_coverage(bbox=None, polygon=None, keys=()) -> dict:
+    """Shrink a drawn box, or cut a drawn polygon, until each listed collection's claim contains it
+    (coverage.fit_to_coverage)."""
+    bb, poly = geom.normalize_area(bbox, polygon)
+    return coverage.fit_to_coverage(bb, [str(k) for k in keys or []], polygon=poly)
 
 
 def bench() -> dict | None:

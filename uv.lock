@@ -38,6 +38,7 @@ dependencies = [
     { name = "rasterio" },
     { name = "rich" },
     { name = "scipy" },
+    { name = "shapely" },
     { name = "sliderule" },
 ]
 
@@ -62,6 +63,7 @@ requires-dist = [
     { name = "rasterio", specifier = ">=1.5.1" },
     { name = "rich", specifier = ">=14" },
     { name = "scipy", specifier = ">=1.14" },
+    { name = "shapely", specifier = ">=2.1" },
     { name = "sliderule", specifier = ">=5.5.0" },
 ]
 

@@ -249,7 +249,17 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 bb, poly = geom.normalize_area(json.loads(qs["bbox"][0]) if "bbox" in qs else None,
                                                json.loads(qs["polygon"][0]) if "polygon" in qs else None)
-                return self._json(200, coverage.check_coverage(bb))
+                return self._json(200, coverage.check_coverage(bb, polygon=poly))
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if u.path == "/api/claims":
+            return self._json(200, api.claim_regions())
+        if u.path == "/api/fit":
+            try:
+                return self._json(200, api.fit_to_coverage(
+                    json.loads(qs["bbox"][0]) if "bbox" in qs else None,
+                    json.loads(qs["polygon"][0]) if "polygon" in qs else None,
+                    [k for k in qs.get("keys", [""])[0].split(",") if k]))
             except Exception as e:
                 return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if u.path.startswith("/api/job/"):
@@ -512,6 +522,16 @@ def ui_scene_part(scene_id: str, part: str = "meta", chunk: int = 0) -> dict:
 @apps.tool(name="ui_coverage", **_APP)
 def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | None = None) -> dict:
     return api.check_coverage(bbox, polygon)
+
+
+@apps.tool(name="ui_claims", **_APP)
+def ui_claims() -> dict:
+    return api.claim_regions()
+
+
+@apps.tool(name="ui_fit", **_APP)
+def ui_fit(keys: list[str], bbox: list[float] | None = None, polygon: list[list[float]] | None = None) -> dict:
+    return api.fit_to_coverage(bbox, polygon, keys)
 
 
 @apps.tool(name="ui_extract", **_APP)

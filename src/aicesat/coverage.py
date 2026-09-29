@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+import h3
+
 from . import auth, regions
 from .campaigns import campaign_for
 
@@ -453,6 +455,93 @@ def searched_empty(d, bbox, polygon=None) -> dict | None:
     return {"at": rec.get("at"), "window": rec.get("window")} if rec else None
 
 
+# ---- where a build will be accepted, as shapes --------------------------------------------------------------------
+# The gate accepts a selection when every coverage cell it TOUCHES is claimed (overlap polyfill on both sides), so the
+# union of the claimed cells is exactly the ground a box may be drawn on. Nothing showed it: Explore drew scene
+# outlines and lake cells, and a box drawn 1.1 km past the Jakobshavn index failed every collection with a message
+# that printed one bounding box around Nepal AND Greenland.
+_REGIONS: dict = {}
+REGION_MAX_CELLS = 400_000   # outlining costs ~1 us a cell (81k cells: 0.08 s); past this the outline goes coarser
+
+
+def claim_regions(d) -> list[dict]:
+    """The claim's ground as polygons, one per connected piece: {"outer": [[lon, lat], ...], "holes": [...],
+    "bbox": [W, S, E, N], "approx": bool}. [] when nothing is claimed.
+
+    `approx` is True only when the claim was too large to outline at its own resolution and was drawn from coarser
+    parents, which reach slightly past the real edge. Anything that must be exact (fit_to_coverage) re-checks with
+    the gate. Cached on the manifest's mtime and size: a claim changes only when a build stamps one."""
+    import pathlib
+
+    from . import index as atl03_index
+
+    mf = pathlib.Path(d) / "_build.json" if d is not None else None
+    try:
+        st = mf.stat()
+    except (OSError, AttributeError):
+        return []
+    key = (str(mf), st.st_mtime_ns, st.st_size)
+    if key in _REGIONS:
+        return _REGIONS[key]
+    cells = [h3.int_to_str(c) for c in atl03_index.manifest_cells(d)]
+    out: list[dict] = []
+    if cells:
+        res = {c: h3.get_resolution(c) for c in cells}
+        fine, approx = max(res.values()), False
+        while fine > min(res.values()) and sum(7 ** max(fine - r, 0) for r in res.values()) > REGION_MAX_CELLS:
+            fine, approx = fine - 1, True
+        flat: set = set()
+        for c, r in res.items():
+            if r < fine:
+                flat.update(h3.cell_to_children(c, fine))
+            else:
+                flat.add(h3.cell_to_parent(c, fine) if r > fine else c)
+        shape = h3.cells_to_h3shape(sorted(flat), tight=True)
+        for poly in (shape if isinstance(shape, h3.LatLngMultiPoly) else [shape]):
+            outer = [[round(lo, 6), round(la, 6)] for la, lo in poly.outer]
+            los, las = [p[0] for p in outer], [p[1] for p in outer]
+            out.append({"outer": outer, "holes": [[[round(lo, 6), round(la, 6)] for la, lo in h] for h in poly.holes],
+                        "bbox": [min(los), min(las), max(los), max(las)], "approx": approx})
+    _REGIONS.clear()             # one entry per manifest is all that is ever live; do not grow with every rebuild
+    _REGIONS[key] = out
+    return out
+
+
+def _overlap(a, b) -> float:
+    """Area of the intersection of two [W, S, E, N] boxes, in square degrees (0 when disjoint)."""
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def _km_apart(a, b) -> float:
+    """Great-circle distance between two boxes' centres, km."""
+    return h3.great_circle_distance(((a[1] + a[3]) / 2, (a[0] + a[2]) / 2), ((b[1] + b[3]) / 2, (b[0] + b[2]) / 2),
+                                    unit="km")
+
+
+def claim_piece_for(pieces, bbox) -> dict | None:
+    """The piece of a claim a selection is ABOUT: the one it overlaps most, else the nearest. None when there are none.
+
+    A collection indexed in Nepal and at Jakobshavn has two pieces; a refusal at Jakobshavn is about the Jakobshavn
+    one, and its bounding box — not the union's — is what "how far outside" is measured against."""
+    if not pieces:
+        return None
+    return max(pieces, key=lambda p: (_overlap(bbox, p["bbox"]), -_km_apart(bbox, p["bbox"])))
+
+
+def overhang_km(sel, box) -> dict:
+    """How far each side of `sel` reaches past `box` ([W, S, E, N] both), in km; sides that do not are omitted."""
+    import math
+
+    w, s, e, n = sel
+    kx, ky = 111.32 * math.cos(math.radians((s + n) / 2)), 110.57
+    over = {"west": (box[0] - w) * kx, "south": (box[1] - s) * ky, "east": (e - box[2]) * kx, "north": (n - box[3]) * ky}
+    return {side: km for side, km in over.items() if km > 0}
+
+
+def _fmt_km(km: float) -> str:
+    return f"{km * 1000:.0f} m" if km < 1 else f"{km:.1f} km"
+
+
 def coverage_gap(d, bbox, polygon=None) -> str | None:
     """WHY index_covers_area refuses this selection, as one line for an error message. None when it is covered.
 
@@ -497,16 +586,31 @@ def coverage_gap(d, bbox, polygon=None) -> str | None:
                     f"ground; if it should have data, check the product version the build searched for and re-run "
                     f"the build{tail}")
     w, s, e, n = bbox
-    if b and not (b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]):
-        over = ", ".join(f"{side} by {abs(v):.3f}deg" for side, v in
-                         (("west", b[0] - w), ("south", b[1] - s), ("east", e - b[2]), ("north", n - b[3])) if v > 0)
-        return (f"the selection is outside the claimed extent {[round(x, 3) for x in b]} ({over}) — "
-                f"draw inside the claim, or build over a box that contains it{tail}")
+    want = None
+    if b and b[0] <= w and b[1] <= s and e <= b[2] and n <= b[3]:
+        # Only worth a polyfill when the claim's overall extent could hold it: a selection past it cannot be covered.
+        want = planner.coverage_cells(bbox, polygon, res=res)
+        if atl03_index.covers_cells(d, want):
+            return None
 
-    want = planner.coverage_cells(bbox, polygon, res=res)
-    if atl03_index.covers_cells(d, want):
-        return None
-    missing = sum(1 for c in want if not atl03_index.covers_cells(d, [c]))
+    # Measured against the claim PIECE this selection is about, not the claim's overall extent: that extent spans
+    # every build ever stamped, and with one in Nepal and one at Jakobshavn it is a box around half the planet.
+    piece = claim_piece_for(claim_regions(d), bbox)
+    if piece is None:
+        return (f"the claim here is empty — its rows were dropped (a schema change invalidates the claim with them); "
+                f"re-run the build{tail}")
+    pb = [round(v, 3) for v in piece["bbox"]]
+    if not _overlap(bbox, piece["bbox"]):
+        return (f"nothing is indexed here: the nearest indexed area, {pb}, is {_km_apart(bbox, piece['bbox']):,.0f} km "
+                f"away — build the index over this area{tail}")
+    over = overhang_km(bbox, piece["bbox"])
+    if over:
+        sides = ", ".join(f"{_fmt_km(km)} past its {side} edge" for side, km in over.items())
+        return (f"the selection reaches outside the indexed area {pb}: {sides}. Shrink it to fit (in Explore: "
+                f"\"Fit to indexed area\"), or build the index over a box that contains it{tail}")
+
+    want = want if want is not None else planner.coverage_cells(bbox, polygon, res=res)
+    missing = len(atl03_index.unclaimed_cells(d, want))
     return (f"the claim's extent contains this selection but {missing:,} of {len(want):,} res-{res} cells are "
             f"unclaimed, and the gate needs every one. A selection flush with the build box's own edge lands here "
             f"even when the build succeeded: H3 cells straddle their parents, so the claim's polyfill and the "
@@ -544,7 +648,141 @@ def collection_can_cover(key: str, bbox) -> bool:
     return any(w < fe and fw < e and s < fn and fs < n for fw, fs, fe, fn in FOOTPRINTS.get(key, []) or [(-180.0, -90.0, 180.0, 90.0)])
 
 
-def check_coverage(bbox, **_ignored) -> dict:
+FIT_MAX_STEPS = 24   # inset steps of half a coverage-cell edge (~100 m at res 9): 2.4 km past the claim piece's edge
+
+
+def fit_to_coverage(bbox, keys, polygon=None) -> dict:
+    """Shrink a drawn box until every listed collection's claim contains it, moving only the sides that overhang.
+
+    A `polygon` is fitted by CUTTING it with that same shrinking box (starting from its bounding box), so the answer
+    is always part of what was drawn, never ground that was not. A cut that would leave it in pieces is refused.
+
+    Returns {"bbox": [W, S, E, N] or None, "polygon": [[lon, lat], ...] or None, "moved": {side: km},
+    "unindexed": [key, ...], "reason": str or None}.
+    Collections that never flew here (collection_can_cover) are ignored, as Explore already unchecks them. One with
+    no claim overlapping the box goes in `unindexed`: shrinking cannot reach ground that was never indexed, so the
+    box is fitted to the others and the caller says which were left out.
+
+    Two moves. First clip to each claim piece's bounding box, which is most of the distance. That box runs through
+    hex corners, so its edge still touches unclaimed cells; then step inward only the sides NEAREST the cells the gate
+    still refuses, until it accepts. The answer is checked by index_covers_area, the gate a build applies, on the
+    exact box returned, rounded INWARD to the 4 decimals the map keeps, so it cannot pass here and fail at build."""
+    import json
+    import math
+    import pathlib
+
+    from . import index as atl03_index
+    from . import planner
+
+    orig = [float(v) for v in bbox]
+    box, dirs, unindexed = list(orig), [], []
+    for key in keys:
+        if not collection_can_cover(key, orig):
+            continue
+        d = _index_for(key)[0]
+        piece = claim_piece_for(claim_regions(d), orig) if d is not None else None
+        if piece is None or not _overlap(orig, piece["bbox"]):
+            unindexed.append(key)
+            continue
+        pb = piece["bbox"]
+        box = [max(box[0], pb[0]), max(box[1], pb[1]), min(box[2], pb[2]), min(box[3], pb[3])]
+        try:
+            res = json.loads((pathlib.Path(d) / "_build.json").read_text()).get("coverage_res")
+        except Exception:
+            res = None
+        dirs.append((key, d, res or atl03_index.COVERAGE_RES))
+    if not dirs:
+        return {"bbox": None, "polygon": None, "moved": {}, "unindexed": unindexed,
+                "reason": f"{', '.join(unindexed) or 'none of these collections'} not indexed anywhere in this area — "
+                          f"there is nothing to shrink to; build the index here"}
+
+    step_km = min(h3.average_hexagon_edge_length(r, unit="km") for _k, _d, r in dirs) / 2
+    # 1e-6 of a grid step keeps a value already on the grid there: 69.2297 * 1e4 is 692296.99999..., and a bare floor
+    # moved an edge the user drew by 11 m. The rounded box is what the gate then checks, so this cannot loosen it.
+    inward = lambda b: [math.ceil(b[0] * 1e4 - 1e-6) / 1e4, math.ceil(b[1] * 1e4 - 1e-6) / 1e4,
+                        math.floor(b[2] * 1e4 + 1e-6) / 1e4, math.floor(b[3] * 1e4 + 1e-6) / 1e4]
+
+    drawn = None
+    if polygon is not None:
+        import shapely
+        from shapely.geometry import Polygon
+        drawn = Polygon(polygon)
+
+    def shape(r):
+        """What a box `r` leaves of the selection: the box itself, or the drawn polygon cut by it, as (bbox, ring or
+        None); or a str saying why nothing usable is left."""
+        if drawn is None:
+            return r, None
+        cut = shapely.clip_by_rect(drawn, *r)
+        if cut.is_empty:
+            return "nothing of the polygon is left inside the indexed area"
+        if cut.geom_type != "Polygon":
+            return ("cutting this polygon down to the indexed area would split it into pieces; draw inside the "
+                    "dashed outline instead")
+        # 4 decimals, because that is what the map keeps (map.area rounds a polygon's vertices) and so what a build
+        # receives; the gate is then checked on exactly this ring. It can put a vertex up to ~5 m outside the drawn
+        # edge, the same quantisation the drawn polygon itself went through.
+        ring: list = []
+        for x, y in list(cut.exterior.coords)[:-1]:
+            q = [round(x, 4), round(y, 4)]
+            if not ring or q != ring[-1]:
+                ring.append(q)
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring.pop()
+        if len(ring) < 3:
+            return "nothing of the polygon is left inside the indexed area"
+        return [min(q[0] for q in ring), min(q[1] for q in ring), max(q[0] for q in ring), max(q[1] for q in ring)], ring
+
+    def shrink(box, sides):
+        """Step `sides` (W, S, E, N flags) inward until the gate accepts: ((bbox, ring, box), None), else (None,
+        the refused cells), else (None, a str) when the polygon cannot be cut to fit at all."""
+        refused: list = []
+        for _ in range(FIT_MAX_STEPS + 1):
+            r = inward(box)
+            if r[0] >= r[2] or r[1] >= r[3]:
+                break
+            sh = shape(r)
+            if isinstance(sh, str):
+                return None, sh
+            sb, ring = sh
+            refused = [(k, c) for k, d, res in dirs
+                       for c in atl03_index.unclaimed_cells(d, planner.coverage_cells(sb, ring, res=res))]
+            if not refused:
+                return (sb, ring, r), None
+            # Move the eligible side nearest each refused cell. A cell centred outside the box is nearest the side it
+            # lies beyond (a negative distance), which is the side that has to come in.
+            kx, ky = 111.32 * math.cos(math.radians((r[1] + r[3]) / 2)), 110.57
+            move = [False] * 4
+            for _k, c in refused:
+                la, lo = h3.cell_to_latlng(h3.int_to_str(int(c)) if not isinstance(c, str) else c)
+                gaps = [(lo - r[0]) * kx, (la - r[1]) * ky, (r[2] - lo) * kx, (r[3] - la) * ky]
+                move[min((i for i in range(4) if sides[i]), key=lambda i: gaps[i])] = True
+            dx, dy = step_km / kx, step_km / ky
+            box = [box[0] + dx * move[0], box[1] + dy * move[1], box[2] - dx * move[2], box[3] - dy * move[3]]
+        return None, refused
+
+    # Only the sides that overhang a claim move, at first: a refused cell at a corner is nearest whichever side happens
+    # to be closer, and letting the other one move shaved 110 m off a south edge that sat 1.4 km inside the claim.
+    # All four only when that cannot work: a claim that is not rectangular (two builds unioned) can need it.
+    over = [box[0] > orig[0], box[1] > orig[1], box[2] < orig[2], box[3] < orig[3]]
+    refused: list | str = []
+    for sides in ([over, [True] * 4] if any(over) and not all(over) else [[True] * 4]):
+        fitted, refused = shrink(list(box), sides)
+        if fitted:
+            # `moved` is how far the cutting box's sides came in. A cut polygon's own extent also shrinks where a
+            # slanted edge lost its corner, and reporting that read as "south edge in 19 m" when no side moved.
+            fb, ring, cutbox = fitted
+            return {"bbox": fb, "polygon": ring, "moved": {k: round(v, 3) for k, v in overhang_km(orig, cutbox).items()},
+                    "unindexed": unindexed, "reason": None}
+        if isinstance(refused, str):          # the polygon cannot be cut to fit; more steps will not change that
+            return {"bbox": None, "polygon": None, "moved": {}, "unindexed": unindexed, "reason": refused}
+    who = sorted({k for k, _c in refused}) or [k for k, _d, _r in dirs]
+    return {"bbox": None, "polygon": None, "moved": {}, "unindexed": unindexed,
+            "reason": f"could not shrink this selection inside the {', '.join(who)} index — the indexed area is not "
+                      f"rectangular here (a gap, or an edge that doubles back); draw inside its outline instead"}
+
+
+def check_coverage(bbox, polygon=None, **_ignored) -> dict:
     """Granule counts per collection over a bbox, straight from the sub-granule INDEX — no CMR at query time. The
     index IS the discovery layer (CMR is paid once, at build time), and it counts granules with points that actually
     fall in the box's cells (not CMR's footprint over-claim).
@@ -574,6 +812,7 @@ def check_coverage(bbox, **_ignored) -> dict:
         row = {k: c[k] for k in ("key", "label", "product", "version", "epoch", "window")}
         row["possible"] = collection_can_cover(c["key"], bbox)
         row["searched_empty"] = None   # {at, window} when the last build here found no granules (see write_build_manifest)
+        row["claim_overlap"] = False   # does any claim piece reach this area at all: "partly indexed" vs "not indexed here"
         if not row["possible"]:
             # No index question to ask: this instrument never flew here. Say so instead of reporting "not indexed",
             # which invites the user to go build an index that would find nothing.
@@ -581,9 +820,16 @@ def check_coverage(bbox, **_ignored) -> dict:
             out.append(row)
             continue
         d, res, ym = _index_for(c["key"])
-        covered = bool(d is not None and d.exists() and index_covers_area(d, bbox))
+        # A polygon is judged by its own ground, as the build gate judges it. Explore disables Build when nothing is
+        # covered, and a polygon's bounding box takes in ground the polygon does not.
+        covered = bool(d is not None and d.exists() and index_covers_area(d, bbox, polygon))
         if d is not None and d.exists() and not covered:
-            row["searched_empty"] = searched_empty(d, bbox)
+            row["searched_empty"] = searched_empty(d, bbox, polygon)
+            # A collection indexed only somewhere else is not "reaching outside" its index here; it has none. The
+            # outlines are cached per manifest, so this is a bounding-box test, not a polyfill.
+            piece = claim_piece_for(claim_regions(d), bbox)
+            row["claim_overlap"] = bool(piece and _overlap(bbox, piece["bbox"]))
+        row["claim_overlap"] = row["claim_overlap"] or covered
         if d is None or not d.exists():
             row.update(n_granules=None, indexed=False, covered=False, cells=0, by_month={})
             out.append(row)
