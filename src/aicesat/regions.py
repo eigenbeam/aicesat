@@ -19,6 +19,13 @@ REGIONS: dict[str, dict] = {
         "bbox": (-39.5, 72.4, -37.5, 72.8),
         "note": "Candidate 1: near Summit Station. Cleanest interior; slope may be too gentle.",
     },
+    "summit_traverse": {
+        "bbox": (-38.585667, 72.578616, -38.474193, 72.648222),
+        "note": "The IS2TGPSSS ground-truth transect itself (published coverage, user guide 1.3.1): a 15 km "
+                "line west of Summit laid along ICESat-2 RGT 749/879. Prefer this over 'summit' for the GPS "
+                "comparison -- the wider box also catches the snowmobile transit to and from the station, "
+                "which is real GPS but not transect surface elevation.",
+    },
     "ne_flank_upstream_negis": {
         "bbox": (-32.0, 75.5, -29.0, 76.0),
         "note": "Candidate 4: NE interior flank, well upstream of NEGIS.",
@@ -44,6 +51,7 @@ DEFAULT_ATL06_WINDOW = ("2018-10-01", "2027-01-01")   # ICESat-2 land ice, full 
 DEFAULT_ATL03_WINDOW = ("2018-10-01", "2027-01-01")   # ICESat-2 photons, full record to present
 DEFAULT_GEDI_WINDOW = ("2019-04-01", "2027-01-01")    # GEDI on the ISS; note the 2023 stow (2 granules that
                                                       # year over Langtang) and the 2024 resumption
+DEFAULT_GPSTRUTH_WINDOW = ("2006-08-01", "2025-12-31")  # Summit GPS traverse: the full published record
 
 
 def resolve_bbox(region: str | None = None, bbox: BBox | None = None) -> BBox:

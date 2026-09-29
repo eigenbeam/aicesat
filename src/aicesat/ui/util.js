@@ -14,7 +14,7 @@ window.AICESAT = window.AICESAT || {};
     gia: 'GIA (glacial isostatic adjustment): slow vertical bedrock rebound after past ice loss; removing it separates ice-surface change from ground motion.',
     dh: 'The height difference at the same spot, here ICESat-2 minus ICESat-1. Negative means ICESat-2 is lower (surface lowering).',
     granules: 'Granules are the data files a mission publishes over an area and time span. A build reads only the parts of each granule that cover your area.',
-    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), and GEDI (L2A).',
+    collections: 'The mission datasets to include: ICESat-1 (GLAS), IceBridge (ATM), ICESat-2 (ATL03 photons / ATL06 land ice), GEDI (L2A), and the Summit GPS traverse (ground truth).',
     coverage: 'Counts, from the local index, the granules of each mission that have data in your area, before anything is fetched.',
   };
   // A small "?" affordance that reveals a plain-language explanation on hover/click. Returns a DOM node to append.

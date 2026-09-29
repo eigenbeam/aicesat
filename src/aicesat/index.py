@@ -44,14 +44,14 @@ _NAME_RE = re.compile(r"ATL03_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5
 # (which had no answer for the FIRST granule of a fresh index).
 _I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient",
               "byte_start", "byte_end", "n_lines"}
-_F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch"}
+_F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch", "arp_to_sled_m", "track_depth_cm"}
 
 
 def col_type(name: str):
     """The declared type for a known index column, or None when we have no opinion (infer it)."""
     if name == "h3_cell":
         return pa.uint64()          # NEVER inferred: a python int infers as int64 and the cell ids need the full range
-    if name == "strong":
+    if name in ("strong", "track_depth_known"):
         return pa.bool_()
     if name in _F64_NAMES or name.endswith("_fill"):
         return pa.float64()

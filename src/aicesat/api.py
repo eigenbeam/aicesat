@@ -248,7 +248,8 @@ IMAGERY_JOIN_TIMEOUT_S = 300   # a tile mosaic over a large scene is minutes, no
 
 
 def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_coreg=False,
-                with_atl06=False, with_icessn=False, with_atl03=False, with_gedi=False, with_imagery=True,
+                with_atl06=False, with_icessn=False, with_atl03=False, with_gedi=False, with_gpstruth=False,
+                with_imagery=True,
                 imagery_source=None,
                 log_fn=lambda m: None, scene_id: str | None = None, markers=None,
                 wait_for_imagery: bool = False) -> dict:
@@ -314,6 +315,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         a, m = atl06.extract(bb, regions.DEFAULT_ATL06_WINDOW, polygon=poly, on_granule=_on_granule("ATL06"), on_plan=_on_plan("ATL06"))
         return a, m, m["cache_key"]
 
+    def _ex_gpstruth():
+        from . import gpstruth
+        a, m = gpstruth.extract(bb, regions.DEFAULT_GPSTRUTH_WINDOW, polygon=poly, on_granule=_on_granule("GPSTRUTH"),
+                                on_plan=_on_plan("GPSTRUTH"))
+        return a, m, m["cache_key"]
+
     def _ex_atl03():
         a, m = atl03.extract(bb, regions.DEFAULT_ATL03_WINDOW, polygon=poly)
         return a, m, m["cache_key"]
@@ -344,6 +351,12 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         log_fn(f"GEDI: {m['n']:,} footprints (25 m, 8 beams)")
         _log_cache("GEDI", m)
 
+    def _int_gpstruth(a, m, ck):
+        scene.add_series(doc, "GPSTRUTH", a, m, ck)
+        _mark_done("GPSTRUTH", m)
+        log_fn(f"GPSTRUTH: {m['n']:,} GPS epochs across {len(m['years'])} survey years")
+        _log_cache("GPSTRUTH", m)
+
     def _int_atl03(a, m, ck):
         st = m.get("access", {})
         if st.get("chunks_fetched"):
@@ -362,6 +375,7 @@ def build_scene(bbox=None, polygon=None, question=None, with_glas=True, with_cor
         ("ICESSN",  with_icessn, _ex_icessn, _int_icessn, "ICESSN"),
         ("ATL06",   with_atl06,  _ex_atl06,  _int_atl06,  "ATL06"),
         ("GEDI",    with_gedi,   _ex_gedi,   _int_gedi,   "GEDI"),
+        ("GPSTRUTH", with_gpstruth, _ex_gpstruth, _int_gpstruth, "GPSTRUTH"),
         ("ICESAT2", with_atl03,  _ex_atl03,  _int_atl03,  "ATL03"),
     ]
     # Drop legs whose instrument never surveyed this ground. An impossible leg is not a failure worth reporting:

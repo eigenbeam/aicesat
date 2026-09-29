@@ -14,6 +14,7 @@ GLAS_SHORT_NAME, GLAS_VERSION = "GLAH06", "034"
 ATL06_SHORT_NAME, ATL06_VERSION = "ATL06", "007"
 ICESSN_SHORT_NAME, ICESSN_VERSION = "ILATM2", "2"
 GEDI_SHORT_NAME, GEDI_VERSION = "GEDI02_A", "003"
+GPSTRUTH_SHORT_NAME, GPSTRUTH_VERSION = "IS2TGPSSS", "1"
 
 
 def granule_name(g) -> str:
@@ -23,7 +24,7 @@ def granule_name(g) -> str:
         links = g.data_links()
         if links:
             base = links[0].rsplit("/", 1)[-1].split("?")[0]
-            if base.endswith((".h5", ".H5", ".csv")):
+            if base.endswith((".h5", ".H5", ".csv", ".txt")):   # .txt: IS2TGPSSS's traverse-metadata granule
                 return base
     except Exception:
         pass
@@ -149,6 +150,11 @@ def collections() -> list[dict]:
     return [
         {"key": "GLAS", "mission": "GLAS", "flag": "with_glas", "label": "ICESat / GLAS", "short_name": GLAS_SHORT_NAME, "product": "GLAH06",
          "version": GLAS_VERSION, "epoch": "2003-2009", "window": list(regions.DEFAULT_GLAS_WINDOW), "default": True},
+        # Ground truth, not altimetry, and only at Summit: a monthly kinematic-GPS survey along a 15 km transect laid
+        # on ICESat-2 RGT 749/879 (Ben Smith, PR #15). Off by default -- it exists in one place.
+        {"key": "GPSTRUTH", "mission": "GPSTRUTH", "flag": "with_gpstruth", "label": "Summit GPS traverse",
+         "short_name": GPSTRUTH_SHORT_NAME, "product": "IS2TGPSSS", "version": GPSTRUTH_VERSION, "epoch": "2006-",
+         "window": list(regions.DEFAULT_GPSTRUTH_WINDOW), "default": False},
         {"key": "ICESSN", "mission": "ICESSN", "flag": "with_icessn", "label": "IceBridge ATM (ICESSN)", "short_name": ICESSN_SHORT_NAME,
          "product": "ILATM2", "version": ICESSN_VERSION, "epoch": "2009-2019", "window": list(regions.DEFAULT_ICESSN_WINDOW), "default": True},
         {"key": "ATL06", "mission": "ATL06", "flag": "with_atl06", "label": "ICESat-2 land ice", "short_name": ATL06_SHORT_NAME, "product": "ATL06",
@@ -201,6 +207,9 @@ def _index_for(key: str):
     if key == "GEDI":
         from . import index_gedi
         return index_gedi._index_dir(index_gedi.GEDI_RES), index_gedi.GEDI_RES, gdate_ym
+    if key == "GPSTRUTH":
+        from . import index_gpstruth
+        return index_gpstruth._index_dir(index_gpstruth.GPSTRUTH_RES), index_gpstruth.GPSTRUTH_RES, gdate_ym
     if key == "ATL03":
         return atl03_index.ATL03_INDEX_DIR, atl03_index.H3_RES, name_ym
     return None, None, None
@@ -518,6 +527,9 @@ FOOTPRINTS: dict[str, list[tuple[float, float, float, float]]] = {
     # GEDI flies on the ISS, whose 51.6 deg inclination is a hard ceiling: there is no GEDI over any ice sheet.
     # Offering it over Greenland would be offering a leg that cannot succeed.
     "GEDI":   [(-180.0, -51.6, 180.0, 51.6)],
+    # The Summit GPS traverse never leaves Summit: the transect and the transit to and from the station both lie
+    # inside the `summit` region.
+    "GPSTRUTH": [(-39.5, 72.4, -37.5, 72.8)],
 }
 
 
