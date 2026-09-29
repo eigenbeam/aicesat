@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 UI, VENDOR, DIST = ROOT / "ui", ROOT / "widget" / "vendor", ROOT / "widget" / "dist" / "aicesat.html"
-SOURCES = ["util.js", "adapter.js", "map.js", "explore.js", "lake.js",
-           "tspanel.js", "scene.js", "ts.js", "app.js"]  # order matters: scene.js aliases from tspanel.js
+SOURCES = ["util.js", "geo.js", "adapter.js", "map.js", "explore.js", "lake.js",
+           "tspanel.js", "scene.js", "ts.js", "app.js"]  # order matters: scene.js aliases from geo.js and tspanel.js
 
 
 def build() -> Path:
@@ -19,11 +19,12 @@ def build() -> Path:
     js = "\n;\n".join((UI / f).read_text() for f in SOURCES if (UI / f).exists())
     deck = next(VENDOR.glob("deck.gl-*.min.js")).read_text()
     h3js = next(VENDOR.glob("h3-js-*.umd.js")).read_text()
+    proj4js = next(VENDOR.glob("proj4-*.min.js")).read_text()   # geo.js: the scene frame's projection, as pyproj does it
     land = (VENDOR / "ne_land_50m.js").read_text()
     bridge = bridge_as_classic_script(next(VENDOR.glob("ext-apps-*.app-with-deps.js")).read_text())
     # </script> inside inlined code would terminate the tag
     safe = lambda s: s.replace("</script", "<\\/script")
-    html = (shell.replace("{{CSS}}", css).replace("{{VENDOR_H3}}", safe(h3js)).replace("{{VENDOR_LAND}}", safe(land)).replace("{{VENDOR_DECK}}", safe(deck))
+    html = (shell.replace("{{CSS}}", css).replace("{{VENDOR_H3}}", safe(h3js)).replace("{{VENDOR_PROJ4}}", safe(proj4js)).replace("{{VENDOR_LAND}}", safe(land)).replace("{{VENDOR_DECK}}", safe(deck))
             .replace("{{VENDOR_BRIDGE}}", safe(bridge)).replace("{{APP_JS}}", safe(js)))
     DIST.parent.mkdir(parents=True, exist_ok=True)
     DIST.write_text(html)
