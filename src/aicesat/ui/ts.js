@@ -37,7 +37,7 @@ AICESAT.TsView = class {
 
     const labels = () => {
       const r = +$('tsRes').value;
-      $('tsResLbl').textContent = 'res ' + r + ' · ~' + (TS.H3_EDGE_M[r] || '?') + ' m';
+      $('tsResLbl').textContent = 'res ' + r + ' · ~' + (TS.cellEdgeM(r) || '?') + ' m';
       $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr';
     };
     const refMissions = () => [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value);

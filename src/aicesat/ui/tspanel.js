@@ -29,13 +29,43 @@ window.AICESAT = window.AICESAT || {};
     label: m => (MISSIONS[m] || {}).name || m,
   };
 
-  const H3_EDGE_M = {7: 1220, 8: 461, 9: 174, 10: 66, 11: 25};
+  // A cell's average edge length, from h3 itself -- the Controls grid label already read it there. A hardcoded
+  // table here held H3 v3's averages (461 m at res 8) while h3-js v4 reports 531 m, so the two panels disagreed.
+  const cellEdgeM = r => (typeof h3 !== 'undefined' && h3.getHexagonEdgeLengthAvg)
+    ? Math.round(h3.getHexagonEdgeLengthAvg(r, 'm')) : null;
+
+  const fmtLatLon = (lat, lon, dp) => Math.abs(lat).toFixed(dp) + '°' + (lat >= 0 ? 'N' : 'S') + ' ' +
+                                      Math.abs(lon).toFixed(dp) + '°' + (lon >= 0 ? 'E' : 'W');
+
+  // Find the candidate a user means by an H3 cell id (any resolution: its centre is used) or "lat, lon". Returns
+  // {index, exact: true} for the candidate containing that point at `res`; otherwise the nearest candidate with
+  // {exact: false, km}; {error} for input it cannot read; null when there are no candidates to search.
+  function findCandidate(cands, query, res) {
+    if (!cands || !cands.length) return null;
+    const q = String(query == null ? '' : query).trim();
+    let lat, lon;
+    if (h3.isValidCell(q)) {
+      [lat, lon] = h3.cellToLatLng(q);
+    } else {
+      const m = q.match(/^(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)$/);
+      if (!m) return {error: 'enter an H3 cell id, or a position as "lat, lon"'};
+      lat = +m[1]; lon = +m[2];
+      if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return {error: 'latitude must be within ±90 and longitude ±180'};
+    }
+    const target = h3.latLngToCell(lat, lon, res);
+    const hit = cands.findIndex(c => c.h3 === target);
+    if (hit >= 0) return {index: hit, exact: true};
+    let best = -1, km = Infinity;
+    cands.forEach((c, i) => { const d = h3.greatCircleDistance([lat, lon], [c.lat, c.lon], 'km'); if (d < km) { km = d; best = i; } });
+    return {index: best, exact: false, km};
+  }
 
   function renderCandList(el, cands, sel, onSelect) {
     el.innerHTML = cands.map((c, i) =>
       '<div class="tscand ' + (i === sel ? 'on' : '') + '" data-i="' + i + '"><span class="conf-badge ' + c.level +
       '" title="confidence ' + c.confidence + '">' + c.level + '</span> <b>' + c.n_bins + ' epochs</b> · ' +
-      c.span_years + ' yr · ' + c.slope_deg + '° <span class="small">' + c.n_points + ' pts</span></div>').join('');
+      c.span_years + ' yr · ' + c.slope_deg + '° <span class="small">' + c.n_points + ' pts</span>' +
+      '<div class="small tscand-where">' + fmtLatLon(c.lat, c.lon, 3) + '</div></div>').join('');
     el.querySelectorAll('.tscand').forEach(d => d.onclick = () => onSelect(+d.dataset.i));
   }
 
@@ -91,9 +121,10 @@ window.AICESAT = window.AICESAT || {};
       // number on the chart and the number an API caller got came from two implementations.
       const missions = [...new Set(s.flatMap(p => p.missions))].map(AICESAT.missions.label).join(' → ');
       readoutEl.innerHTML = 'trend <b>' + Number(c.trend_cm_yr).toFixed(1) + ' cm/yr</b> · ' + s.length +
-                            ' epochs over ' + c.span_years + ' yr · ' + missions;
+                            ' epochs over ' + c.span_years + ' yr · ' + missions +
+                            '<div class="tscell-id">cell <code>' + c.h3 + '</code> · ' + fmtLatLon(c.lat, c.lon, 5) + '</div>';
     }
   }
 
-  AICESAT.ts = {H3_EDGE_M, renderCandList, compRow, renderConf, drawChart};
+  AICESAT.ts = {cellEdgeM, findCandidate, fmtLatLon, renderCandList, compRow, renderConf, drawChart};
 })();
