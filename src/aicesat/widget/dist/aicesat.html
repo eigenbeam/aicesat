@@ -9840,6 +9840,10 @@ window.AICESAT = window.AICESAT || {};
     const doc = await fetchApi.sceneMeta(id);
     doc.series = doc.series || {};
     doc.coreg = prev ? prev.coreg : null;
+    if (doc.has_coreg && !doc.coreg) {   // once per scene, as the app adapter does: the Δh panel reads these
+      const [c, dh] = await Promise.all([fetchApi.scenePart(id, 'coreg'), fetchApi.scenePart(id, 'dh')]);
+      doc.coreg = {...c, ...dh};
+    }
     return {doc, changed: new Set(), meta: doc};
   };
 
