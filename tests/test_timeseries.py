@@ -210,6 +210,16 @@ def _one_cell(monkeypatch, recs):
     return out["candidates"][0]
 
 
+def test_the_caveats_describe_the_slope_the_fit_actually_uses(monkeypatch):
+    """The notes reach the model verbatim as elevation_change's caveats. They used to say the plane was "fit to
+    ref_missions", the joint fit that read change between years as slope; the fit now takes slope from within each
+    (year, mission) group only, and ref_missions merely choose which level reads 0."""
+    monkeypatch.setattr(timeseries, "_load_all", lambda doc, epoch: _track_recs(2e-4))
+    notes = timeseries.candidates(DOC, h3_res=9, delta_t=1.0, ref_missions=["ATL06"])["params"]["notes"]
+    assert "within each (year, mission) group" in notes
+    assert "fit to ref_missions" not in notes
+
+
 def test_a_single_track_reference_is_gated_where_other_samples_sit_off_it(monkeypatch):
     c = _one_cell(monkeypatch, _track_recs(1.5e-5))          # ~0.5 m wide: one track
     assert c["level"] == "low" and c["components"]["gated"]

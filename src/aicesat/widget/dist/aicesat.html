@@ -12008,6 +12008,10 @@ function setText(el, v) { if (el && el.textContent !== v) el.textContent = v; }
 
 function renderProgress(loading, log) {
   const box = $('progress'); if (!box) return;
+  // Ladder levels: a finished scene shows no build panel. A scene built elsewhere (the pre-warm script, another
+  // process) has no progress rows here and would otherwise sit as "Scene ready" with every mission "queued".
+  if (LEVEL && !loading) { box.hidden = true; box.style.display = 'none'; progressDismissed = true; return; }
+  box.style.display = '';
   if (!progressDismissed) box.hidden = false;
   const spin = $('slSpin'); if (spin) spin.classList.toggle('sl-idle', !loading);
   setText($('slTitle'), loading ? 'Building scene…' : 'Scene ready');

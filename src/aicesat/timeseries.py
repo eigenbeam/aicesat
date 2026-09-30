@@ -288,8 +288,9 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
     params = {"h3_res": int(h3_res), "delta_t": float(delta_t), "min_bins": int(min_bins),
               "common_epoch": common_epoch, "ref_missions": sorted(ref_set), "missions_present": present,
               "not_propagated": not_propagated,
-              "notes": "residuals about a per-cell reference plane fit to ref_missions (default GLAS: earliest epoch, "
-                       f"single sensor); {propagation}; "
+              "notes": "heights about a per-cell surface plane whose slope comes only from the spread of samples "
+                       "within each (year, mission) group, so change between years is never read as slope; "
+                       f"ref_missions set which level reads 0; {propagation}; "
                        "no inter-campaign/inter-sensor bias adjustment and no GIA correction applied"}
     if not recs:
         return {"params": params, "candidates": []}
