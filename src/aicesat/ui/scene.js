@@ -1107,13 +1107,14 @@ AICESAT.util.drawer(root, null);
   ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'));
   leg.append($('chgLegend'), $('timeline'), $('tsStatus'));
   root.classList.add('left-drawer');
-  $('anaTabs').querySelector('button[data-t="dh"]').remove(); }
+  $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
 $('stats').addEventListener('reopen', () => updateStats());
 // 3-D navigation hint over the canvas, auto-dismissed on first interaction (or after a few seconds)
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1, candHover = -1;
-const TS_HINT = 'Hover a cell to preview its record; click to hold it. Shift-click cells to study them.';
+const TS_HINT = () => 'Hover a cell to preview its record; click to hold it.' +
+  (LEVEL === 'region' ? ' Shift-click cells to select them for Study.' : '');
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (AICESAT.ts.cellEdgeM(r) || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {
@@ -1156,7 +1157,7 @@ function renderChgLegend() {
 function toggleStudy(h) { if (STUDY.has(h)) STUDY.delete(h); else STUDY.add(h); STUDY_VER++; syncStudyBar(); render(); }
 function syncStudyBar() {
   const n = STUDY.size; $('studyBar').hidden = LEVEL !== 'region' || !n;
-  $('studyMsg').textContent = `${n} cell${n === 1 ? '' : 's'} selected — study with ICESat-2 photons and Δh`;
+  $('studyMsg').textContent = `${n} cell${n === 1 ? '' : 's'} selected — study them with ICESat-2 photons`;
 }
 async function startStudy() {
   const cells = [...STUDY]; if (!cells.length) return;
@@ -1200,7 +1201,7 @@ function showCell() {
   drawChart(); renderConf(c);
   $('tsMode').innerHTML = !LEVEL || !c ? '' : candSel >= 0 ? '<b>Selected</b> · click the cell again to release'
                                                           : 'Preview · click the cell to hold it';
-  if (!c && LEVEL && candidates.length) $('tsReadout').textContent = TS_HINT;
+  if (!c && LEVEL && candidates.length) $('tsReadout').textContent = TS_HINT();
 }
 function hoverCand(i) { if (i < 0 || i === candHover) return; candHover = i; if (candSel < 0) showCell(); }
 function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
