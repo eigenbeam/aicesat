@@ -334,6 +334,17 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 #view-survey .sv-toggle{display:flex;align-items:center;justify-content:center;gap:7px;font-size:12.5px;cursor:pointer;color:var(--ink)}
 .cov-ramp{display:inline-block;width:110px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgba(214,230,250,.08),rgba(214,230,250,.55));border:1px solid rgba(214,230,250,.25)}
 .sv-hexbody .covtip{font-size:12px}
+.sv-ctl { display:flex; flex-direction:column; gap:6px; }
+.sv-ctl .ctl-row.off { opacity:.45; }
+.lad-mhead { align-self:stretch; margin:8px 0 0; }
+.mlist { display:flex; flex-direction:column; gap:3px; align-self:stretch; }
+.ms-row { display:flex; align-items:center; gap:7px; font-size:12.5px; cursor:pointer; }
+.ms-row input { margin:0; }
+.ms-sw { width:10px; height:10px; border-radius:2px; flex:0 0 auto; }
+.ms-name { font-weight:600; }
+.ms-yrs { margin-left:auto; color:var(--muted); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.ms-row.off .ms-name, .ms-row.off .ms-sw { opacity:.4; }
+.ms-row.off .ms-name { color:var(--muted) !important; }
 #view-survey .sv-toggle input{margin:0}
 #view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
 #view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}

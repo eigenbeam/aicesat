@@ -84,7 +84,8 @@ window.AICESAT = window.AICESAT || {};
     const set = (c, persist = true) => {
       drawer.classList.toggle('collapsed', c);
       root.classList.toggle('drawer-collapsed', c);
-      tab.textContent = c ? '⟨' : '⟩'; tab.title = c ? 'show panels' : 'hide panels';
+      // the arrow points the way the drawer will move: a left-side drawer (.left-drawer) mirrors the right-side one
+      tab.textContent = (c !== root.classList.contains('left-drawer')) ? '⟨' : '⟩'; tab.title = c ? 'show panels' : 'hide panels';
       if (persist) { try { localStorage.setItem(KEY, c ? '1' : '0'); } catch (e) {} }
       setTimeout(() => window.dispatchEvent(new Event('resize')), 220);   // let deck.gl/map re-fit after the width change
     };

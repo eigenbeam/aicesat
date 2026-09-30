@@ -117,7 +117,7 @@ AICESAT.MapView = class {
       const halfKm = Math.min(80, 70 / Math.pow(1.7, Math.max(0, vs.zoom))) * 111, stepKm = {4: 39, 5: 14.8}[res];
       k = Math.min(45, Math.ceil(halfKm / stepKm) + 5);
     }
-    const key = res + '|' + this._covKey + '|' + anchor + '|' + k;
+    const key = res + '|' + this._covKey + '|' + anchor + '|' + k + '|' + this.gridOn + '|' + this.shadeOn;
     if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
     const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
     const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
@@ -127,14 +127,15 @@ AICESAT.MapView = class {
     const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
     const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
     let cells = [];
-    if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
+    if (this.gridOn === false) cells = [];
+    else if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
     else if (anchor) { try { cells = h3.gridDisk(h3.cellToCenterChild(anchor, res), k); } catch (e) { cells = []; } }
     const grid = cells.length ? [new H3HexagonLayer({id: 'earth-grid', data: cells, getHexagon: d => d, highPrecision: 'auto',
       filled: true, getFillColor: [0, 0, 0, 1], stroked: true, extruded: false, pickable: true,
       getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5})] : [];
-    const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
+    const layers = [...grid, ...(this.shadeOn === false ? [] : [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
-      getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
+      getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})])];
     this._covMemo = {key, layers};
     return layers;
   }
@@ -316,7 +317,8 @@ AICESAT.MapView = class {
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
-    if (this.coverage && this.coverageOn !== false) layers.push(...this.coverageLayers(H3HexagonLayer));
+    // gridOn / shadeOn: the globe's two switches (survey.js); a view that sets neither gets both, as before.
+    if (this.coverage && (this.gridOn !== false || this.shadeOn !== false)) layers.push(...this.coverageLayers(H3HexagonLayer));
     if (s.grid) {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {

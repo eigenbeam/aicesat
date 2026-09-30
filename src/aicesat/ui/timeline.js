@@ -67,6 +67,20 @@ window.AICESAT = window.AICESAT || {};
       host.querySelectorAll('.tl-name').forEach(b => b.onclick = () => onToggle(b.dataset.m));
     }};
   }
+  // Mission show/hide as a plain list in flight order: a checkbox, the mission's colour and name, the years it flew.
+  function mountList(host, onToggle) {
+    host.classList.add('mlist');
+    return {update(missions, visible) {
+      const M = AICESAT.missions, yrs = m => { const s = SPANS[m] || [T0, T1]; return Math.floor(s[0]) + '–' + (s[1] >= 2026 ? 'now' : Math.floor(s[1])); };
+      host.innerHTML = missions.slice().sort((a, b) => (SPANS[a] || [0])[0] - (SPANS[b] || [0])[0]).map(m => {
+        const c = M.colorOf(m, null).join(','), on = visible[m] !== false;
+        return `<label class="ms-row${on ? '' : ' off'}" title="${((M.MISSIONS[m] || {}).gloss || m)}"><input type="checkbox" data-m="${m}"${on ? ' checked' : ''}>` +
+          `<i class="ms-sw" style="background:rgb(${c})"></i><span class="ms-name" style="color:rgb(${c})">${SHORT[m] || m}</span>` +
+          `<span class="ms-yrs">${yrs(m)}</span></label>`;
+      }).join('');
+      host.querySelectorAll('input[data-m]').forEach(i => i.onchange = () => onToggle(i.dataset.m));
+    }};
+  }
   // Basemap of the change and study levels: 'dem' = the hillshaded DEM, no imagery; 'imagery' = the satellite image
   // draped on the DEM's heights, unlit, without the DEM wireframe. No imagery for the scene -> the DEM.
   const basemap = (mode, hasImagery) => (mode === 'imagery' && hasImagery) ? {imagery: true, surface: false}
@@ -80,7 +94,7 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

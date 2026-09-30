@@ -7,13 +7,14 @@ AICESAT.SurveyView = class {
     // Side panel as at the change map, simpler: Controls (the hex switch), Legend (coverage ramp, the mission strip),
     // and the hovered hex's details in place of a floating tooltip.
     root.innerHTML = `<div class="map" id="svMap"></div>
-      <div id="svCtl" class="panel" data-title="controls">
-        <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label></div>
+      <div id="svCtl" class="panel" data-title="controls"><div class="sv-ctl">
+        <label class="ctl-row"><input type="checkbox" id="svHex"> Hex grid</label>
+        <label class="ctl-row" id="svShadeRow"><input type="checkbox" id="svShade" disabled> Coverage shading</label>
+        <div class="lg-head">Missions</div>
+        <div id="svStrip"></div></div></div>
       <div id="svLeg" class="panel" data-title="legend"><div class="lad-legend">
         <div class="lg-head">Coverage</div>
-        <div class="lg-ramp"><span>fewer</span><i class="cov-ramp"></i><span>more granules</span></div>
-        <div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>
-        <div id="svStrip"></div></div></div>
+        <div class="lg-ramp"><span>fewer</span><i class="cov-ramp"></i><span>more granules</span></div></div></div>
       <div id="svHexInfo" class="panel" data-title="hex"><div id="svHexBody" class="sv-hexbody small">Turn on the hex grid, then hover a hex.</div></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -24,12 +25,17 @@ AICESAT.SurveyView = class {
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
     this.map.hoverPanel = html => { if (html) $('svHexBody').innerHTML = html; };   // sticky: the last hex stays shown
-    AICESAT.util.drawer(root, null); root.classList.add('left-drawer');
+    root.classList.add('left-drawer'); AICESAT.util.drawer(root, null);   // class first: the drawer's arrow reads it
     // Off by default: the globe opens on the Earth itself; the switch shows the grid and the coverage shading.
-    this.map.coverageOn = false;
-    $('svHex').onchange = e => { this.map.coverageOn = e.target.checked; this.map._covMemo = null; this.map.render(); };
+    this.map.gridOn = false; this.map.shadeOn = false;
+    const sync = () => {
+      this.map.gridOn = $('svHex').checked; $('svShade').disabled = !this.map.gridOn;
+      this.map.shadeOn = this.map.gridOn && $('svShade').checked; $('svShadeRow').classList.toggle('off', !this.map.gridOn);
+      this.map._covMemo = null; this.map.render();
+    };
+    $('svHex').onchange = sync; $('svShade').onchange = sync;
     this.map.keepOut = () => [];   // the strip lives in the side panel now, off the map
-    this.strip = AICESAT.timeline.mount($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });
+    this.strip = AICESAT.timeline.mountList($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });
     this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible);
   }
   async load() {

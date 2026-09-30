@@ -340,6 +340,17 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 #view-survey .sv-toggle{display:flex;align-items:center;justify-content:center;gap:7px;font-size:12.5px;cursor:pointer;color:var(--ink)}
 .cov-ramp{display:inline-block;width:110px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgba(214,230,250,.08),rgba(214,230,250,.55));border:1px solid rgba(214,230,250,.25)}
 .sv-hexbody .covtip{font-size:12px}
+.sv-ctl { display:flex; flex-direction:column; gap:6px; }
+.sv-ctl .ctl-row.off { opacity:.45; }
+.lad-mhead { align-self:stretch; margin:8px 0 0; }
+.mlist { display:flex; flex-direction:column; gap:3px; align-self:stretch; }
+.ms-row { display:flex; align-items:center; gap:7px; font-size:12.5px; cursor:pointer; }
+.ms-row input { margin:0; }
+.ms-sw { width:10px; height:10px; border-radius:2px; flex:0 0 auto; }
+.ms-name { font-weight:600; }
+.ms-yrs { margin-left:auto; color:var(--muted); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.ms-row.off .ms-name, .ms-row.off .ms-sw { opacity:.4; }
+.ms-row.off .ms-name { color:var(--muted) !important; }
 #view-survey .sv-toggle input{margin:0}
 #view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
 #view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}
@@ -9621,7 +9632,8 @@ window.__extApps={getDocumentTheme:CN,applyHostStyleVariables:yN,applyHostFonts:
     const set = (c, persist = true) => {
       drawer.classList.toggle('collapsed', c);
       root.classList.toggle('drawer-collapsed', c);
-      tab.textContent = c ? '⟨' : '⟩'; tab.title = c ? 'show panels' : 'hide panels';
+      // the arrow points the way the drawer will move: a left-side drawer (.left-drawer) mirrors the right-side one
+      tab.textContent = (c !== root.classList.contains('left-drawer')) ? '⟨' : '⟩'; tab.title = c ? 'show panels' : 'hide panels';
       if (persist) { try { localStorage.setItem(KEY, c ? '1' : '0'); } catch (e) {} }
       setTimeout(() => window.dispatchEvent(new Event('resize')), 220);   // let deck.gl/map re-fit after the width change
     };
@@ -10186,7 +10198,7 @@ AICESAT.MapView = class {
       const halfKm = Math.min(80, 70 / Math.pow(1.7, Math.max(0, vs.zoom))) * 111, stepKm = {4: 39, 5: 14.8}[res];
       k = Math.min(45, Math.ceil(halfKm / stepKm) + 5);
     }
-    const key = res + '|' + this._covKey + '|' + anchor + '|' + k;
+    const key = res + '|' + this._covKey + '|' + anchor + '|' + k + '|' + this.gridOn + '|' + this.shadeOn;
     if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
     const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
     const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
@@ -10196,14 +10208,15 @@ AICESAT.MapView = class {
     const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
     const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
     let cells = [];
-    if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
+    if (this.gridOn === false) cells = [];
+    else if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
     else if (anchor) { try { cells = h3.gridDisk(h3.cellToCenterChild(anchor, res), k); } catch (e) { cells = []; } }
     const grid = cells.length ? [new H3HexagonLayer({id: 'earth-grid', data: cells, getHexagon: d => d, highPrecision: 'auto',
       filled: true, getFillColor: [0, 0, 0, 1], stroked: true, extruded: false, pickable: true,
       getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5})] : [];
-    const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
+    const layers = [...grid, ...(this.shadeOn === false ? [] : [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
-      getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
+      getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})])];
     this._covMemo = {key, layers};
     return layers;
   }
@@ -10385,7 +10398,8 @@ AICESAT.MapView = class {
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
-    if (this.coverage && this.coverageOn !== false) layers.push(...this.coverageLayers(H3HexagonLayer));
+    // gridOn / shadeOn: the globe's two switches (survey.js); a view that sets neither gets both, as before.
+    if (this.coverage && (this.gridOn !== false || this.shadeOn !== false)) layers.push(...this.coverageLayers(H3HexagonLayer));
     if (s.grid) {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {
@@ -11155,6 +11169,20 @@ window.AICESAT = window.AICESAT || {};
       host.querySelectorAll('.tl-name').forEach(b => b.onclick = () => onToggle(b.dataset.m));
     }};
   }
+  // Mission show/hide as a plain list in flight order: a checkbox, the mission's colour and name, the years it flew.
+  function mountList(host, onToggle) {
+    host.classList.add('mlist');
+    return {update(missions, visible) {
+      const M = AICESAT.missions, yrs = m => { const s = SPANS[m] || [T0, T1]; return Math.floor(s[0]) + '–' + (s[1] >= 2026 ? 'now' : Math.floor(s[1])); };
+      host.innerHTML = missions.slice().sort((a, b) => (SPANS[a] || [0])[0] - (SPANS[b] || [0])[0]).map(m => {
+        const c = M.colorOf(m, null).join(','), on = visible[m] !== false;
+        return `<label class="ms-row${on ? '' : ' off'}" title="${((M.MISSIONS[m] || {}).gloss || m)}"><input type="checkbox" data-m="${m}"${on ? ' checked' : ''}>` +
+          `<i class="ms-sw" style="background:rgb(${c})"></i><span class="ms-name" style="color:rgb(${c})">${SHORT[m] || m}</span>` +
+          `<span class="ms-yrs">${yrs(m)}</span></label>`;
+      }).join('');
+      host.querySelectorAll('input[data-m]').forEach(i => i.onchange = () => onToggle(i.dataset.m));
+    }};
+  }
   // Basemap of the change and study levels: 'dem' = the hillshaded DEM, no imagery; 'imagery' = the satellite image
   // draped on the DEM's heights, unlit, without the DEM wireframe. No imagery for the scene -> the DEM.
   const basemap = (mode, hasImagery) => (mode === 'imagery' && hasImagery) ? {imagery: true, surface: false}
@@ -11168,7 +11196,7 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.
@@ -11209,13 +11237,14 @@ AICESAT.SurveyView = class {
     // Side panel as at the change map, simpler: Controls (the hex switch), Legend (coverage ramp, the mission strip),
     // and the hovered hex's details in place of a floating tooltip.
     root.innerHTML = `<div class="map" id="svMap"></div>
-      <div id="svCtl" class="panel" data-title="controls">
-        <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label></div>
+      <div id="svCtl" class="panel" data-title="controls"><div class="sv-ctl">
+        <label class="ctl-row"><input type="checkbox" id="svHex"> Hex grid</label>
+        <label class="ctl-row" id="svShadeRow"><input type="checkbox" id="svShade" disabled> Coverage shading</label>
+        <div class="lg-head">Missions</div>
+        <div id="svStrip"></div></div></div>
       <div id="svLeg" class="panel" data-title="legend"><div class="lad-legend">
         <div class="lg-head">Coverage</div>
-        <div class="lg-ramp"><span>fewer</span><i class="cov-ramp"></i><span>more granules</span></div>
-        <div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>
-        <div id="svStrip"></div></div></div>
+        <div class="lg-ramp"><span>fewer</span><i class="cov-ramp"></i><span>more granules</span></div></div></div>
       <div id="svHexInfo" class="panel" data-title="hex"><div id="svHexBody" class="sv-hexbody small">Turn on the hex grid, then hover a hex.</div></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -11226,12 +11255,17 @@ AICESAT.SurveyView = class {
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
     this.map.hoverPanel = html => { if (html) $('svHexBody').innerHTML = html; };   // sticky: the last hex stays shown
-    AICESAT.util.drawer(root, null); root.classList.add('left-drawer');
+    root.classList.add('left-drawer'); AICESAT.util.drawer(root, null);   // class first: the drawer's arrow reads it
     // Off by default: the globe opens on the Earth itself; the switch shows the grid and the coverage shading.
-    this.map.coverageOn = false;
-    $('svHex').onchange = e => { this.map.coverageOn = e.target.checked; this.map._covMemo = null; this.map.render(); };
+    this.map.gridOn = false; this.map.shadeOn = false;
+    const sync = () => {
+      this.map.gridOn = $('svHex').checked; $('svShade').disabled = !this.map.gridOn;
+      this.map.shadeOn = this.map.gridOn && $('svShade').checked; $('svShadeRow').classList.toggle('off', !this.map.gridOn);
+      this.map._covMemo = null; this.map.render();
+    };
+    $('svHex').onchange = sync; $('svShade').onchange = sync;
     this.map.keepOut = () => [];   // the strip lives in the side panel now, off the map
-    this.strip = AICESAT.timeline.mount($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });
+    this.strip = AICESAT.timeline.mountList($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });
     this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible);
   }
   async load() {
@@ -11328,7 +11362,7 @@ const STUDY = new Set();      // H3 cells shift-clicked for a Study build (regio
 let STUDY_VER = 0, ANA_TAB = 'ts', imageryAuto = false;
 let BASEMAP = 'dem';         // ladder levels: 'dem' (hillshaded, the default) or 'imagery' (draped, unlit); kept across scenes
 const camAngles = () => LEVEL === 'region' ? {rotationX: 42, rotationOrbit: -18} : {rotationX: 35, rotationOrbit: -25};   // both oblique: the terrain reads
-const strip = AICESAT.timeline.mount($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
+const strip = AICESAT.timeline.mountList($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -12364,6 +12398,7 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 // opt-in "?" help on the jargon-heaviest label (Δh panel)
 { const U = AICESAT.util, G = U.GLOSSARY;
   const dhH = root.querySelector('#stats h2'); if (dhH) dhH.appendChild(U.help(G.dh)); }
+root.classList.add('left-drawer');   // before the drawer: its arrow reads the side
 AICESAT.util.drawer(root, null);
 // Ladder levels: the basemap switch and the change / confidence legends live at the top of the panel, and the drawer
 // sits on the left. The Delta-h tab is gone: it pairs shots within 35 m and drops pairs > 50 m apart, which on
@@ -12372,8 +12407,9 @@ AICESAT.util.drawer(root, null);
 // mission strip -- off the map here -- and the cell counts), Time series (the rest). Demo branch: the moves are
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'));
-  leg.append($('chgLegend'), $('timeline'), $('tsStatus'));
+  const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
+  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), mh, $('timeline'));
+  leg.append($('chgLegend'), $('tsStatus'));
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
 $('stats').addEventListener('reopen', () => updateStats());
@@ -12418,8 +12454,7 @@ function renderChgLegend() {
   el.innerHTML = `<div class="lg-head">Elevation trend</div>` +
     `<div class="lg-ramp"><span>−${lim}</span><i class="chg-ramp"></i><span>+${lim} m/yr</span></div>` +
     `<div class="lg-head">Confidence</div>` +
-    `<div class="lg-conf">${tile('high')}high ${tile('medium')}medium ${tile('low')}low</div>` +
-    `<div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>`;
+    `<div class="lg-conf">${tile('high')}high ${tile('medium')}medium ${tile('low')}low</div>`;
 }
 function toggleStudy(h) { if (STUDY.has(h)) STUDY.delete(h); else STUDY.add(h); STUDY_VER++; syncStudyBar(); render(); }
 function syncStudyBar() {

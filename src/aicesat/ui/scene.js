@@ -60,7 +60,7 @@ const STUDY = new Set();      // H3 cells shift-clicked for a Study build (regio
 let STUDY_VER = 0, ANA_TAB = 'ts', imageryAuto = false;
 let BASEMAP = 'dem';         // ladder levels: 'dem' (hillshaded, the default) or 'imagery' (draped, unlit); kept across scenes
 const camAngles = () => LEVEL === 'region' ? {rotationX: 42, rotationOrbit: -18} : {rotationX: 35, rotationOrbit: -25};   // both oblique: the terrain reads
-const strip = AICESAT.timeline.mount($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
+const strip = AICESAT.timeline.mountList($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -1096,6 +1096,7 @@ $('benchClose').onclick = () => { $('bench').hidden = true; };
 // opt-in "?" help on the jargon-heaviest label (Δh panel)
 { const U = AICESAT.util, G = U.GLOSSARY;
   const dhH = root.querySelector('#stats h2'); if (dhH) dhH.appendChild(U.help(G.dh)); }
+root.classList.add('left-drawer');   // before the drawer: its arrow reads the side
 AICESAT.util.drawer(root, null);
 // Ladder levels: the basemap switch and the change / confidence legends live at the top of the panel, and the drawer
 // sits on the left. The Delta-h tab is gone: it pairs shots within 35 m and drops pairs > 50 m apart, which on
@@ -1104,8 +1105,9 @@ AICESAT.util.drawer(root, null);
 // mission strip -- off the map here -- and the cell counts), Time series (the rest). Demo branch: the moves are
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'));
-  leg.append($('chgLegend'), $('timeline'), $('tsStatus'));
+  const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
+  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), mh, $('timeline'));
+  leg.append($('chgLegend'), $('tsStatus'));
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
 $('stats').addEventListener('reopen', () => updateStats());
@@ -1150,8 +1152,7 @@ function renderChgLegend() {
   el.innerHTML = `<div class="lg-head">Elevation trend</div>` +
     `<div class="lg-ramp"><span>−${lim}</span><i class="chg-ramp"></i><span>+${lim} m/yr</span></div>` +
     `<div class="lg-head">Confidence</div>` +
-    `<div class="lg-conf">${tile('high')}high ${tile('medium')}medium ${tile('low')}low</div>` +
-    `<div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>`;
+    `<div class="lg-conf">${tile('high')}high ${tile('medium')}medium ${tile('low')}low</div>`;
 }
 function toggleStudy(h) { if (STUDY.has(h)) STUDY.delete(h); else STUDY.add(h); STUDY_VER++; syncStudyBar(); render(); }
 function syncStudyBar() {
