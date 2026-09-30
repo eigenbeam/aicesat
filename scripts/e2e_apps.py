@@ -31,7 +31,7 @@ async def main():
             bound = {t.name: (t.meta or {}).get("ui") for t in tools.tools if t.meta and t.meta.get("ui")}
             print("ui-bound:", bound)
             if ext:
-                assert bound.get("open_ui", {}).get("resourceUri") == str(ui[0].uri)
+                assert bound.get("elevation_change", {}).get("resourceUri") == str(ui[0].uri)
             # app-visible tools should not be advertised to a client that did not negotiate Apps
             print("ui_* visible without Apps negotiation:", [n for n in names if n.startswith("ui_")])
             # What an MCP App can still fetch: metadata and the chunked DEM surface. Point arrays are NOT here any

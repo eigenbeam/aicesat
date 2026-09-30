@@ -894,6 +894,98 @@ def timeseries_cell(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.
         "use the parameters the cell came from.")
 
 
+# --- the demo ladder's change level ---------------------------------------------------------------------------
+# The change map's reference plane is ONE era's: fitted to all missions jointly, the plane mistakes 20 years of
+# thinning for slope wherever the missions sampled different parts of a cell (8806f21187fffff: 6.2 deg joint vs ~2 deg
+# for each mission alone; 2026 read -57 m instead of -87 m). ATL06 alone agrees with GLAS alone to ~1 m there and
+# covers 855 cells at res 8 against GLAS's 112.
+CHANGE_REF = ["ATL06"]
+REGION_FLAGS = {"with_glas": True, "with_icessn": True, "with_atl06": True, "with_atl03": False,
+                "with_gedi": False, "with_gpstruth": False, "with_coreg": False}
+_region_jobs: dict[str, dict] = {}
+_region_lock = threading.Lock()
+
+
+def region_hex(lat: float, lon: float, radius_km: float = 10.0) -> str:
+    """The hex an area request resolves to: res 5 (~17 km across) up to a 12 km radius, else res 4 (~45 km). The
+    globe's click and the model's lat/lon land on the same hex, so they share one scene."""
+    import h3
+    return h3.latlng_to_cell(float(lat), float(lon), 5 if radius_km <= 12 else 4)
+
+
+def region_question(hx: str) -> str:
+    return f"H3 {hx}"
+
+
+def hex_polygon(hx: str) -> list[list[float]]:
+    import h3
+    return [[round(lon, 6), round(lat, 6)] for lat, lon in h3.cell_to_boundary(hx)]
+
+
+def region_scene(hx: str) -> dict:
+    """Find the change-level scene for `hx`, or start its build (once): {"scene_id", "job_id", "status"}."""
+    q = region_question(hx)
+    with _region_lock:
+        for r in scenes():
+            if r.get("question") == q and r.get("status") in ("ready", "loading"):
+                return {"scene_id": r["scene_id"], "job_id": r.get("job_id"), "status": r["status"]}
+        memo = _region_jobs.get(hx)
+        if memo:
+            j = job(memo["job_id"])
+            if not (j and j.get("status") == "error"):
+                return {**memo, "status": "ready" if j and j.get("status") == "done" else "loading"}
+        jb = start_job({"polygon": hex_polygon(hx), "question": q, **REGION_FLAGS})
+        _region_jobs[hx] = {"scene_id": jb["scene_id"], "job_id": jb["id"]}
+        return {**_region_jobs[hx], "status": "loading"}
+
+
+def _change_row(c: dict) -> dict:
+    s = c["series"]
+    return {"h3": c["h3"], "lat": round(c["lat"], 4), "lon": round(c["lon"], 4),
+            "change_m": round(s[-1]["value_m"] - s[0]["value_m"], 1),
+            "first_year": int(s[0]["year"]), "last_year": int(s[-1]["year"]),
+            "trend_m_per_yr": round(c["trend_cm_yr"] / 100, 2), "span_years": round(c["span_years"], 1),
+            "missions": sorted({m for p in s for m in p["missions"]}), "level": c["level"],
+            "slope_removal_err_m": (c.get("components") or {}).get("plane_err_max_m"), "why": c["why"]}
+
+
+def elevation_change(lat: float, lon: float, radius_km: float = 10.0, h3_res: int = 8, limit: int = 10,
+                     wait_s: float = 45.0) -> dict:
+    """The change level for a place: build (or reuse) the scene over its hex, then rank the cells whose record is
+    reliable. Low-confidence cells are counted, never listed."""
+    import h3
+    hx = region_hex(lat, lon, radius_km)
+    r = region_scene(hx)
+    t0 = time.time()
+    while r["status"] == "loading" and time.time() - t0 < wait_s:
+        time.sleep(1.0)
+        rec = next((s for s in scenes() if s["scene_id"] == r["scene_id"]), None)
+        r = {**r, "status": rec["status"] if rec else "loading"}
+    area = {"h3": hx, "hex_res": h3.get_resolution(hx), "lat": float(lat), "lon": float(lon)}
+    if r["status"] == "loading":
+        return {"status": "building", "scene_id": r["scene_id"], "area": area,
+                "message": "The area is still being fetched from NASA. Call elevation_change again with the same "
+                           "arguments; it waits on the same build."}
+    if r["status"] != "ready":
+        raise ValueError(f"the build for hex {hx} failed; its scene is {r['scene_id']}")
+    out = scene_candidates(r["scene_id"], h3_res=int(h3_res), ref_missions=CHANGE_REF)
+    cands = out["candidates"]
+    reliable = [c for c in cands if c["level"] != "low"]
+    ranked = sorted(reliable, key=lambda c: (-c["span_years"], -c["confidence"]))
+    summary = None
+    if reliable:
+        tr = sorted(c["trend_cm_yr"] for c in reliable)
+        summary = {"median_trend_m_per_yr": round(tr[len(tr) // 2] / 100, 2),
+                   "most_thinning": _change_row(min(reliable, key=lambda c: c["trend_cm_yr"])),
+                   "most_thickening": _change_row(max(reliable, key=lambda c: c["trend_cm_yr"])),
+                   "n_record_15yr_plus": sum(c["span_years"] >= 15 for c in reliable)}
+    n = max(1, int(limit))
+    return {"status": "ready", "scene_id": r["scene_id"], "area": area, "h3_res": int(h3_res),
+            "n_cells": len(cands), "n_reliable": len(reliable), "n_low_confidence": len(cands) - len(reliable),
+            "returned": min(len(ranked), n), "summary": summary, "cells": [_change_row(c) for c in ranked[:n]],
+            "reference": out["params"]["ref_missions"], "caveats": out["params"]["notes"]}
+
+
 # ----------------------------------------------------------------------------- lake
 def lake_cells(stats: bool = True, mission: str = "ICESAT2") -> dict:
     """Materialized H3 cells as GeoJSON; with per-cell stats in properties when stats=True."""

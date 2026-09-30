@@ -124,7 +124,7 @@ def test_tool_errors_carry_their_message_to_the_model(scene, monkeypatch):
 
     with pytest.raises(ToolError) as e:
         server.show_timeseries("nosuchscene", "8900000000bffff")
-    assert "nosuchscene" in str(e.value) and "list_scenes" in str(e.value)
+    assert "nosuchscene" in str(e.value) and "elevation_change" in str(e.value)   # the tool the model can see
 
     with pytest.raises(ToolError) as e:
         server.find_timeseries_candidates("nosuchscene")
@@ -140,5 +140,7 @@ def test_tools_route_the_app_to_the_timeseries_view(scene):
     assert d["view"] == "ts" and d["url"].endswith("/#ts/" + scene)
 
     h3 = d["candidates"][0]["h3"]
-    c = server.show_timeseries(scene, h3)
+    # show_timeseries defaults to the change level's search (res 8, ICESat-2 reference); a cell from another search
+    # is looked up under the parameters that produced it, as its docstring says
+    c = server.show_timeseries(scene, h3, h3_res=9, ref_missions=d["params"]["ref_missions"])
     assert c["view"] == "ts" and c["select"] == h3 and c["url"].endswith("?sel=" + h3)

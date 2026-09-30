@@ -386,13 +386,12 @@ def _ui_html() -> str:
 
 apps.add_html_resource(
     UI_URI, _ui_html(), name="aicesat-ui", title="Cross-mission altimetry",
-    description="Explore / Lake / Scene views: draw an area on imagery, build scenes, browse the Parquet lake, view co-registration in 3-D",
+    description="Altimetry by place: a coverage globe, a change map per area, and a 3-D study view",
     csp=ResourceCsp(connect_domains=["https://tiles.maps.eox.at"], resource_domains=["https://tiles.maps.eox.at"]),
     prefers_border=False,
 )
 
 
-@apps.tool(resource_uri=UI_URI, name="show_photons")
 def show_photons(region: str | None = None, bbox: list[float] | None = None, polygon: list[list[float]] | None = None,
                  time_window: list[str] | None = None, question: str | None = None) -> dict:
     """Slice 1: extract real ICESat-2 ATL03 land-ice signal photons (all 6 beams, medium+high confidence) over an area
@@ -409,7 +408,6 @@ def show_photons(region: str | None = None, bbox: list[float] | None = None, pol
             "polygon": doc.get("polygon"), "time_window": meta["window"], "imagery": bool(doc.get("imagery"))}
 
 
-@apps.tool(resource_uri=UI_URI, name="open_ui")
 def open_ui(view: str = "explore") -> dict:
     """URL of the unified UI: Explore (imagery map, draw a box or polygon on Sentinel-2 imagery, coverage check, build
     scenes, open the 3-D viewer) and Lake (H3 grid with per-cell stats, storage limit, background loading, eviction)."""
@@ -420,7 +418,6 @@ def open_ui(view: str = "explore") -> dict:
 
 
 
-@apps.tool(resource_uri=UI_URI, name="add_glas")
 def add_glas(scene_id: str, time_window: list[str] | None = None) -> dict:
     """Slice 2: add ICESat/GLAS GLAH06 40 Hz shots (2003-2009 campaigns) to an existing scene, in native
     coordinates (ITRF2008; heights converted TOPEX/Poseidon -> WGS84 ellipsoid). Returns provenance by campaign."""
@@ -440,7 +437,6 @@ def add_glas(scene_id: str, time_window: list[str] | None = None) -> dict:
             "ellipsoid_correction": meta["ellipsoid_correction"], "access": meta.get("access")}
 
 
-@apps.tool(resource_uri=UI_URI, name="coregister")
 def coregister(scene_id: str, common_epoch: float = 2005.0, colocation_radius_m: float = 35.0,
                exaggeration: float = 0.0) -> dict:
     """Slice 3: run the ITRF2014 + epoch co-registration (plate motion, ITRF2014-PMM NOAM) on both missions in
@@ -466,12 +462,12 @@ def _anticipated(fn, *a, **kw):
     try:
         return fn(*a, **kw)
     except KeyError as e:
-        raise ToolError(f"no such scene {e.args[0] if e.args else ''} — list_scenes shows the built scenes") from e
+        raise ToolError(f"no such scene {e.args[0] if e.args else ''} — elevation_change returns the scene_id for a "
+                        "place") from e
     except ValueError as e:
         raise ToolError(str(e)) from e
 
 
-@apps.tool(resource_uri=UI_URI, name="find_timeseries_candidates")
 def find_timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0,
                                ref_missions: list[str] | None = None, min_bins: int = 3, limit: int = 10) -> dict:
     """Find and rank the places in a built scene where an elevation TIME SERIES can actually be measured.
@@ -489,21 +485,60 @@ def find_timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 
     return {**out, "view": "ts", "url": ts_url(scene_id)}
 
 
+def scene_level_url(scene_id: str, level: str) -> str:
+    return f"{base_url()}/#scene/{scene_id}?level={level}"
+
+
+@apps.tool(resource_uri=UI_URI, name="survey_coverage")
+def survey_coverage(lat: float, lon: float, radius_km: float = 50.0) -> dict:
+    """Which laser-altimetry missions have measured a place, how often, and in which years -- before fetching anything.
+
+    Covers ICESat (GLAS, 2003-09), Operation IceBridge ATM (2009-19) and ICESat-2 ATL06 land ice (2018-). Reads only
+    the pre-built index, so it is instant. `indexed` false means no index covers the area: say that, never "no data".
+    `long_record` true means all three missions overlap there, so a 20-year elevation record is possible.
+    Opens the globe on the area, each hex coloured by how many missions saw it."""
+    bbox = survey.area_bbox(lat, lon, radius_km)
+    s = survey.area_summary(bbox)
+    return {"area": {"lat": lat, "lon": lon, "radius_km": radius_km}, "bbox": bbox,
+            "missions": {survey.LABELS[k]: v for k, v in s.items()},
+            "indexed": any(v["hexes"] for v in s.values()),
+            "long_record": all(v["passes"] for v in s.values()),
+            "view": "survey"}
+
+
+@apps.tool(resource_uri=UI_URI, name="elevation_change")
+def elevation_change(lat: float, lon: float, radius_km: float = 10.0, h3_res: int = 8, limit: int = 10) -> dict:
+    """How the ice or land surface height has changed at a place, across ICESat, IceBridge and ICESat-2 (2003-now),
+    and where the record is long enough to tell.
+
+    Fetches every mission's measurements over the H3 hex containing (lat, lon) -- res 5 (~17 km across) for
+    radius_km <= 12, else res 4 (~45 km) -- bins them into res-`h3_res` cells (8 ~ 530 m edge) and one-year windows,
+    and removes each cell's surface slope with a plane fitted to ICESat-2 alone (one era, so change is never mistaken
+    for slope). A cell whose slope removal is uncertain by more than 1 m where some mission sampled it -- because that
+    mission's samples lie off the ground ICESat-2 covers -- is low confidence: counted, not listed.
+    Returns the reliable cells ranked by record length: total change in metres, first/last year, rate, contributing
+    missions, slope_removal_err_m and a confidence reason. status "building" means the area is still being fetched:
+    call again with the same arguments. Quote every rate with its caveats (no inter-mission bias correction, no GIA).
+    Use show_timeseries for one cell."""
+    out = _anticipated(api.elevation_change, lat, lon, radius_km=radius_km, h3_res=h3_res, limit=limit)
+    return {**out, "view": "scene", "query": "level=region", "open_url": scene_level_url(out["scene_id"], "region")}
+
+
 @apps.tool(resource_uri=UI_URI, name="show_timeseries")
-def show_timeseries(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.0,
+def show_timeseries(scene_id: str, h3: str, h3_res: int = 8, delta_t: float = 1.0,
                     ref_missions: list[str] | None = None, min_bins: int = 3) -> dict:
-    """Show one candidate cell's elevation time series and open the chart on it.
+    """Show one cell's elevation time series and open the chart on it, with the cell outlined on satellite imagery.
 
-    `h3` comes from find_timeseries_candidates; pass back the SAME search parameters it was found under, because a
-    cell id only exists within the search that produced it. Returns each time window's median height residual about
-    the cell's reference plane with its MAD error bar and which missions contributed, plus the confidence breakdown
-    and the least-squares trend in cm/yr.
-
-    The trend is uncorrected for inter-campaign / inter-sensor bias and for GIA (see params.notes) — relay that with
-    the number; a mission changeover mid-series biases it."""
+    `scene_id` and `h3` come from elevation_change; keep its h3_res (default 8) -- a cell id only exists within the
+    search that produced it. Returns each one-year window's median height relative to the cell's ICESat-2 reference
+    plane, with its MAD error bar, its slope-removal error (plane_err_m) and the missions that contributed, plus the
+    confidence breakdown and the least-squares trend in cm/yr. The trend is uncorrected for inter-mission bias and
+    GIA -- relay that with it."""
+    ref = ref_missions or api.CHANGE_REF
     out = _anticipated(api.timeseries_cell, scene_id, h3, h3_res=h3_res, delta_t=delta_t,
-                       ref_missions=ref_missions, min_bins=min_bins)
-    return {**out, "view": "ts", "select": h3, "url": ts_url(scene_id, h3)}
+                       ref_missions=ref, min_bins=min_bins)
+    return {**out, "view": "ts", "select": h3, "res": h3_res, "url": ts_url(scene_id, h3),
+            "open_url": scene_level_url(scene_id, "region")}
 
 
 # ----------------------------------------------------------------------------- app-visible tools (MCP Apps data plane)
@@ -639,43 +674,40 @@ mcp = MCPServer(
     "aicesat",
     extensions=[apps],
     instructions=(
-        "Cross-mission altimetry demo (ICESat-2 ATL03 + ICESat/GLAS GLAH06). Tools compute and return "
-        "structured JSON plus a widget URL the user should open; the widget renders the 3D scene. "
-        "Always relay the comparability block and unresolved list to the user; never claim the missions "
-        "'agree' — co-registration removes the plate-motion artifact only. "
-        "For the time-series tools the same discipline applies to the rate: trend_cm_yr is uncorrected for "
-        "inter-campaign / inter-sensor bias and for GIA, so quote it with that caveat and with the cell's "
-        "confidence level and `why`, never as a bare number. A truncated candidate list reports "
-        "n_candidates_total — say how many cells were found, not just how many you were shown."
+        "Cross-mission laser altimetry: ICESat (2003-09), Operation IceBridge (2009-19) and ICESat-2 (2018-), as one "
+        "record per place. Three tools, one per question: survey_coverage (which missions measured here, and when -- "
+        "instant, from the index), elevation_change (how the surface height changed, cell by cell, and where the "
+        "record is long enough to tell), show_timeseries (one cell's full record, charted). Resolve place names to "
+        "lat/lon yourself. The missions sampled different spots inside each cell on sloping ground, so every value "
+        "is measured relative to a surface plane fitted to ICESat-2 alone; a cell where that plane must reach "
+        "samples far from where ICESat-2 measured is low confidence, and slope_removal_err_m / plane_err_m say how "
+        "much the slope removal could be off. Every rate is uncorrected for inter-mission bias and GIA: quote it "
+        "with that caveat and with the cell's confidence and `why`, never as a bare number. Say how many cells were "
+        "low confidence, not just the ones you were shown."
     ),
 )
 
-@mcp.tool()
 def list_regions() -> dict:
     """Named candidate Greenland demo regions (bbox = west, south, east, north) with validation notes."""
     return api.list_regions()
 
 
-@mcp.tool()
 def list_scenes() -> list[dict]:
     """Scenes built so far (newest first) with status ready | loading | error, area, series present, and widget URL."""
     return [{**r, "widget_url": widget_url(r["scene_id"])} for r in api.scenes()]
 
 
-@mcp.tool()
 def lake_status() -> dict:
     """Parquet lake summary: cells, files, rows, bytes, storage limit and usage, recent evictions."""
     return api.lake_summary()
 
 
-@mcp.tool()
 def lake_load_cells(cells: list[str], time_window: list[str] | None = None) -> dict:
     """Materialize H3 (res 6) cells into the lake in the background (cell ids as decimal strings); returns a job id."""
     j = api.lake_load(cells, time_window)
     return {"job_id": j["id"]}
 
 
-@mcp.tool()
 def job_status(job_id: str) -> dict:
     """Status and log of a background build job (scene or cell load)."""
     j = api.job(job_id)
@@ -684,7 +716,6 @@ def job_status(job_id: str) -> dict:
     return j
 
 
-@mcp.tool()
 def check_coverage(region: str | None = None, bbox: list[float] | None = None) -> dict:
     """How many granules of each collection (ICESat/GLAS, IceBridge ICESSN, ICESat-2 ATL06 and ATL03, GEDI) touch a
     region, with a per-month breakdown. Give either a region name (see list_regions) or an explicit bbox
