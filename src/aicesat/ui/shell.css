@@ -411,6 +411,14 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .conf-scale i { position:absolute; top:-3px; width:2px; height:12px; background:var(--ink); transform:translateX(-1px); }
 .tscomp { margin:2px 0 4px 16px; padding-left:8px; border-left:1px solid var(--hair); }
 .corr-note { color:var(--muted); }
+/* credits live behind the top bar's Sources button, not on the map */
+.view #attrib { display:none !important; }
+#sourcespanel { position:absolute; top:46px; right:12px; z-index:40; width:min(420px, calc(100% - 24px)); background:var(--panel);
+  border:1px solid var(--hair); border-radius:9px; padding:10px 14px; font-size:12px; backdrop-filter:blur(6px); }
+#sourcespanel h3 { margin:0 0 6px; font-size:12.5px; }
+#sourcespanel ul { margin:0; padding-left:16px; line-height:1.5; }
+#sourcespanel .hp-close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--muted); font-size:15px; cursor:pointer; }
+#sourcespanel[hidden] { display:none; }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
 .pn{position:absolute;transform:translate(-50%,-50%);font:600 12px ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 0 3px #080c14,0 0 3px #080c14,0 0 7px #080c14}

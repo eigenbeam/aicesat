@@ -417,6 +417,14 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .conf-scale i { position:absolute; top:-3px; width:2px; height:12px; background:var(--ink); transform:translateX(-1px); }
 .tscomp { margin:2px 0 4px 16px; padding-left:8px; border-left:1px solid var(--hair); }
 .corr-note { color:var(--muted); }
+/* credits live behind the top bar's Sources button, not on the map */
+.view #attrib { display:none !important; }
+#sourcespanel { position:absolute; top:46px; right:12px; z-index:40; width:min(420px, calc(100% - 24px)); background:var(--panel);
+  border:1px solid var(--hair); border-radius:9px; padding:10px 14px; font-size:12px; backdrop-filter:blur(6px); }
+#sourcespanel h3 { margin:0 0 6px; font-size:12.5px; }
+#sourcespanel ul { margin:0; padding-left:16px; line-height:1.5; }
+#sourcespanel .hp-close { position:absolute; top:4px; right:6px; border:none; background:none; color:var(--muted); font-size:15px; cursor:pointer; }
+#sourcespanel[hidden] { display:none; }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
 .pn{position:absolute;transform:translate(-50%,-50%);font:600 12px ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 0 3px #080c14,0 0 3px #080c14,0 0 7px #080c14}
@@ -432,10 +440,12 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
   <button id="helpBtn" class="tab" hidden title="What is this? How it works">?</button>
+  <button id="sourcesBtn" class="tab" title="Data sources and credits">ⓘ Sources</button>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
 </div>
 <div id="apperr" hidden></div>
+<div id="sourcespanel" hidden><button class="hp-close" title="close">×</button><h3>Sources</h3><div id="sourcesBody"></div></div>
 <div id="helppanel" hidden>
   <button class="hp-close" title="close">×</button>
   <h3>Cross-mission altimetry</h3>
@@ -12895,6 +12905,15 @@ AICESAT.ready.then(api => {
   $('topBack').onclick = () => { location.hash = '#' + lastList; };
   // opt-in help: the "?" toggles a Help/About panel (never shown automatically)
   $('helpBtn').onclick = () => { $('helppanel').hidden = !$('helppanel').hidden; };
+  // Sources: the current view's credit line (#attrib, kept off the map) as a list, behind the top bar's button.
+  $('sourcesBtn').onclick = () => {
+    const p = $('sourcespanel'); if (!p.hidden) { p.hidden = true; return; }
+    const a = document.querySelector('.view.on #attrib'), txt = a ? a.textContent.trim() : '';
+    $('sourcesBody').innerHTML = txt ? '<ul>' + txt.split(' · ').map(s => '<li>' + s.replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c])) + '</li>').join('') + '</ul>'
+                                     : '<p class="small">No sources listed for this view.</p>';
+    p.hidden = false;
+  };
+  $('sourcespanel').querySelector('.hp-close').onclick = () => { $('sourcespanel').hidden = true; };
   $('helppanel').querySelector('.hp-close').onclick = () => { $('helppanel').hidden = true; };
   window.addEventListener('hashchange', route);
 

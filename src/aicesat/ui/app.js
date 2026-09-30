@@ -71,6 +71,15 @@ AICESAT.ready.then(api => {
   $('topBack').onclick = () => { location.hash = '#' + lastList; };
   // opt-in help: the "?" toggles a Help/About panel (never shown automatically)
   $('helpBtn').onclick = () => { $('helppanel').hidden = !$('helppanel').hidden; };
+  // Sources: the current view's credit line (#attrib, kept off the map) as a list, behind the top bar's button.
+  $('sourcesBtn').onclick = () => {
+    const p = $('sourcespanel'); if (!p.hidden) { p.hidden = true; return; }
+    const a = document.querySelector('.view.on #attrib'), txt = a ? a.textContent.trim() : '';
+    $('sourcesBody').innerHTML = txt ? '<ul>' + txt.split(' · ').map(s => '<li>' + s.replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c])) + '</li>').join('') + '</ul>'
+                                     : '<p class="small">No sources listed for this view.</p>';
+    p.hidden = false;
+  };
+  $('sourcespanel').querySelector('.hp-close').onclick = () => { $('sourcespanel').hidden = true; };
   $('helppanel').querySelector('.hp-close').onclick = () => { $('helppanel').hidden = true; };
   window.addEventListener('hashchange', route);
 
