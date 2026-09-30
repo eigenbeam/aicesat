@@ -53,4 +53,17 @@ const st = T.stack('region'), cl = T.stack(null);
 assert.ok(st.indexOf('clouds') > st.indexOf('candidates') && st.indexOf('clouds') > st.indexOf('surface'));
 assert.ok(cl.indexOf('clouds') < cl.indexOf('candidates'), 'classic view keeps its picking order');
 assert.deepStrictEqual([...st].sort(), [...cl].sort(), 'same layers, different order');
+// Mission colours must not borrow the change map's meaning: ATL06 used to be the ramp's blue ("rose") and IceBridge its
+// red ("fell"), so a track read as change the data did not show. Each demo mission sits >= 35 deg of hue from both ramp
+// ends and from each other.
+eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'aicesat', 'ui', 'tspanel.js'), 'utf8'));
+const hue = ([r, g, b]) => { const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn || 1;
+  const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (h * 60 + 360) % 360; };
+const apart = (a, b) => { const d = Math.abs(hue(a) - hue(b)) % 360; return Math.min(d, 360 - d); };
+const PAL = AICESAT.missions.MISSION_COLORS, DEMO = ['GLAS', 'ICESSN', 'ATL06', 'ICESAT2'];
+const fell = T.trendColor(-100, 'high', 100), rose = T.trendColor(100, 'high', 100);
+for (const m of DEMO) for (const [end, c] of [['fell', fell], ['rose', rose]])
+  assert.ok(apart(PAL[m], c) >= 35, `${m} is ${apart(PAL[m], c).toFixed(0)} deg from the ramp's "${end}" colour`);
+for (const a of DEMO) for (const b of DEMO) if (a < b)
+  assert.ok(apart(PAL[a], PAL[b]) >= 35, `${a} and ${b} are ${apart(PAL[a], PAL[b]).toFixed(0)} deg apart`);
 console.log('timeline ok');

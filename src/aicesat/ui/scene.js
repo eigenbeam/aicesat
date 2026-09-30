@@ -81,7 +81,10 @@ const deckgl = new Deck({
   // track zoom for the ICESSN dots<->platelets level-of-detail; re-render only when the threshold flips (not every tick)
   onViewStateChange: ({viewState}) => {
     curView = viewState;
-    if (typeof viewState.zoom === 'number') { const was = plateletsNear(); curZoom = viewState.zoom; if (plateletsNear() !== was) render(); }
+    if (typeof viewState.zoom === 'number') {
+      const lod = () => `${plateletsNear()}|${ringsNear()}`, was = lod();
+      curZoom = viewState.zoom; if (lod() !== was) render();
+    }
   },
   layers: [],
 });
@@ -137,7 +140,8 @@ function plateletLayer(m, s) {
       const b = Math.max(0.4, Math.min(1, 0.62 + 0.5 * ((-we * LIGHT[0] - sn * LIGHT[1] + LIGHT[2]) / nl)));
       return [base[0] * b, base[1] * b, base[2] * b, 235];
     },
-    _normalize: false,   // simple convex quads
+    // No `_normalize: false`: it skips closing each ring, and deck then triangulated these open 4-corner quads into
+    // ZERO triangles (tesselator vertexCount 0), so every platelet vanished and IceBridge disappeared on zoom-in.
     ...(LEVEL ? {parameters: AICESAT.timeline.cloudProps(LEVEL).parameters} : {}),   // same as the points, see timeline.js
     updateTriggers: {getPolygon: PT_SCALE, getFillColor: base},   // Z_EXAG now rides the model matrix, no re-tessellation
   });
@@ -159,9 +163,17 @@ function cloudData(m, src) {
   return data;
 }
 
+// Ladder-level point styling. Dense missions draw first and faint, sparse ones last and solid, so GLAS is not painted
+// under ATL06 and the change map still reads through the tracks. Close in, GLAS becomes its ~70 m footprint.
+const DRAW_ORDER = ['ICESAT2', 'ATL06', 'ICESSN', 'GLAS', 'GEDI', 'GPSTRUTH'];
+const REGION_ALPHA = {ATL06: 110, ICESAT2: 110, ICESSN: 200, GLAS: 255};
+const ringsNear = () => FOOTPRINT_M.GLAS * PT_SCALE * Math.pow(2, curZoom) >= 6;   // a GLAS ring would span >= 6 px
+
 function cloudLayers() {
   const out = [];
-  for (const [m, s] of Object.entries(scene.series)) {
+  const rank = m => { const i = DRAW_ORDER.indexOf(m); return i < 0 ? -1 : i; };
+  const entries = Object.entries(scene.series).sort((a, b) => rank(a[0]) - rank(b[0]));
+  for (const [m, s] of entries) {
     if (visible[m] === false) continue;   // per-mission show/hide (legend toggles)
     const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
     if (!src || !src.length) continue;    // announced by the metadata poll, not yet delivered by the stream
@@ -180,14 +192,25 @@ function cloudLayers() {
     // The accessor form allocated an n-element index array AND called a JS closure per point on every render — for a
     // ~2M-point mission that dominated the frame. Vertical exaggeration is applied on the GPU via a model matrix, so
     // changing it costs no re-upload and no re-walk of the buffer.
+    const common = {data: cloudData(m, src), modelMatrix: zExagMatrix(), radiusUnits: 'meters', billboard: true,
+                    ...AICESAT.timeline.cloudProps(LEVEL)};
+    if (LEVEL && m === 'GLAS' && ringsNear()) {
+      // The footprint lies ON the ground (billboard off, or it turns to face the camera); a dark under-stroke keeps
+      // the ring readable over white ice and pink cells alike.
+      for (const [id, col, w] of [['ringbg', [12, 14, 20, 230], 4], ['ring', colorOf(m).slice(0, 3).concat(255), 2]]) {
+        out.push(new deck.ScatterplotLayer({...common, id: `pc-${m}-${id}`, billboard: false, filled: false, stroked: true,
+          getRadius: FOOTPRINT_M[m] * PT_SCALE, radiusMinPixels: 4, radiusMaxPixels: 40,
+          getLineColor: col, lineWidthUnits: 'pixels', getLineWidth: w,
+          updateTriggers: {getRadius: PT_SCALE, getLineColor: colorOf(m)}}));
+      }
+      continue;
+    }
     out.push(new deck.ScatterplotLayer({
+      ...common,
       id: 'pc-' + m,
-      data: cloudData(m, src),
-      modelMatrix: zExagMatrix(),
-      getFillColor: (LEVEL === 'region' && candidates.length) ? colorOf(m).slice(0, 3).concat(110) : colorOf(m),
-      getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
-      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
-      ...AICESAT.timeline.cloudProps(LEVEL),   // on top of terrain + change hexes at the ladder levels (see timeline.js)
+      getFillColor: (LEVEL === 'region' && candidates.length) ? colorOf(m).slice(0, 3).concat(REGION_ALPHA[m] || 200) : colorOf(m),
+      getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE,
+      radiusMinPixels: 1, radiusMaxPixels: 6,
       updateTriggers: {getRadius: PT_SCALE, getFillColor: [LEVEL, candidates.length]},
     }));
   }

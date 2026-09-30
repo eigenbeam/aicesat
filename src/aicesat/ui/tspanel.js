@@ -17,10 +17,11 @@ window.AICESAT = window.AICESAT || {};
     ATL06:   {name: 'ICESat-2 land ice (ATL06)', epoch: '2018–',    gloss: 'ICESat-2 ATL06 land-ice height segments'},
   };
   const MISSION_ORDER = ['GLAS', 'GPSTRUTH', 'ICESSN', 'GEDI', 'ICESAT2', 'ATL06'];   // chronological
-  // Display palette (Okabe-Ito subset): distinct, colour-blind-friendly, high-contrast against the charcoal DEM.
-  // Applied everywhere (clouds, legend swatches, time-series points) so it also recolours scenes built before it.
-  // GLAS yellow, IceBridge vermillion, ATL06 blue — yellow/blue is the CVD-safe axis; ATL03 (rare) takes green.
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [230, 75, 60], ATL06: [40, 140, 225], ICESAT2: [40, 200, 120], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
+  // Display palette, applied everywhere (clouds, strip, globe, time-series points) so it also recolours older scenes.
+  // Red and blue belong to the change map (surface fell / rose), so no mission may use them: ATL06 was the ramp's blue
+  // and IceBridge its red, and a track read as change the data did not show. GLAS yellow, IceBridge magenta, ATL06
+  // teal, ATL03 green — each >= 35 deg of hue from both ramp ends and from each other (tests/test_timeline.js).
+  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [222, 102, 222], ATL06: [24, 196, 176], ICESAT2: [120, 220, 90], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,

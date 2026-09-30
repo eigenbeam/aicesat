@@ -35,7 +35,7 @@ def _tr(crs: str) -> Transformer:
 # Per-mission point-cloud palette (Okabe-Ito subset): distinct, colour-blind-friendly, and high-contrast against the
 # grey-blue DEM base surface. The scene widget mirrors these (scene.js MISSION_COLORS) so it can also recolour scenes
 # built before this palette existed.
-COLORS = {"ICESAT2": [40, 200, 120], "GLAS": [240, 228, 66], "ATL06": [40, 140, 225], "ICESSN": [230, 75, 60],
+COLORS = {"ICESAT2": [120, 220, 90], "GLAS": [240, 228, 66], "ATL06": [24, 196, 176], "ICESSN": [222, 102, 222],
           "GEDI": [200, 130, 235],   # violet: the remaining Okabe-Ito-adjacent hue, distinct from all four
           "GPSTRUTH": [230, 159, 0]}  # Okabe-Ito orange: clear of GLAS yellow, which the traverse overlaps in time
 
