@@ -150,16 +150,21 @@ function plateletLayer(m, s) {
   const fr = scene.frame, E = fr.east_xy || [1, 0], N = fr.north_xy || [0, 1];
   const half = PLATELET_M * PT_SCALE / 2;
   const corners = [[half, half], [half, -half], [-half, -half], [-half, half]];   // (east, north) offsets, CCW
-  return new deck.SolidPolygonLayer({
+  const quad = i => {
+    const cx = src[3 * i], cy = src[3 * i + 1], cz = src[3 * i + 2], sn = sl[2 * i], we = sl[2 * i + 1];
+    return corners.map(([de, dn]) => {
+      const dx = de * E[0] + dn * N[0], dy = de * E[1] + dn * N[1], dz = we * de + sn * dn;   // the platelet's fitted plane
+      return [cx + dx, cy + dy, cz + dz];
+    });
+  };
+  // Ladder levels: a thin dark outline on each platelet so neighbours read apart (platelets only draw close in).
+  const outline = LEVEL ? [new PathLayer({id: 'plat-edge-' + m, data: indices(src.length / 3), modelMatrix: zExagMatrix(),
+    getPath: i => { const q = quad(i); return q.concat([q[0]]); }, getColor: [10, 10, 14, 210], widthUnits: 'pixels', getWidth: 1,
+    parameters: AICESAT.timeline.cloudProps(LEVEL).parameters, updateTriggers: {getPath: PT_SCALE}})] : [];
+  return [new deck.SolidPolygonLayer({
     id: 'plat-' + m, data: indices(src.length / 3),
     modelMatrix: zExagMatrix(),   // z scaling on the GPU (matches the point layers); vertices stay in true metres
-    getPolygon: i => {
-      const cx = src[3 * i], cy = src[3 * i + 1], cz = src[3 * i + 2], sn = sl[2 * i], we = sl[2 * i + 1];
-      return corners.map(([de, dn]) => {
-        const dx = de * E[0] + dn * N[0], dy = de * E[1] + dn * N[1], dz = we * de + sn * dn;   // the platelet's fitted plane
-        return [cx + dx, cy + dy, cz + dz];
-      });
-    },
+    getPolygon: quad,
     // manual hillshade so the tilt reads even where SolidPolygonLayer's flat faces get uniform lighting: brightness
     // from the facet normal (-we, -sn, 1) against a fixed NW-above light.
     getFillColor: i => {
@@ -171,7 +176,7 @@ function plateletLayer(m, s) {
     // ZERO triangles (tesselator vertexCount 0), so every platelet vanished and IceBridge disappeared on zoom-in.
     ...(LEVEL ? {parameters: AICESAT.timeline.cloudProps(LEVEL).parameters} : {}),   // same as the points, see timeline.js
     updateTriggers: {getPolygon: PT_SCALE, getFillColor: base},   // Z_EXAG now rides the model matrix, no re-tessellation
-  });
+  }), ...outline];
 }
 
 // Layer-data memos. deck.gl compares props.data / props.mesh BY IDENTITY, so handing it a fresh object literal on
@@ -214,7 +219,7 @@ function cloudLayers() {
         billboard: true, updateTriggers: {getPosition: Z_EXAG},
       }));
     }
-    if (usePlatelets(m, s)) { out.push(plateletLayer(m, s)); continue; }   // near enough -> tilted facets, not dots
+    if (usePlatelets(m, s)) { out.push(...plateletLayer(m, s)); continue; }   // near enough -> tilted facets, not dots
     // Binary attribute path: hand deck.gl the Float32Array directly instead of {data: indices(n), getPosition: fn}.
     // The accessor form allocated an n-element index array AND called a JS closure per point on every render — for a
     // ~2M-point mission that dominated the frame. Vertical exaggeration is applied on the GPU via a model matrix, so
@@ -238,6 +243,7 @@ function cloudLayers() {
       getFillColor: (LEVEL === 'region' && candidates.length) ? colorOf(m).slice(0, 3).concat(REGION_ALPHA[m] || 200) : colorOf(m),
       getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE,
       radiusMinPixels: 1, radiusMaxPixels: 6,
+      ...(LEVEL && ringsNear() ? {stroked: true, getLineColor: [10, 10, 14, 220], lineWidthUnits: 'pixels', getLineWidth: 1} : {}),
       updateTriggers: {getRadius: PT_SCALE, getFillColor: [LEVEL, candidates.length]},
     }));
   }
