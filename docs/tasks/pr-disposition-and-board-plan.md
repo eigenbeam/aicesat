@@ -1,25 +1,39 @@
 # Task: carry PRs #15 and #18 forward onto main, and reconcile the board with the code
 
-**Status (2026-09-24): resolved into tickets.** Assessed 2026-09-10, re-verified 2026-09-17. On
-2026-09-24 every remaining part of both PRs became a ticket, the comments to Ben were posted on #15 and
-#18, and the board was triaged. See "Where it landed" below. #18 closes once Ben has seen its comment;
-#15 closes when the port (#40) merges. The analysis below is kept as the record of why.
+**Status (2026-09-29): complete.** Assessed 2026-09-10, re-verified 2026-09-17, resolved into tickets
+2026-09-24, and carried through by 2026-09-29. Both PRs are closed:
+- **#15:** its work landed as #40 (PR #44).
+- **#18:** Part 3 landed (PRs #43 and #45); its remaining parts are tracked tickets. Closed with a comment
+  mapping each part to where it went.
 
-## Where it landed (2026-09-24)
+Every PR this plan called for is merged, and the board holds only Ready and Backlog cards. The analysis
+below is kept as the record of why. Where a section's premise has since changed, a **Resolved** note
+says so, and the original text is left as it was.
+
+## Where it landed (final, 2026-09-29)
 
 | From | Now |
 |---|---|
-| PR #18 Part 1, native slopes | #35 (`slope_deg_median`, co-authored), #36 (ATL06 `fit_statistics` chunk-layout spike), #19 (ATL06 slopes + ribbons), #38 (ICESSN σ) |
-| PR #18 Part 2, six beams | already on main; the yaw-flip "unknown" label is #28 |
-| PR #18 Part 3, ITRF | #8 (frame generalisation, per-row `itrf_year`, loud failure, plate-motion constants pinned to PROJ) |
-| PR #15, GPS traverse | #40 (port onto the index contract, Ben as co-author), after #30, #34 and #8's frame work |
-| #14 (Ben) | epic; children #27 (time-series plane conditioning) and #37 (coreg across-track offset) |
-| The estimator finding below | #27 |
-| Registration surface below | #34; the `hasPlan` and `logbuf` gaps were fixed in #29 |
-| Board reconciliation below | done: #1–#5, #22, #24, #25 closed; #6, #7, #11 closed with reasons; #9, #10, #12, #13, #19, #20, #23 rewritten |
+| PR #18 Part 1, native slopes | Tracked: #35 (`slope_deg_median`, to be co-authored), #36 (ATL06 `fit_statistics` chunk-layout spike), #19 (ATL06 slopes + ribbons), #38 (ICESSN σ) |
+| PR #18 Part 2, six beams | Already on main; the yaw-flip "unknown" label is #28 |
+| PR #18 Part 3, ITRF | **Landed.** PR #43 carries Ben's `_frame_pipeline` generalisation and his tests (452a0e1, co-authored), per-row propagation, and a loud failure in place of the silent fallback. PR #45 carries his header parser and tests (b2c9cc5, co-authored), with `itrf_year` on every ICESSN index row. #8 closed. |
+| PR #15, GPS traverse | **Landed.** #40, ported onto the index contract in PR #44 (a1ab4b9, co-authored). #15 closed. |
+| #14 (Ben) | Epic; children #27 (time-series plane conditioning) and #37 (coreg across-track offset), both Ready |
+| The estimator finding below | #27, Ready |
+| Registration surface below | **Done.** #34, fixed in PR #42; the `hasPlan` and `logbuf` gaps were fixed in PR #29 |
+| Empty CMR searches claiming coverage | **Done.** #30, fixed in PR #41 |
+| Board reconciliation below | Done: #1–#5, #22, #24, #25 closed; #6, #7, #11 closed with reasons; #9, #10, #12, #13, #19, #20, #23 rewritten |
 
-Baseline: `uv run pytest` → **547 passed, 1 skipped**. Run it with the sandbox disabled; the
-sandbox blocks server binds and produces 9 spurious failures + 4 errors.
+PRs merged under this plan: #29 (hygiene), #41 (#30), #42 (#34), #43 (#8, frames), #44 (#40, from #15), #45
+(#8, ICESSN `itrf_year`).
+
+**Board at close:** Ready (10) #13, #27, #28, #31, #32, #35, #36, #37, #38, #39; Backlog (8) #9, #10, #12,
+#14, #19, #20, #23, #33; 0 in progress.
+
+**Next:** the science block, in the order set under "Decisions" below.
+
+Tests: **696 passed, 3 skipped** on main at `efc5e10` (baseline when this plan was written: 547 passed, 1
+skipped). Run with the sandbox disabled; the sandbox blocks server binds and produces spurious failures.
 
 ## Why
 
@@ -46,6 +60,8 @@ co-author, and close #18 with a link to where each part landed.**
 
 ### Part 2 — all six ATL06 beams: already on main
 
+> **Status (2026-09-29):** the yaw-flip label is #28 (Ready).
+
 Main reached the same result by a different route while the PR was open. `src/aicesat/atl06.py` is
 now 66 lines; `_strong_beams` and `_extract_granule` are gone, replaced by
 `index_atl06.fetch_bbox(..., strong_only=False)` (`atl06.py:53-55`). The index carries a per-row
@@ -61,6 +77,9 @@ beam is labelled `strong=False` rather than unknown. No data is dropped, but the
 PR's tri-state label is the model for the fix. File as an issue.
 
 ### Part 1 — native surface slope: half on main, the other half still needed
+
+> **Status (2026-09-29):** tracked as #35 (ICESSN slope in metadata, Ready), #36 (the `fit_statistics`
+> chunk-layout spike, Ready), then #19 (ATL06 slope fields, Backlog).
 
 Main now reads ICESSN `sn_slope`/`we_slope` — the platelet-rendering work (`b39be1f`) arrived at them
 independently, for rendering. They flow `index_icessn.py:64-65,226,266,298,321` → `icessn.py:49-50` →
@@ -83,6 +102,12 @@ check (20,000/20,000 segments quality-good with finite `dh_fit_dx/dy`) is the re
 should reproduce.
 
 ### Part 3 — ITRF realization from the ATM header: needed, and it addresses a silent fallback on main
+
+> **Resolved (2026-09-29):** PR #43 carries the `_frame_pipeline` generalisation, propagates each
+> realization separately, and makes the fallback loud. PR #45 adds `itrf_year` to the ICESSN index from
+> the header. #8 is closed. On the Jakobshavn scene the time series propagates IceBridge through ITRF2005
+> (2009–2011), ITRF2008 (2012–2016) and ITRF2014 (2017–2019) separately, and reports nothing unpropagated.
+> The "verified behaviour on main" below is the state before that.
 
 The `coreg._frame_pipeline` change applies clean: main's version (`coreg.py:61-75`) is byte-identical
 to the PR's base. The `icessn.py` half needs porting, because main's ICESSN path is now index-based
@@ -120,7 +145,10 @@ Maps to **issue #8** (validate ITRF epoch / plate motion transforms), currently 
 
 ---
 
-## PR #15 — IS2TGPSSS Summit GPS traverse — OPEN
+## PR #15 — IS2TGPSSS Summit GPS traverse — CLOSED (ported as #40)
+
+> **Resolved (2026-09-29):** ported onto the index contract as #40 in PR #44 (a1ab4b9, Ben as co-author),
+> keeping `gpstruth.py`'s domain work and Ben's tests, with `summit_traverse` in regions. #15 closed.
 
 `gpstruth.py` (290 L) and `tests/test_gpstruth.py` merge clean. The other 9 files conflict, each
 where main has changed underneath them.
@@ -170,7 +198,7 @@ invisible to quality filtering at `SDHGT_95` 0.077 vs 0.078 m).
 | #21 ATL03 confidence | Backlog | **PARTIAL** | points already the right primitive; `conf` extracted `atl03.py:70` then dropped before the scene |
 | #23 lake compaction | Backlog | **PARTIAL** | `scripts/bench_lake_layout.py` + `bench_lake_params.py` exist with results; no compaction in `lake.py` (only row-group `relayout`) |
 
-Ready-column card *"ICESSN: surface slope + use RMS as per-point σ (retire slope-blind estimator)"*
+Ready-column card (since rewritten as #38) *"ICESSN: surface slope + use RMS as per-point σ (retire slope-blind estimator)"*
 is partly out of date: its premise ("columns we parse but discard") no longer holds **for slope**
 (slope ships) and **still holds for RMS**. "Slope-blind" is also the wrong diagnosis — see below. The
 card cites `docs/notes/laser_intermission_findings.md` §B, which is still the right reference for
@@ -179,6 +207,8 @@ the σ half.
 ---
 
 ## Finding not on the board: the estimator's cross-track term is unconstrained
+
+> **Status (2026-09-29):** filed as #27 (Ready), a child of #14.
 
 `timeseries._fit_cell` (`timeseries.py:160-219`) fits its reference plane by **unweighted OLS to
 the reference mission's points only** (`timeseries.py:170-172`), gated at `_MIN_REF_PTS = 6`, in
@@ -228,7 +258,7 @@ Adding `dh_fit_dx` (+ bearing) to `ATL06_DATASETS` serves:
   quantity**."
 - **Spec §276** — "Slope from IceBridge native where available" — the gap PR #18 part 1 closes.
 
-**Prerequisite spike (needs EDL + network; cannot be done offline):** confirm
+**Prerequisite spike, now #36 (Ready). Needs EDL and network; it can't be done offline.** confirm
 `land_ice_segments/fit_statistics/dh_fit_dx` has the same chunk layout as `latitude`, or
 `index_atl06.py:123` will raise for every granule. No local ATL06 HDF5 granule exists to check
 against. **Do this first; it gates the whole workstream.**
@@ -236,6 +266,12 @@ against. **Do this first; it gates the whole workstream.**
 ---
 
 ## Fetch-time vs index-time fields (do not re-derive this)
+
+> **Resolved (2026-09-29):**
+> - **`itrf_year`:** now an ICESSN index column (PR #45, `ICESSN_INDEX_VERSION` "3").
+> - **IceBridge index:** rebuilt over the Jakobshavn box on 2026-09-29 (156 granules, all v3), so "fully
+>   evicted" below no longer holds.
+> - **`rms_cm`:** still the fetch-time plumbing described here, and is #38.
 
 For ICESSN these two look similar and are not:
 
@@ -265,6 +301,9 @@ than later.
 
 ## Foundation problem: the registration surface is ~20 points, the test covers 9
 
+> **Resolved (2026-09-25):** #34, PR #42. Registration is tested per collection, with the hard-coded
+> lists derived from `coverage.collections()`. GEDI's gaps were closed in PR #29.
+
 `tests/test_collection_registration.py` checks 9. The real surface, traced from GEDI's `58a28dc`,
 also includes:
 
@@ -290,9 +329,10 @@ before the next collection lands, whoever does the port.
 
 1. **PR #15:** ported in-house now (#40), with Ben as co-author on every commit.
 2. **Priority:** the #15 port's critical path first (#30 → #34 → #8's frame work → #40), then science
-   correctness (#8, #37, #27, #39, #35, #38, #28, #36).
-3. **ICESSN rebuild scope:** *still open.* It gates #8's per-row `itrf_year` column (part 2); the rest
-   of #8 is offline.
+   correctness (#8, #37, #27, #39, #35, #38, #28, #36). *Critical path and #8 done 2026-09-29; next is
+   #37 → #27 → #39 → #35 → #38 → #28 → #36, then the UX leftovers (#31).*
+3. **ICESSN rebuild scope:** *resolved 2026-09-29.* Rebuilt over the Jakobshavn box only (156 granules),
+   which let #8's per-row `itrf_year` column (PR #45) be verified on real data.
 4. **The timeseries conditioning defect:** filed as #27, in Ready. The fix comes first; measuring how
    often it happens on real cells needs a Greenland index and is a follow-up.
 
@@ -300,7 +340,8 @@ before the next collection lands, whoever does the port.
 
 ## Verification (applies to whatever is chosen)
 
-- `uv run pytest` with the sandbox disabled. Baseline to beat: 547 passed, 1 skipped.
+- `uv run pytest` with the sandbox disabled. Baseline to beat: 696 passed, 3 skipped (main at `efc5e10`; 547
+  passed, 1 skipped when this plan was written).
 - For the ITRF work: a regression test asserting ICESSN's `native_frame` actually survives
   `coreg.propagate` — the current silent fallback is exactly the failure mode that needs a test,
   not just a fix. Assert a **nonzero** displacement; the "silent-identity trap" guard at
