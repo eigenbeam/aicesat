@@ -66,6 +66,7 @@ table.stats td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .covtip .cd { color:var(--muted); padding-right:14px; }
 .covtip .cn { text-align:right; font-variant-numeric:tabular-nums; }
 .tooltip.wide { max-width:none; }
+.covtip-c { font-weight:600; font-variant-numeric:tabular-nums; margin-bottom:3px; }
 .tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px; padding:6px 8px; font-size:11px; z-index:30; max-width:280px; }
 .help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; border:1px solid var(--hair); color:var(--muted); font-size:9px; font-weight:600; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; }
 .help:hover, .help:focus { color:var(--ink); border-color:var(--muted); outline:none; }
@@ -10155,9 +10156,10 @@ AICESAT.MapView = class {
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
     else if (info.layer && info.layer.id === 'coverage' && info.object) html = this.coverageTip(info.object);
+    else if (info.layer && info.layer.id === 'earth-grid' && info.object) html = this.centreLine(info.object);
     else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
-    this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && info.layer.id === 'coverage'));
+    this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && /^(coverage|earth-grid)$/.test(info.layer.id)));
     if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
   // ---- demo ladder level 1: per-hex mission coverage (survey.js feeds it from /api/coverage_hexes)
@@ -10194,7 +10196,8 @@ AICESAT.MapView = class {
     if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
     else if (anchor) { try { cells = h3.gridDisk(h3.cellToCenterChild(anchor, res), k); } catch (e) { cells = []; } }
     const grid = cells.length ? [new H3HexagonLayer({id: 'earth-grid', data: cells, getHexagon: d => d, highPrecision: 'auto',
-      filled: false, stroked: true, extruded: false, pickable: false, getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5})] : [];
+      filled: true, getFillColor: [0, 0, 0, 1], stroked: true, extruded: false, pickable: true,
+      getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5})] : [];
     const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
@@ -10240,7 +10243,11 @@ AICESAT.MapView = class {
       return `<tr style="--c:rgb(${AICESAT.missions.colorOf(k, null).join(',')})"><td class="cc">${C[k][0]}</td>` +
         `<td class="cd">${C[k][1]}</td><td class="cn">${n.toLocaleString('en-US')} granule${n === 1 ? '' : 's'}</td></tr>`; });
     if (!rows.length) return null;
-    return `<table class="covtip">${rows.join('')}</table>` + (h.claimed ? '' : '<i>not fully indexed</i>');
+    return this.centreLine(h.h3) + `<table class="covtip">${rows.join('')}</table>` + (h.claimed ? '' : '<i>not fully indexed</i>');
+  }
+  centreLine(cell) {   // a hex's centre, the first line of every globe hex tooltip
+    const [lat, lon] = h3.cellToLatLng(cell);
+    return `<div class="covtip-c">${AICESAT.ts.fmtLatLon(lat, lon, 2)}</div>`;
   }
   cellTooltip(o) {
     const U = AICESAT.util, st = o.stats;

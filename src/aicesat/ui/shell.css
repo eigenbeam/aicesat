@@ -60,6 +60,7 @@ table.stats td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .covtip .cd { color:var(--muted); padding-right:14px; }
 .covtip .cn { text-align:right; font-variant-numeric:tabular-nums; }
 .tooltip.wide { max-width:none; }
+.covtip-c { font-weight:600; font-variant-numeric:tabular-nums; margin-bottom:3px; }
 .tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px; padding:6px 8px; font-size:11px; z-index:30; max-width:280px; }
 .help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; border:1px solid var(--hair); color:var(--muted); font-size:9px; font-weight:600; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; }
 .help:hover, .help:focus { color:var(--ink); border-color:var(--muted); outline:none; }
