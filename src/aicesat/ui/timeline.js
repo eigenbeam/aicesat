@@ -1,9 +1,9 @@
 /* The mission timeline strip -- legend AND show/hide control at every level of the demo ladder -- plus the pure
-   helpers the change map colours with. Each mission is a bar on one 2003-2027 axis, so the strip also says WHEN it
-   flew. Pure helpers are tested by tests/test_timeline.js. */
+   helpers the change map colours with. Every mission's span is a neutral bar on ONE line of a 2000-2030 axis, so
+   the overlaps show; the mission's colour is on its name. Pure helpers are tested by tests/test_timeline.js. */
 window.AICESAT = window.AICESAT || {};
 (function () {
-  const T0 = 2003, T1 = 2027;
+  const T0 = 2000, T1 = 2030;   // on 5-year boundaries
   const SPANS = {GLAS: [2003, 2009.8], ICESSN: [2009, 2019.9], ATL06: [2018.8, 2026.9], ICESAT2: [2018.8, 2026.9],
                  GEDI: [2019.3, 2026.9], GPSTRUTH: [2006.6, 2025.9]};
   const SHORT = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2 · land ice', ICESAT2: 'ICESat-2 · photons',
@@ -35,18 +35,36 @@ window.AICESAT = window.AICESAT || {};
     const lo = half(pts), up = half(pts.slice().reverse());
     return lo.slice(0, -1).concat(up.slice(0, -1)).map(p => [+p[0].toFixed(6), +p[1].toFixed(6)]);
   }
+  // Name rows: a name sits centred over its span; one that would overlap a name already placed drops to the next row
+  // (ICESat-2's land-ice and photon products share a span). Widths are estimated from the text, so this also works
+  // while the view is hidden. Pure; tested in tests/test_timeline.js.
+  function nameRows(missions, widthPx) {
+    const rows = [], placed = [];
+    for (const m of missions) {
+      const s = SPANS[m] || [T0, T1], c = ((s[0] + s[1]) / 2 - T0) / (T1 - T0) * widthPx, hw = ((SHORT[m] || m).length * 6.6 + 12) / 2;
+      let r = 0; while (placed.some(p => p.r === r && c - hw < p.x1 && c + hw > p.x0)) r++;
+      placed.push({r, x0: c - hw, x1: c + hw}); rows.push(r);
+    }
+    return rows;
+  }
   function mount(host, onToggle) {
     host.classList.add('timeline');
     return {update(missions, visible) {
-      const M = AICESAT.missions;
-      const ticks = [2003, 2009, 2018, 2026].map(y => `<span class="tl-tick" style="left:${(y - T0) / (T1 - T0) * 100}%">${y}</span>`).join('');
-      host.style.height = (26 + missions.length * 22) + 'px';
-      host.innerHTML = `<div class="tl-axis">${ticks}</div>` + missions.map((m, i) => {
-        const p = place(m), c = M.colorOf(m, null).join(','), on = visible[m] !== false;
-        return `<button class="tl-chip${on ? '' : ' off'}" data-m="${m}" title="${((M.MISSIONS[m] || {}).gloss || m)} — click to show/hide"` +
-          ` style="left:${p.left}%;width:${p.width}%;top:${24 + i * 22}px;--c:rgb(${c})">${SHORT[m] || m}</button>`;
+      const M = AICESAT.missions, x = y => (y - T0) / (T1 - T0) * 100;
+      let axis = '';
+      for (let y = T0; y <= T1; y++) axis += y % 5 ? `<span class="tl-minor" style="left:${x(y)}%"></span>`
+        : `<span class="tl-major" style="left:${x(y)}%"></span><span class="tl-year" style="left:${x(y)}%">${y}</span>`;
+      const rows = nameRows(missions, host.clientWidth || 600), nRows = Math.max(1, ...rows.map(r => r + 1));
+      const names = missions.map((m, i) => {
+        const s = SPANS[m] || [T0, T1], c = M.colorOf(m, null).join(','), on = visible[m] !== false;
+        return `<button class="tl-name${on ? '' : ' off'}" data-m="${m}" title="${((M.MISSIONS[m] || {}).gloss || m)} — click to show/hide"` +
+          ` style="left:${x((s[0] + s[1]) / 2)}%;top:${rows[i] * 17}px;--c:rgb(${c})">${SHORT[m] || m}</button>`;
       }).join('');
-      host.querySelectorAll('.tl-chip').forEach(b => b.onclick = () => onToggle(b.dataset.m));
+      const bars = missions.map(m => { const p = place(m), on = visible[m] !== false;
+        return `<span class="tl-bar${on ? '' : ' off'}" style="left:${p.left}%;width:${p.width}%"></span>`; }).join('');
+      host.innerHTML = `<div class="tl-names" style="height:${nRows * 17}px">${names}</div><div class="tl-bars">${bars}</div>` +
+        `<div class="tl-axis">${axis}</div>`;
+      host.querySelectorAll('.tl-name').forEach(b => b.onclick = () => onToggle(b.dataset.m));
     }};
   }
   // Basemap of the change and study levels: 'dem' = the hillshaded DEM, no imagery; 'imagery' = the satellite image
@@ -62,7 +80,7 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  AICESAT.timeline = {mount, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

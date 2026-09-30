@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cross-mission altimetry</title>
+<title>AltimetryDeck</title>
 <style>:root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; --violet:#a882e6; --ink-dim:#cbc8bf; }
 html, body { margin:0; height:100vh; position:relative; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 /* MCP App inline: the host sizes the iframe to content height, and an absolute+100% layout collapses to 0.
@@ -60,6 +60,12 @@ table.stats td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .status.loading { background:rgba(224,160,48,.2); color:var(--amber); animation:pulse 1.2s infinite; }
 .status.error { background:rgba(217,83,79,.2); color:var(--red); }
 @keyframes pulse { 50% { opacity:.5; } }
+.covtip { border-collapse:collapse; font-size:11.5px; }
+.covtip td { padding:1px 0; white-space:nowrap; }
+.covtip .cc { font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--c); padding-right:10px; }
+.covtip .cd { color:var(--muted); padding-right:14px; }
+.covtip .cn { text-align:right; font-variant-numeric:tabular-nums; }
+.tooltip.wide { max-width:none; }
 .tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px; padding:6px 8px; font-size:11px; z-index:30; max-width:280px; }
 .help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; border:1px solid var(--hair); color:var(--muted); font-size:9px; font-weight:600; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; }
 .help:hover, .help:focus { color:var(--ink); border-color:var(--muted); outline:none; }
@@ -311,11 +317,17 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .gate button { margin-left:4px; }
 
 /* ---- demo ladder (demo/uwg-ladder): timeline strip, change legend, study bar, analysis tabs, survey title ---- */
-.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:0 12px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
-.tl-axis{position:relative;height:20px;border-bottom:1px solid rgba(255,255,255,.12)}
-.tl-tick{position:absolute;top:4px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
-.tl-chip{position:absolute;height:18px;border-radius:9px;border:0;background:var(--c);color:#0b0f16;font:600 11px ui-sans-serif,system-ui;cursor:pointer;overflow:hidden;white-space:nowrap;padding:0 8px;text-align:left}
-.tl-chip.off{background:transparent;color:var(--muted);outline:1px dashed var(--c)}
+.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:7px 18px 2px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
+.tl-names{position:relative}
+.tl-name{position:absolute;transform:translateX(-50%);height:17px;border:0;background:none;color:var(--c);font:600 12px ui-sans-serif,system-ui;cursor:pointer;white-space:nowrap;padding:0 4px}
+.tl-name.off{color:var(--muted);text-decoration:line-through;opacity:.75}
+.tl-bars{position:relative;height:8px;margin:3px 0 5px}
+.tl-bar{position:absolute;top:0;height:8px;border-radius:4px;background:rgba(235,240,248,.22);box-shadow:inset 0 0 0 1px rgba(235,240,248,.6)}
+.tl-bar.off{background:transparent;outline:1px dashed rgba(235,240,248,.3)}
+.tl-axis{position:relative;height:21px;border-top:1px solid rgba(255,255,255,.28)}
+.tl-major{position:absolute;top:0;width:1px;height:6px;background:rgba(255,255,255,.55)}
+.tl-minor{position:absolute;top:0;width:1px;height:3px;background:rgba(255,255,255,.3)}
+.tl-year{position:absolute;top:7px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
 .chg-legend{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;align-items:center;font-size:11.5px;background:rgba(14,18,26,.84);padding:5px 12px;border-radius:6px}
 .chg-ramp{display:inline-block;width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgb(210,60,40),rgb(245,245,245),rgb(50,125,230))}
 .study-bar{position:absolute;left:50%;transform:translateX(-50%);bottom:120px;z-index:6;display:flex;gap:8px;align-items:center;background:rgba(14,18,26,.94);border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 10px;font-size:12.5px}
@@ -342,12 +354,12 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 </head>
 <body>
 <div id="topbar">
-  <span class="brand">Altimetry, by place</span>
+  <span class="brand">AltimetryDeck</span>
   <span class="tagline">ICESat · IceBridge · ICESat-2</span>
   <button id="topBack" class="tab backbtn" hidden title="Back to where you came from">← Back</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
-  <button id="helpBtn" class="tab" title="What is this? How it works">?</button>
+  <button id="helpBtn" class="tab" hidden title="What is this? How it works">?</button>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
 </div>
@@ -10097,7 +10109,8 @@ AICESAT.MapView = class {
     else if (info.layer && info.layer.id === 'coverage' && info.object) html = this.coverageTip(info.object);
     else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
-    this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
+    this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && info.layer.id === 'coverage'));
+    if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
   // ---- demo ladder level 1: per-hex mission coverage (survey.js feeds it from /api/coverage_hexes)
   setCoverage(byRes, visible) {
@@ -10145,7 +10158,7 @@ AICESAT.MapView = class {
     try { vp = this.deck.getViewports()[0]; } catch (e) { vp = null; }   // asserts until deck has initialised
     if (!vp) return;
     const vs = this.state.viewState, z = vs.zoom, tier = z < 5 ? 0 : z < 7 ? 1 : 2, D = Math.PI / 180;
-    const show = r => r[4] === 0 ? (tier >= 1 || /Greenland/.test(r[0])) : r[4] <= 3 ? tier >= 1 : tier >= 2;
+    const show = r => r[5] !== 3423651 && (r[4] === 0 ? (tier >= 1 || /Greenland/.test(r[0])) : r[4] <= 3 ? tier >= 1 : tier >= 2);
     const facing = r => Math.sin(vs.latitude * D) * Math.sin(r[1] * D) +
                         Math.cos(vs.latitude * D) * Math.cos(r[1] * D) * Math.cos((r[2] - vs.longitude) * D) > 0.2;
     const pos = new Map();
@@ -10157,11 +10170,14 @@ AICESAT.MapView = class {
       return `<span class="pn ${LAND.has(r[3]) ? 'land' : 'water'} r${r[4]}" style="left:${p[0].toFixed(1)}px;top:${p[1].toFixed(1)}px">${esc(r[0])}</span>`; }).join('');
   }
   coverageTip(h) {
-    const L = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2'}, res = h3.getResolution(h.h3);
-    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => { const m = h.missions[k];
-      return `<b>${L[k]}</b> ${m.passes} pass${m.passes === 1 ? '' : 'es'} · ${m.year_min}–${m.year_max}`; });
-    const act = res < 5 ? 'click to zoom in' : h.claimed ? 'click to see how the surface changed here' : 'not fully indexed — pick a bright-edged hex';
-    return `${rows.join('<br>')}<br><i>${act}</i>`;
+    // NSIDC collection, what it is, and passes over this hex in a right-aligned column.
+    const C = {GLAS: ['GLAH06', 'ICESat laser altimeter'], ICESSN: ['ILATM2', 'IceBridge airborne lidar'],
+               ATL06: ['ATL06', 'ICESat-2 land ice height']}, res = h3.getResolution(h.h3);
+    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => { const n = h.missions[k].passes;
+      return `<tr style="--c:rgb(${AICESAT.missions.colorOf(k, null).join(',')})"><td class="cc">${C[k][0]}</td>` +
+        `<td class="cd">${C[k][1]}</td><td class="cn">${n.toLocaleString('en-US')} pass${n === 1 ? '' : 'es'}</td></tr>`; });
+    const act = res < 5 ? '' : h.claimed ? 'click to see how the surface changed here' : 'not fully indexed — pick a bright-edged hex';
+    return `<table class="covtip">${rows.join('')}</table>` + (act ? `<i>${act}</i>` : '');
   }
   cellTooltip(o) {
     const U = AICESAT.util, st = o.stats;
@@ -10994,11 +11010,11 @@ window.AICESAT = window.AICESAT || {};
 
 ;
 /* The mission timeline strip -- legend AND show/hide control at every level of the demo ladder -- plus the pure
-   helpers the change map colours with. Each mission is a bar on one 2003-2027 axis, so the strip also says WHEN it
-   flew. Pure helpers are tested by tests/test_timeline.js. */
+   helpers the change map colours with. Every mission's span is a neutral bar on ONE line of a 2000-2030 axis, so
+   the overlaps show; the mission's colour is on its name. Pure helpers are tested by tests/test_timeline.js. */
 window.AICESAT = window.AICESAT || {};
 (function () {
-  const T0 = 2003, T1 = 2027;
+  const T0 = 2000, T1 = 2030;   // on 5-year boundaries
   const SPANS = {GLAS: [2003, 2009.8], ICESSN: [2009, 2019.9], ATL06: [2018.8, 2026.9], ICESAT2: [2018.8, 2026.9],
                  GEDI: [2019.3, 2026.9], GPSTRUTH: [2006.6, 2025.9]};
   const SHORT = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2 · land ice', ICESAT2: 'ICESat-2 · photons',
@@ -11030,18 +11046,36 @@ window.AICESAT = window.AICESAT || {};
     const lo = half(pts), up = half(pts.slice().reverse());
     return lo.slice(0, -1).concat(up.slice(0, -1)).map(p => [+p[0].toFixed(6), +p[1].toFixed(6)]);
   }
+  // Name rows: a name sits centred over its span; one that would overlap a name already placed drops to the next row
+  // (ICESat-2's land-ice and photon products share a span). Widths are estimated from the text, so this also works
+  // while the view is hidden. Pure; tested in tests/test_timeline.js.
+  function nameRows(missions, widthPx) {
+    const rows = [], placed = [];
+    for (const m of missions) {
+      const s = SPANS[m] || [T0, T1], c = ((s[0] + s[1]) / 2 - T0) / (T1 - T0) * widthPx, hw = ((SHORT[m] || m).length * 6.6 + 12) / 2;
+      let r = 0; while (placed.some(p => p.r === r && c - hw < p.x1 && c + hw > p.x0)) r++;
+      placed.push({r, x0: c - hw, x1: c + hw}); rows.push(r);
+    }
+    return rows;
+  }
   function mount(host, onToggle) {
     host.classList.add('timeline');
     return {update(missions, visible) {
-      const M = AICESAT.missions;
-      const ticks = [2003, 2009, 2018, 2026].map(y => `<span class="tl-tick" style="left:${(y - T0) / (T1 - T0) * 100}%">${y}</span>`).join('');
-      host.style.height = (26 + missions.length * 22) + 'px';
-      host.innerHTML = `<div class="tl-axis">${ticks}</div>` + missions.map((m, i) => {
-        const p = place(m), c = M.colorOf(m, null).join(','), on = visible[m] !== false;
-        return `<button class="tl-chip${on ? '' : ' off'}" data-m="${m}" title="${((M.MISSIONS[m] || {}).gloss || m)} — click to show/hide"` +
-          ` style="left:${p.left}%;width:${p.width}%;top:${24 + i * 22}px;--c:rgb(${c})">${SHORT[m] || m}</button>`;
+      const M = AICESAT.missions, x = y => (y - T0) / (T1 - T0) * 100;
+      let axis = '';
+      for (let y = T0; y <= T1; y++) axis += y % 5 ? `<span class="tl-minor" style="left:${x(y)}%"></span>`
+        : `<span class="tl-major" style="left:${x(y)}%"></span><span class="tl-year" style="left:${x(y)}%">${y}</span>`;
+      const rows = nameRows(missions, host.clientWidth || 600), nRows = Math.max(1, ...rows.map(r => r + 1));
+      const names = missions.map((m, i) => {
+        const s = SPANS[m] || [T0, T1], c = M.colorOf(m, null).join(','), on = visible[m] !== false;
+        return `<button class="tl-name${on ? '' : ' off'}" data-m="${m}" title="${((M.MISSIONS[m] || {}).gloss || m)} — click to show/hide"` +
+          ` style="left:${x((s[0] + s[1]) / 2)}%;top:${rows[i] * 17}px;--c:rgb(${c})">${SHORT[m] || m}</button>`;
       }).join('');
-      host.querySelectorAll('.tl-chip').forEach(b => b.onclick = () => onToggle(b.dataset.m));
+      const bars = missions.map(m => { const p = place(m), on = visible[m] !== false;
+        return `<span class="tl-bar${on ? '' : ' off'}" style="left:${p.left}%;width:${p.width}%"></span>`; }).join('');
+      host.innerHTML = `<div class="tl-names" style="height:${nRows * 17}px">${names}</div><div class="tl-bars">${bars}</div>` +
+        `<div class="tl-axis">${axis}</div>`;
+      host.querySelectorAll('.tl-name').forEach(b => b.onclick = () => onToggle(b.dataset.m));
     }};
   }
   // Basemap of the change and study levels: 'dem' = the hillshaded DEM, no imagery; 'imagery' = the satellite image
@@ -11057,7 +11091,7 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  AICESAT.timeline = {mount, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.
@@ -11096,9 +11130,6 @@ window.AICESAT = window.AICESAT || {};
 AICESAT.SurveyView = class {
   constructor(root, api, openScene) {
     root.innerHTML = `<div class="map" id="svMap"></div>
-      <div class="sv-title"><h1>Where has the surface been measured — and what changed?</h1>
-        <p>Every hex shows which laser altimeters measured it: ICESat (2003–09), IceBridge (2009–19), ICESat-2 (2018–).
-        Gold = all three measured here, so a 20-year record is possible. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -11108,10 +11139,10 @@ AICESAT.SurveyView = class {
     // the sphere and clip into jagged shapes) and z-fight the land. Imagery lives one level down, in the change map.
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
-    // Names stay clear of the title and the timeline strip.
+    // Names stay clear of the timeline strip.
     this.map.keepOut = () => {
       const c = $('svMap').getBoundingClientRect();
-      return [root.querySelector('.sv-title'), $('svStrip')].filter(Boolean).map(e => e.getBoundingClientRect())
+      return [$('svStrip')].map(e => e.getBoundingClientRect())
         .map(r => [r.left - c.left, r.top - c.top, r.right - c.left, r.bottom - c.top]);
     };
     this.strip = AICESAT.timeline.mount($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });

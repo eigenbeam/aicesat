@@ -90,7 +90,8 @@ AICESAT.MapView = class {
     else if (info.layer && info.layer.id === 'coverage' && info.object) html = this.coverageTip(info.object);
     else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
-    this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
+    this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && info.layer.id === 'coverage'));
+    if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
   // ---- demo ladder level 1: per-hex mission coverage (survey.js feeds it from /api/coverage_hexes)
   setCoverage(byRes, visible) {
@@ -138,7 +139,7 @@ AICESAT.MapView = class {
     try { vp = this.deck.getViewports()[0]; } catch (e) { vp = null; }   // asserts until deck has initialised
     if (!vp) return;
     const vs = this.state.viewState, z = vs.zoom, tier = z < 5 ? 0 : z < 7 ? 1 : 2, D = Math.PI / 180;
-    const show = r => r[4] === 0 ? (tier >= 1 || /Greenland/.test(r[0])) : r[4] <= 3 ? tier >= 1 : tier >= 2;
+    const show = r => r[5] !== 3423651 && (r[4] === 0 ? (tier >= 1 || /Greenland/.test(r[0])) : r[4] <= 3 ? tier >= 1 : tier >= 2);
     const facing = r => Math.sin(vs.latitude * D) * Math.sin(r[1] * D) +
                         Math.cos(vs.latitude * D) * Math.cos(r[1] * D) * Math.cos((r[2] - vs.longitude) * D) > 0.2;
     const pos = new Map();
@@ -150,11 +151,14 @@ AICESAT.MapView = class {
       return `<span class="pn ${LAND.has(r[3]) ? 'land' : 'water'} r${r[4]}" style="left:${p[0].toFixed(1)}px;top:${p[1].toFixed(1)}px">${esc(r[0])}</span>`; }).join('');
   }
   coverageTip(h) {
-    const L = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2'}, res = h3.getResolution(h.h3);
-    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => { const m = h.missions[k];
-      return `<b>${L[k]}</b> ${m.passes} pass${m.passes === 1 ? '' : 'es'} · ${m.year_min}–${m.year_max}`; });
-    const act = res < 5 ? 'click to zoom in' : h.claimed ? 'click to see how the surface changed here' : 'not fully indexed — pick a bright-edged hex';
-    return `${rows.join('<br>')}<br><i>${act}</i>`;
+    // NSIDC collection, what it is, and passes over this hex in a right-aligned column.
+    const C = {GLAS: ['GLAH06', 'ICESat laser altimeter'], ICESSN: ['ILATM2', 'IceBridge airborne lidar'],
+               ATL06: ['ATL06', 'ICESat-2 land ice height']}, res = h3.getResolution(h.h3);
+    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => { const n = h.missions[k].passes;
+      return `<tr style="--c:rgb(${AICESAT.missions.colorOf(k, null).join(',')})"><td class="cc">${C[k][0]}</td>` +
+        `<td class="cd">${C[k][1]}</td><td class="cn">${n.toLocaleString('en-US')} pass${n === 1 ? '' : 'es'}</td></tr>`; });
+    const act = res < 5 ? '' : h.claimed ? 'click to see how the surface changed here' : 'not fully indexed — pick a bright-edged hex';
+    return `<table class="covtip">${rows.join('')}</table>` + (act ? `<i>${act}</i>` : '');
   }
   cellTooltip(o) {
     const U = AICESAT.util, st = o.stats;

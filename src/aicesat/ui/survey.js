@@ -5,9 +5,6 @@ window.AICESAT = window.AICESAT || {};
 AICESAT.SurveyView = class {
   constructor(root, api, openScene) {
     root.innerHTML = `<div class="map" id="svMap"></div>
-      <div class="sv-title"><h1>Where has the surface been measured — and what changed?</h1>
-        <p>Every hex shows which laser altimeters measured it: ICESat (2003–09), IceBridge (2009–19), ICESat-2 (2018–).
-        Gold = all three measured here, so a 20-year record is possible. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -17,10 +14,10 @@ AICESAT.SurveyView = class {
     // the sphere and clip into jagged shapes) and z-fight the land. Imagery lives one level down, in the change map.
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
-    // Names stay clear of the title and the timeline strip.
+    // Names stay clear of the timeline strip.
     this.map.keepOut = () => {
       const c = $('svMap').getBoundingClientRect();
-      return [root.querySelector('.sv-title'), $('svStrip')].filter(Boolean).map(e => e.getBoundingClientRect())
+      return [$('svStrip')].map(e => e.getBoundingClientRect())
         .map(r => [r.left - c.left, r.top - c.top, r.right - c.left, r.bottom - c.top]);
     };
     this.strip = AICESAT.timeline.mount($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });

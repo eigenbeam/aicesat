@@ -14,9 +14,13 @@ assert.deepStrictEqual(T.trendColor(-1000, 'high', 100), T.trendColor(-100, 'hig
 const cands = [{trend_cm_yr: -26361, level: 'low'}].concat(Array.from({length: 50}, (_, i) => ({trend_cm_yr: -10 * i, level: 'medium'})));
 assert.ok(T.trendLimit(cands) <= 490, 'limit ' + T.trendLimit(cands));
 assert.strictEqual(T.trendLimit([]), 1);
-// placement on the 2003-2027 axis
-assert.strictEqual(T.place('GLAS').left, 0);
-assert.ok(T.place('ATL06').left + T.place('ATL06').width <= 100);
+// placement on the 2000-2030 axis: every span starts after the axis does and ends before it does
+assert.ok(T.T0 % 5 === 0 && T.T1 % 5 === 0, 'axis on 5-year boundaries');
+assert.ok(T.place('GLAS').left > 0);
+assert.ok(T.place('ATL06').left + T.place('ATL06').width < 100);
+// the three missions' names share one row; ICESat-2's two products share a span, so the second drops a row
+assert.deepStrictEqual(T.nameRows(['GLAS', 'ICESSN', 'ATL06'], 600), [0, 0, 0]);
+assert.deepStrictEqual(T.nameRows(['GLAS', 'ICESSN', 'ATL06', 'ICESAT2'], 600), [0, 0, 0, 1]);
 // hull of one hex is that hex; hull of a ring spans every vertex's longitude range
 const c = h3.latLngToCell(69.175, -49.328, 8);
 assert.strictEqual(T.hullOfCells([c]).length, 6);

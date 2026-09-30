@@ -54,6 +54,12 @@ table.stats td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .status.loading { background:rgba(224,160,48,.2); color:var(--amber); animation:pulse 1.2s infinite; }
 .status.error { background:rgba(217,83,79,.2); color:var(--red); }
 @keyframes pulse { 50% { opacity:.5; } }
+.covtip { border-collapse:collapse; font-size:11.5px; }
+.covtip td { padding:1px 0; white-space:nowrap; }
+.covtip .cc { font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--c); padding-right:10px; }
+.covtip .cd { color:var(--muted); padding-right:14px; }
+.covtip .cn { text-align:right; font-variant-numeric:tabular-nums; }
+.tooltip.wide { max-width:none; }
 .tooltip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px; padding:6px 8px; font-size:11px; z-index:30; max-width:280px; }
 .help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; border:1px solid var(--hair); color:var(--muted); font-size:9px; font-weight:600; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; }
 .help:hover, .help:focus { color:var(--ink); border-color:var(--muted); outline:none; }
@@ -305,11 +311,17 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .gate button { margin-left:4px; }
 
 /* ---- demo ladder (demo/uwg-ladder): timeline strip, change legend, study bar, analysis tabs, survey title ---- */
-.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:0 12px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
-.tl-axis{position:relative;height:20px;border-bottom:1px solid rgba(255,255,255,.12)}
-.tl-tick{position:absolute;top:4px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
-.tl-chip{position:absolute;height:18px;border-radius:9px;border:0;background:var(--c);color:#0b0f16;font:600 11px ui-sans-serif,system-ui;cursor:pointer;overflow:hidden;white-space:nowrap;padding:0 8px;text-align:left}
-.tl-chip.off{background:transparent;color:var(--muted);outline:1px dashed var(--c)}
+.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:7px 18px 2px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
+.tl-names{position:relative}
+.tl-name{position:absolute;transform:translateX(-50%);height:17px;border:0;background:none;color:var(--c);font:600 12px ui-sans-serif,system-ui;cursor:pointer;white-space:nowrap;padding:0 4px}
+.tl-name.off{color:var(--muted);text-decoration:line-through;opacity:.75}
+.tl-bars{position:relative;height:8px;margin:3px 0 5px}
+.tl-bar{position:absolute;top:0;height:8px;border-radius:4px;background:rgba(235,240,248,.22);box-shadow:inset 0 0 0 1px rgba(235,240,248,.6)}
+.tl-bar.off{background:transparent;outline:1px dashed rgba(235,240,248,.3)}
+.tl-axis{position:relative;height:21px;border-top:1px solid rgba(255,255,255,.28)}
+.tl-major{position:absolute;top:0;width:1px;height:6px;background:rgba(255,255,255,.55)}
+.tl-minor{position:absolute;top:0;width:1px;height:3px;background:rgba(255,255,255,.3)}
+.tl-year{position:absolute;top:7px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
 .chg-legend{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;align-items:center;font-size:11.5px;background:rgba(14,18,26,.84);padding:5px 12px;border-radius:6px}
 .chg-ramp{display:inline-block;width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgb(210,60,40),rgb(245,245,245),rgb(50,125,230))}
 .study-bar{position:absolute;left:50%;transform:translateX(-50%);bottom:120px;z-index:6;display:flex;gap:8px;align-items:center;background:rgba(14,18,26,.94);border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 10px;font-size:12.5px}
