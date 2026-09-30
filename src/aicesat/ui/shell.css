@@ -355,8 +355,6 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .view.left-drawer.has-drawer > #attrib { right:8px !important; left:calc(var(--drawer-w) + 8px); text-align:right; }
 .view.left-drawer .ana-tabs { left:calc(var(--drawer-w) + 12px); }
 .view.left-drawer.drawer-collapsed .ana-tabs { left:12px; }
-#tspanel .base-switch { position:static; display:inline-flex; margin:0 0 8px; }
-#tspanel .chg-legend { position:static; transform:none; display:block; padding:0; background:none; margin:0 0 8px; font-size:11.5px; }
 .lg-head { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; margin:6px 0 3px; }
 .lg-ramp { display:flex; align-items:center; gap:6px; }
 .lg-conf { display:flex; align-items:center; gap:4px; margin-bottom:3px; }
@@ -365,9 +363,23 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .ro-row { display:flex; gap:8px; line-height:1.55; }
 .ro-k { flex:0 0 74px; color:var(--muted); }
 .ro-v { flex:1; }
-.level-region #tspanel label.ctl-row:has(#tsRes), .level-region #tspanel label.ctl-row:has(#tsDt), .level-region .tsgoto,
-.level-study #tspanel label.ctl-row:has(#tsRes), .level-study #tspanel label.ctl-row:has(#tsDt), .level-study .tsgoto { display:none !important; }
+.level-region .tsgoto, .level-study .tsgoto, .level-study .tsintro, .level-study #tsList { display:none !important; }
+.view:not(.level-region):not(.level-study) .ladder-only { display:none !important; }
+/* Controls sub-panel: centred basemap switch, aligned sliders */
+.lad-ctl { display:flex; flex-direction:column; align-items:center; gap:8px; }
+.lad-ctl .ctl-row { width:100%; }
+.lad-ctl .ctl-row .ctl-lbl { flex:0 0 92px; }
+.lad-ctl .ctl-val { flex:0 0 96px; text-align:right; }
+#ladCtl .base-switch { position:static; display:inline-flex; margin:0; }
+/* Legend sub-panel: trend, confidence, the mission strip (off the map here), counts */
+.lad-legend .chg-legend { position:static; transform:none; display:block; padding:0; background:none; margin:0; font-size:11.5px; }
+.lad-legend .timeline { position:static; transform:none; width:auto; background:none; border:none; border-radius:0; padding:2px 6px 0; backdrop-filter:none; }
+.lad-legend #tsStatus { display:block; margin-top:6px; color:var(--muted); }
+.lg-note { text-transform:none; letter-spacing:0; font-weight:400; opacity:.8; }
+.ts-mode { margin:0 0 4px; color:var(--muted); min-height:1em; }
+.ts-mode b { color:rgb(150,235,255); }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
 .pn{position:absolute;transform:translate(-50%,-50%);font:600 12px ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 0 3px #080c14,0 0 3px #080c14,0 0 7px #080c14}
 .pn.water{color:#a5d0ff}.pn.land{color:#e8d0a5}.pn.r0{font-size:15px;letter-spacing:.08em;opacity:.85}
+.tschart[hidden]{display:none!important}   /* .tschart sets display, which beat [hidden]: an empty 153 px box sat above the hint */

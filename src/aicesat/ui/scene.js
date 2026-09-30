@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="baseSwitch" class="base-switch" hidden><button data-b="imagery">Imagery</button><button data-b="dem">Shaded DEM</button></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-mission bias correction or GIA applied.</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="baseSwitch" class="base-switch" hidden><button data-b="imagery">Imagery</button><button data-b="dem">Shaded DEM</button></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="ladCtl" class="panel ladder-only" data-title="controls"><div id="ladCtlBody" class="lad-ctl"></div></div>\n<div id="ladLegend" class="panel ladder-only" data-title="legend"><div id="ladLegendBody" class="lad-legend"></div></div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <div id="tsMode" class="small ts-mode"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-mission bias correction or GIA applied.</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -59,7 +59,7 @@ let CHANGE_LIM = 1;           // change-map colour limit (cm/yr), from the gated
 const STUDY = new Set();      // H3 cells shift-clicked for a Study build (region level)
 let STUDY_VER = 0, ANA_TAB = 'ts', imageryAuto = false;
 let BASEMAP = 'dem';         // ladder levels: 'dem' (hillshaded, the default) or 'imagery' (draped, unlit); kept across scenes
-const camAngles = () => LEVEL === 'region' ? {rotationX: 90, rotationOrbit: 0} : {rotationX: 35, rotationOrbit: -25};
+const camAngles = () => LEVEL === 'region' ? {rotationX: 42, rotationOrbit: -18} : {rotationX: 35, rotationOrbit: -25};   // both oblique: the terrain reads
 const strip = AICESAT.timeline.mount($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
 
 const deckgl = new Deck({
@@ -107,8 +107,8 @@ function placeGratLabels() {
     for (const s of g.pts) {
       const [x, y] = vp.project([s[0], s[1], (s[2] + GRAT_LIFT_M) * Z_EXAG]);
       // lat labels run right from the left edge, below the meridians' row; lon labels are centred, right of the parallels' column;
-      // 110 keeps both clear of the timeline strip
-      if (g.kind === 'lat' ? !(x >= M && x <= W - 80 && y >= 46 && y <= H - 110) : !(x >= 80 && x <= W - 45 && y >= M && y <= H - 110)) continue;
+      // 40 keeps both clear of the credits line
+      if (g.kind === 'lat' ? !(x >= M && x <= W - 80 && y >= 46 && y <= H - 40) : !(x >= 80 && x <= W - 45 && y >= M && y <= H - 40)) continue;
       if (!best || (g.kind === 'lat' ? x < best[0] : y < best[1])) best = [x, y];
     }
     if (best) out.push(`<span class="gl ${g.kind}" style="left:${best[0].toFixed(1)}px;top:${best[1].toFixed(1)}px">${g.text}</span>`);
@@ -749,7 +749,8 @@ function fitView() {
   // the miss so the caller leaves didFit alone and tries again on the next frame of data.
   if (!Number.isFinite(zoom)) return false;
   curZoom = zoom;   // seed the LOD zoom so the first render picks dots-vs-platelets correctly before any interaction
-  deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], ...camAngles(), zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
+  // Aim at the data's own height, not the datum: tilted, a target 1 km under the ice slid the data off-centre.
+  deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, (minz + maxz) / 2 * Z_EXAG], ...camAngles(), zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
   return true;
 }
 
@@ -1099,15 +1100,20 @@ AICESAT.util.drawer(root, null);
 // Ladder levels: the basemap switch and the change / confidence legends live at the top of the panel, and the drawer
 // sits on the left. The Delta-h tab is gone: it pairs shots within 35 m and drops pairs > 50 m apart, which on
 // fast-thinning ice leaves almost nothing.
-{ const body = $('tspanel').querySelector('.pbody') || $('tspanel');
-  body.prepend($('chgLegend')); body.prepend($('baseSwitch'));
+// Three sub-panels at the ladder levels: Controls (basemap, cell size, time window), Legend (trend, confidence, the
+// mission strip -- off the map here -- and the cell counts), Time series (the rest). Demo branch: the moves are
+// permanent, so the classic scene view keeps these controls only inside the ladder panels.
+{ const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
+  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'));
+  leg.append($('chgLegend'), $('timeline'), $('tsStatus'));
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); }
 $('stats').addEventListener('reopen', () => updateStats());
 // 3-D navigation hint over the canvas, auto-dismissed on first interaction (or after a few seconds)
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
-let candidates = [], candSel = -1;
+let candidates = [], candSel = -1, candHover = -1;
+const TS_HINT = 'Hover a cell to preview its record; click to hold it. Shift-click cells to study them.';
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (AICESAT.ts.cellEdgeM(r) || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {
@@ -1123,15 +1129,16 @@ async function findCandidates() {
   $('tsStatus').innerHTML = '<span class="spin-sm"></span>'; $('tsFind').disabled = true; AICESAT.clearError();
   try {
     const d = await api.candidates(sceneId, {h3_res: +$('tsRes').value, delta_t: +$('tsDt').value, ref_missions: tsRefMissions(), min_bins: 3});
-    candidates = d.candidates || []; candSel = -1;
-    $('tsStatus').textContent = candidates.length + (candidates.length === 1 ? ' cell' : ' cells') +
-      (LEVEL ? ` · ~${AICESAT.ts.cellEdgeM(+$('tsRes').value)} m cells · ${+$('tsDt').value}-year windows` : '');
+    candidates = d.candidates || []; candSel = -1; candHover = -1;
+    const nLow = candidates.filter(c => c.level === 'low').length;
+    $('tsStatus').textContent = LEVEL ? `${candidates.length} cells · ${candidates.length - nLow} high or medium · ${nLow} low`
+                                      : candidates.length + (candidates.length === 1 ? ' cell' : ' cells');
     $('tsCaveat').hidden = !candidates.length;
     renderCandList(); render();
     CHANGE_LIM = AICESAT.timeline.trendLimit(candidates); renderChgLegend();
     const want = params.get('sel'), wi = want ? candidates.findIndex(c => c.h3 === want) : -1;
     if (candidates.length && (!LEVEL || wi >= 0)) selectCand(Math.max(0, wi));
-    else if (candidates.length) { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'Click a cell for its record. Shift-click cells to study them.'; }
+    else if (candidates.length) { showCell(); }
     else { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'no cells with 3+ time windows — try a larger cell size or a wider time window'; }
   } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); }
   $('tsFind').disabled = false;
@@ -1144,7 +1151,7 @@ function renderChgLegend() {
     `<div class="lg-ramp"><span>−${lim}</span><i class="chg-ramp"></i><span>+${lim} m/yr</span></div>` +
     `<div class="lg-head">Confidence</div>` +
     `<div class="lg-conf">${tile('high')}high ${tile('medium')}medium ${tile('low')}low</div>` +
-    `<div class="small">${candidates.length - low} of ${candidates.length} cells high or medium</div>`;
+    `<div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>`;
 }
 function toggleStudy(h) { if (STUDY.has(h)) STUDY.delete(h); else STUDY.add(h); STUDY_VER++; syncStudyBar(); render(); }
 function syncStudyBar() {
@@ -1186,9 +1193,19 @@ function applyBasemap() {
 $('baseSwitch').querySelectorAll('button').forEach(b => b.onclick = () => { BASEMAP = b.dataset.b; applyBasemap(); });
 $('toRegion').onclick = () => { const p = params.get('parent'); if (p) location.hash = '#scene/' + p + '?level=region'; };
 function renderCandList() { AICESAT.ts.renderCandList($('tsList'), candidates, candSel, selectCand); }
-function selectCand(i) { candSel = i; renderCandList(); drawChart(); renderConf(candidates[i]); render(); }
+function selectCand(i) { candSel = i; renderCandList(); showCell(); render(); }
+// The panel shows the selected cell, or -- while none is selected -- the last one hovered.
+function showCell() {
+  const k = candSel >= 0 ? candSel : candHover, c = k >= 0 ? candidates[k] : null;
+  drawChart(); renderConf(c);
+  $('tsMode').innerHTML = !LEVEL || !c ? '' : candSel >= 0 ? '<b>Selected</b> · click the cell again to release'
+                                                          : 'Preview · click the cell to hold it';
+  if (!c && LEVEL && candidates.length) $('tsReadout').textContent = TS_HINT;
+}
+function hoverCand(i) { if (i < 0 || i === candHover) return; candHover = i; if (candSel < 0) showCell(); }
 function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
-function drawChart() { AICESAT.ts.drawChart($('tsChart'), candSel < 0 ? null : candidates[candSel], colorOf, $('tsReadout')); }
+function drawChart() { const k = candSel >= 0 ? candSel : (LEVEL ? candHover : -1);
+  AICESAT.ts.drawChart($('tsChart'), k < 0 ? null : candidates[k], colorOf, $('tsReadout')); }
 function candidateLayers() {
   if (!candidates.length) return [];
   // Draped on the terrain like the H3 grid, so the two line up. They used to sit at the cell's reference-plane
@@ -1205,8 +1222,11 @@ function candidateLayers() {
     onClick: (info, ev) => {
       if (!info || info.index == null || info.index < 0) return;
       if (LEVEL === 'region' && ev && ev.srcEvent && ev.srcEvent.shiftKey) toggleStudy(candidates[info.index].h3);
+      else if (LEVEL && info.index === candSel) { candHover = info.index; selectCand(-1); }   // click again: release
       else selectCand(info.index);
     },
+    onHover: info => { if (LEVEL && info && info.index != null) hoverCand(info.index); },
+    autoHighlight: !!LEVEL, highlightColor: [150, 235, 255, 70],
     updateTriggers: {getFillColor: [candSel, CHANGE_LIM, LEVEL], getLineColor: [candSel, STUDY_VER, LEVEL], getLineWidth: [candSel, STUDY_VER, LEVEL], getPolygon: Z_EXAG}})];
   // selected cell: a vertical marker rising from the surface + a floating label, so the current time-series cell is
   // unmistakable in the 3-D scene.
