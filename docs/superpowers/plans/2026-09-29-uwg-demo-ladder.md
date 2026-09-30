@@ -766,6 +766,132 @@ git commit -m "feat(mcp): three model tools, one per ladder level; elevation_cha
 
 ---
 
+### Task 3b: Sample geometry: why the positions and slopes matter (added 2026-09-29 at Kevin's request)
+
+`show_timeseries` also returns what the series would read if the analysis ignored where each mission sampled the
+cell, so the agent can explain it with real numbers. Story cell: GLAS and IceBridge centroids ~400 m east of ATL06;
+a joint plane reads −57 m against −87.7 m.
+
+**Files:**
+- Modify: `src/aicesat/timeseries.py` (`_cells_of` helper shared with `candidates`; `_load_all` carries
+  `sn_slope`/`we_slope`; new `sample_geometry`)
+- Modify: `src/aicesat/api.py` (`cell_geometry`), `src/aicesat/server.py` (`show_timeseries` merges it)
+- Test: `tests/test_sample_geometry.py`
+
+**Interfaces:**
+- Produces: `timeseries.sample_geometry(doc, h3_cell, reported_series, delta_t=1.0, common_epoch=2005.0) -> {"missions":
+  {M: {"n", "centroid_offset_m": [dx, dy], "fitted_slope": {...} | None}}, "measured_slope": {M: {...}},
+  "change_m": {"reported", "ignoring_positions", "one_plane_across_all_eras"}, "explanation": str}`, and
+  `api.cell_geometry(scene_id, h3, h3_res=8, delta_t=1.0, ref_missions=None)`.
+
+- [ ] **Step 1: Failing tests** (`tests/test_sample_geometry.py`). The scene is a synthetic 3 %-sloped cell. GLAS (2005)
+  sits 400 m east on the uphill side, and ATL06 (2020–22) is centred and 20 m lower from real thinning. The truth is
+  −20 m. Differencing raw heights reads about −32 m, and one plane across both eras absorbs the change into slope
+  (about 0 m).
+
+```python
+import h3
+import numpy as np
+
+from aicesat import scene as scene_mod
+from aicesat import timeseries
+
+FRAME = scene_mod.local_frame((-49.6, 69.1, -49.0, 69.3))
+DOC = {"frame": FRAME, "z0": 0.0}
+CELL = h3.latlng_to_cell(69.2, -49.3, 8)
+
+
+def _recs(with_slopes=False):
+    clat, clon = h3.cell_to_latlng(CELL)
+    cx, cy = scene_mod.to_local(FRAME, np.array([clon]), np.array([clat]))
+    rng = np.random.default_rng(1)
+    out = []
+    for mission, xs, years, dh in (("GLAS", (350, 450), [2005.1], 0.0), ("ATL06", (-100, 100), [2020.5, 2021.5, 2022.5], -20.0)):
+        n = 60 * len(years)
+        x = cx[0] + rng.uniform(*xs, n); y = cy[0] + rng.uniform(-150, 150, n)
+        h = 1000.0 + 0.03 * (x - cx[0]) + dh + rng.normal(0, 0.05, n)
+        lon, lat = scene_mod.to_lonlat(FRAME, x, y) if hasattr(scene_mod, "to_lonlat") else (None, None)
+        rec = {"mission": mission, "x": x, "y": y, "h": h, "lat": lat, "lon": lon,
+               "yr": np.repeat(np.asarray(years, "f8"), 60), "propagated": True}
+        if with_slopes and mission == "ATL06":
+            rec["sn"] = np.zeros(n); rec["we"] = np.full(n, 0.03)
+        out.append(rec)
+    return out
+
+
+def _geom(monkeypatch, **kw):
+    recs = _recs(**kw)
+    monkeypatch.setattr(timeseries, "_load_all", lambda doc, epoch: recs)
+    monkeypatch.setattr(timeseries, "_cells_of", lambda lat, lon, res: np.full(len(lat) if lat is not None else 0, h3.str_to_int(CELL), "u8"))
+    rep = [{"year": 2005.1, "value_m": 0.0}, {"year": 2022.5, "value_m": -20.0}]
+    return timeseries.sample_geometry(DOC, CELL, rep)
+
+
+def test_it_reports_what_ignoring_positions_would_read(monkeypatch):
+    g = _geom(monkeypatch)
+    assert g["change_m"]["reported"] == -20.0
+    assert abs(g["change_m"]["ignoring_positions"] - (-32.0)) < 1.5          # 0.03 m/m x 400 m of uphill offset
+    assert abs(g["change_m"]["one_plane_across_all_eras"]) < 5.0              # the change vanished into the slope
+
+
+def test_it_says_where_each_mission_sampled(monkeypatch):
+    g = _geom(monkeypatch)
+    assert g["missions"]["GLAS"]["centroid_offset_m"][0] > 250                # east of the cell's sample centroid
+    assert abs(g["missions"]["ATL06"]["fitted_slope"]["dh_dx_m_per_km"] - 30) < 3
+    assert "400" in g["explanation"] or "m apart" in g["explanation"]
+
+
+def test_a_measured_product_slope_is_reported_when_the_data_carries_one(monkeypatch):
+    g = _geom(monkeypatch, with_slopes=True)
+    m = g["measured_slope"]["ATL06"]
+    assert m["n"] == 180 and abs(m["slope_deg"] - 1.72) < 0.05
+```
+
+  The `_recs` helper needs lat/lon only for `_cells_of`, which the test replaces. If `scene_mod` has no `to_lonlat`,
+  pass `lat=np.zeros(n)` instead. **Ruling if needed:** keep the test independent of the inverse projection.
+
+- [ ] **Step 2: Run** `uv run pytest tests/test_sample_geometry.py -q` → FAIL (`AttributeError: ... sample_geometry`).
+
+- [ ] **Step 3: Implement.**
+  - **`timeseries.py`:** extract the h3ronpy/fallback block in `candidates` into
+    `_cells_of(lat, lon, res) -> np.ndarray[u8]` and call it there.
+  - **`_load_all`:** add `"sn": arrays.get("sn_slope"), "we": arrays.get("we_slope")` to each rec (None when absent).
+  - **`sample_geometry(doc, h3_cell, reported_series, delta_t=1.0, common_epoch=2005.0)`:**
+    1. Select the cell's points per mission.
+    2. Centroid of all of them.
+    3. Per mission: n, centroid offset, and an lstsq plane when n ≥ 10.
+    4. Measured slope per mission carrying `sn`/`we`: the median `sn`, `we` rotated into local x/y with
+       `frame["east_xy"]` / `frame["north_xy"]`, plus slope_deg and n.
+    5. Window index `floor((yr - t0) / delta_t)`, where `t0` = min year across the whole doc.
+    6. `ignoring_positions` = median raw h in the last window minus the first.
+    7. `one_plane_across_all_eras` = the same on residuals about one plane fitted to all points.
+    8. `reported` = the last minus the first `value_m` of `reported_series`.
+    9. `explanation` = one sentence with the max centroid separation, the cell's slope, and the three numbers.
+  - **`api.cell_geometry(scene_id, h3, h3_res=8, delta_t=1.0, ref_missions=None)`:** load the doc, get the reported
+    series from `timeseries_cell(..., ref_missions=ref_missions or CHANGE_REF)`, and return
+    `timeseries.sample_geometry(...)`. Raise KeyError for an unknown scene.
+  - **`server.show_timeseries`:** add `"sample_geometry": api.cell_geometry(scene_id, h3, h3_res, delta_t, ref)`
+    inside a `try`. Geometry is an explanation, so its failure must not lose the chart: on exception, set
+    `{"error": str(e)}`. Append to the docstring: *"`sample_geometry` says where each mission sampled the cell, the
+    slopes the data implies and measures, and what the change would read if those positions were ignored. Use it to
+    explain why the answer needs the geometry."*
+
+- [ ] **Step 4: Run the tests, prove one can fail, run the suite, then commit.**
+  - Run `uv run pytest tests/test_sample_geometry.py -q` → 3 PASS.
+  - Prove it can fail: make `ignoring_positions` use residuals instead of raw heights, and see the first test FAIL.
+    Revert.
+  - Suite: `set -o pipefail; uv run pytest -q 2>&1 | tail -3`.
+  - Real check: `api.cell_geometry(<715f3d2d3a>, "8806f21187fffff")` should show GLAS about +400 m east, a joint-plane
+    change near −57 m, and the reported change near −87.7 m.
+  - Commit:
+
+```bash
+git add src/aicesat/timeseries.py src/aicesat/api.py src/aicesat/server.py tests/test_sample_geometry.py
+git commit -m "feat(timeseries): show_timeseries explains what ignoring sample positions and slopes would read"
+```
+
+---
+
 ### Task 4: Timeline strip + change colours (shared UI helpers)
 
 **Files:**
