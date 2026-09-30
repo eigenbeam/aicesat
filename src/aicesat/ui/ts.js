@@ -18,6 +18,7 @@ AICESAT.TsView = class {
       '      <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n' +
       '      <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n' +
       '    </div>\n' +
+      '    <div class="tsctx"><canvas id="tsCtx" hidden></canvas><div><button id="tsOpen3d">Open in 3D ↗</button><div class="small" id="tsCtxNote"></div></div></div>\n' +
       '  </div>\n' +
       '  <div class="tsbody">\n' +
       '    <div id="tsList" class="tslist tslist-wide"></div>\n' +
@@ -42,6 +43,34 @@ AICESAT.TsView = class {
     };
     const refMissions = () => [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value);
 
+    let meta = null;
+    // Where the cell is: the scene's own imagery, every candidate outlined faintly, the selected one bright.
+    const drawCtx = async () => {
+      const cv = $('tsCtx');
+      if (!meta || !meta.imagery || !meta.frame) { cv.hidden = true; return; }
+      const src = await api.imageryDataUrl(sceneId); if (!src) { cv.hidden = true; return; }
+      const im = new Image();
+      im.onload = () => {
+        const Wc = 220, Hc = Math.round(Wc * im.height / im.width), d = devicePixelRatio || 1;
+        cv.width = Wc * d; cv.height = Hc * d; cv.style.width = Wc + 'px'; cv.style.height = Hc + 'px'; cv.hidden = false;
+        const ctx = cv.getContext('2d'); ctx.drawImage(im, 0, 0, cv.width, cv.height);
+        const ex = meta.imagery, px = (x, y) => [(x - ex.x0) / (ex.x1 - ex.x0) * cv.width, (1 - (y - ex.y0) / (ex.y1 - ex.y0)) * cv.height];
+        const ring = (c, style, lw) => { ctx.beginPath(); c.xy.forEach((p, k) => { const q = px(p[0], p[1]); if (k) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); });
+          ctx.closePath(); ctx.strokeStyle = style; ctx.lineWidth = lw * d; ctx.stroke(); };
+        candidates.forEach(c => ring(c, 'rgba(255,255,255,0.35)', 0.8));
+        if (sel >= 0) {   // a 530 m cell is ~2 px on a 50 km image: mark it so "where" reads at a glance
+          const c = candidates[sel]; ring(c, 'rgb(150,235,255)', 2.5);
+          const [qx, qy] = px(c.center[0], c.center[1]), r = 11 * d;
+          ctx.lineWidth = 2 * d; ctx.strokeStyle = 'rgba(10,14,22,0.9)'; ctx.beginPath(); ctx.arc(qx, qy, r + d, 0, 2 * Math.PI); ctx.stroke();
+          ctx.strokeStyle = 'rgb(150,235,255)'; ctx.beginPath(); ctx.arc(qx, qy, r, 0, 2 * Math.PI); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(qx - 2 * r, qy); ctx.lineTo(qx - r, qy); ctx.moveTo(qx + r, qy); ctx.lineTo(qx + 2 * r, qy);
+          ctx.moveTo(qx, qy - 2 * r); ctx.lineTo(qx, qy - r); ctx.moveTo(qx, qy + r); ctx.lineTo(qx, qy + 2 * r); ctx.stroke();
+        }
+      };
+      im.src = src;
+    };
+    $('tsOpen3d').onclick = () => api.openLink(AICESAT.lastOpenUrl || (location.origin + '/#scene/' + sceneId + '?level=region'));
+
     // Selection is local: the view already holds every candidate's series, so picking a different cell is a
     // redraw, not a round-trip. That is what makes the list usable inside a chat transport.
     const select = i => {
@@ -49,6 +78,7 @@ AICESAT.TsView = class {
       TS.renderCandList($('tsList'), candidates, sel, select);
       TS.drawChart($('tsChart'), sel < 0 ? null : candidates[sel], colorOf, $('tsReadout'), 220);
       TS.renderConf($('tsConf'), sel < 0 ? null : candidates[sel]);
+      drawCtx();
     };
 
     const find = async (selectH3) => {
@@ -94,10 +124,10 @@ AICESAT.TsView = class {
         TS.renderCandList($('tsList'), [], -1, select); select(-1);
         $('tsStatus').innerHTML = '<span class="spin-sm"></span>';
         try {
-          const meta = await api.sceneMeta(id);        // metadata only — no points, no stream
+          meta = await api.sceneMeta(id);        // metadata only — no points, no stream
           present = M.MISSION_ORDER.filter(m => meta.series && meta.series[m]);
         } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); return; }
-        // Same rule as timeseries._reference_set: GLAS anchors when present (earliest epoch, single sensor).
+        // One era's plane (api.CHANGE_REF): fitted across missions, the plane mistakes change for slope.
         const defRef = present.includes('ATL06') ? ['ATL06'] : present.includes('GLAS') ? ['GLAS'] : present;   // one era's plane: api.CHANGE_REF
         $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '"' +
           (defRef.includes(m) ? ' checked' : '') + '> ' + M.label(m) + '</label>').join('');

@@ -36,6 +36,7 @@ window.AICESAT = window.AICESAT || {};
     lakeEvict: cells => post('/api/lake/evict', {cells}),
     bench: () => j('/api/bench').catch(() => null),
     openLink: url => window.open(url, '_blank'),
+    imageryDataUrl: id => Promise.resolve('/api/scene/' + id + '/imagery.jpg'),
   };
   // ---- push transport (server: src/aicesat/stream.py) -----------------------------------------------------------
   // The only transport for bulk data. One long-lived response carries every mission's points AND the DEM surface as
@@ -314,6 +315,7 @@ window.AICESAT = window.AICESAT || {};
       lakeEvict: cells => call('ui_lake_evict', {cells}),
       bench: () => call('ui_bench').catch(() => null),
       openLink: url => app.openLink ? app.openLink({url}) : window.open(url, '_blank'),
+      imageryDataUrl: async id => { const b64 = await chunkedBytes(id, 'imagery'); return b64 ? 'data:image/jpeg;base64,' + b64 : null; },
       fullscreen: (mode = 'fullscreen') => app.requestDisplayMode && app.requestDisplayMode({mode}),
     };
   }

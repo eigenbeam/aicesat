@@ -91,7 +91,16 @@ AICESAT.ready.then(api => {
       reportSize();
     };
     // the tool result that launched this instance decides the first view
-    const onResult = r => { const sc = AICESAT.toolPayload(r); if (!sc) return; if (sc.view === 'ts' && sc.scene_id) location.hash = '#ts/' + sc.scene_id + (sc.select ? '?sel=' + sc.select : ''); else if (sc.scene_id) location.hash = '#scene/' + sc.scene_id; else if (sc.view) location.hash = '#' + sc.view; else if (!location.hash) location.hash = '#explore'; route(); };
+    const onResult = r => {
+      const sc = AICESAT.toolPayload(r); if (!sc) return;
+      if (sc.open_url) AICESAT.lastOpenUrl = sc.open_url;     // the ts view's "Open in 3D" (the host origin is not ours)
+      if (sc.view === 'ts' && sc.scene_id) location.hash = '#ts/' + sc.scene_id + '?' + [sc.select && 'sel=' + sc.select, sc.res && 'res=' + sc.res].filter(Boolean).join('&');
+      else if (sc.view === 'survey') location.hash = '#survey/' + (sc.bbox || []).join(',');
+      else if (sc.scene_id) location.hash = '#scene/' + sc.scene_id + (sc.query ? '?' + sc.query : '');
+      else if (sc.view) location.hash = '#' + sc.view;
+      else if (!location.hash) location.hash = '#survey';
+      route();
+    };
     AICESAT.onToolResult = onResult;
     (AICESAT.pendingToolResults || []).forEach(onResult);
     if (AICESAT.lastToolResult) onResult(AICESAT.lastToolResult);
