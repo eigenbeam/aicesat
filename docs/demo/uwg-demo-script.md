@@ -4,6 +4,21 @@ Everything below runs on the isolated store `data-uwg/` from the `demo/uwg-ladde
 Honest framing to say once: *"The region was indexed last night and these two areas were fetched once, so the video
 isn't three minutes of downloading. Everything you see is computed live from those measurements by the same code."*
 
+## Pronunciation
+
+English approximations, stressed syllable in caps. The Greenlandic `ll` is a breathy "thl" (like Welsh `ll`); `q` is
+a `k` made further back in the throat, so a plain `k` is fine.
+
+| Name | Say | Note |
+|---|---|---|
+| Jakobshavn Isbræ | YAH-kobs-hahv-en ISS-bray | The glaciology community's usual form. Danish is closer to "YAH-kobs-hown EES-breh" |
+| Sermeq Kujalleq | SER-mek koo-YAH-thlek | Official Greenlandic name of Jakobshavn Isbræ (Bjørk et al. 2015) |
+| Jakobshavn Isfjord | YAH-kobs-hahv-en ISS-fyord | The fjord in front of the glacier |
+| Ilulissat | ee-loo-LEE-saht | The town at the fjord mouth (Jakobshavn is its Danish name) |
+| Sermeq Avannarleq | SER-mek ah-VAHN-nahr-lek | The glacier just north |
+| ICESat | ICE-sat | Not "I-C-E sat" |
+| Khazendar | kah-zen-DAR | If you cite Khazendar et al. 2019 |
+
 ## Setup
 
 - Web UI: `AICESAT_PORT=8791 AICESAT_DATA_DIR=/Users/kebe6994/projects/hackathon/aicesat/data-uwg uv run scripts/serve.py`

@@ -2,13 +2,17 @@
 
 Read from each collection's coverage manifest (DISTINCT h3_cell, granule, ym; coverage._ensure_manifest keeps it
 fresh) -- no NASA calls, no lake reads. Index rows are keyed at res 5, so a coarser hex is the roll-up of its res-5
-children, and a granule crossing two children counts once. A PASS is a distinct granule.
+children, and a granule crossing two children counts once. A PASS is a distinct granule; a DAY is a distinct acquisition
+date. Days are the count to show: an ILATM2 granule is a ~4-minute slice of a flight, so one flight line over a hex can
+span two granules (lower trunk 8506f213fffffff: 117 IceBridge granules on 32 flight days), while for GLAH06 and ATL06 a
+granule over a hex is one pass and days == passes.
 
 `claimed` answers "would a build over this hex be accepted for this mission": the same compacted-claim containment
 test the build gate uses (index.cells_within), so the globe never offers a hex the build would refuse."""
 from __future__ import annotations
 
 import math
+import re
 
 import duckdb
 import h3
@@ -36,6 +40,21 @@ def _rows(key: str) -> list[tuple]:
         con.close()
 
 
+def _day_of(key: str):
+    """granule -> 'YYYYMMDD'. ILATM2 and ATL06 names carry the date; GLAH06 names do not, so read its index's gdate."""
+    if key != "GLAS":
+        return lambda g: (m := re.search(r"_(\d{8})", g)) and m.group(1)
+    d = coverage._index_for(key)[0]
+    srcs = coverage._source_parquets(d) if d is not None and d.exists() else []
+    if not srcs:
+        return lambda g: None
+    con = duckdb.connect()
+    try:
+        return dict(con.execute("SELECT DISTINCT granule, gdate FROM read_parquet(?)", [[str(x) for x in srcs]]).fetchall()).get
+    finally:
+        con.close()
+
+
 def _packed(key: str) -> set[str]:
     """The collection's compacted claim, as h3 strings (index.manifest_cells reads _build.json)."""
     d = coverage._index_for(key)[0]
@@ -47,9 +66,9 @@ def _in_bbox(lat: float, lon: float, bbox) -> bool:
     return s <= lat <= n and w <= lon <= e
 
 
-def _mission_row(granules: set, years: set) -> dict:
+def _mission_row(granules: set, years: set, days: set) -> dict:
     ys = sorted(years)
-    return {"passes": len(granules), "year_min": ys[0] if ys else None, "year_max": ys[-1] if ys else None,
+    return {"passes": len(granules), "days": len(days - {None}), "year_min": ys[0] if ys else None, "year_max": ys[-1] if ys else None,
             "n_years": len(ys)}
 
 
@@ -59,12 +78,14 @@ def coverage_hexes(res: int = 5, bbox=None) -> dict:
         raise ValueError(f"res must be 0..{INDEX_RES}: index rows are keyed at res {INDEX_RES}; got {res}")
     acc: dict[str, dict] = {}
     for key in MISSIONS:
+        day = _day_of(key)
         for cell, granule, ym in _rows(key):
             hx = h3.int_to_str(int(cell))
             if h3.get_resolution(hx) > res:
                 hx = h3.cell_to_parent(hx, res)
-            m = acc.setdefault(hx, {}).setdefault(key, {"granules": set(), "years": set()})
+            m = acc.setdefault(hx, {}).setdefault(key, {"granules": set(), "years": set(), "days": set()})
             m["granules"].add(granule)
+            m["days"].add(day(granule))
             if ym:
                 m["years"].add(int(str(ym)[:4]))
     packed = {k: _packed(k) for k in MISSIONS}
@@ -73,7 +94,7 @@ def coverage_hexes(res: int = 5, bbox=None) -> dict:
         lat, lon = h3.cell_to_latlng(hx)
         if bbox is not None and not _in_bbox(lat, lon, bbox):
             continue
-        ms = {k: {**_mission_row(v["granules"], v["years"]), "claimed": index.cells_within(packed[k], [hx])}
+        ms = {k: {**_mission_row(v["granules"], v["years"], v["days"]), "claimed": index.cells_within(packed[k], [hx])}
               for k, v in acc[hx].items()}
         hexes.append({"h3": hx, "lat": round(lat, 5), "lon": round(lon, 5), "missions": ms, "n_missions": len(ms),
                       "claimed": all(v["claimed"] for v in ms.values())})
@@ -87,20 +108,21 @@ def area_bbox(lat: float, lon: float, radius_km: float) -> list[float]:
 
 
 def area_summary(bbox) -> dict:
-    """Distinct passes and years per mission over an area. A res-5 index cell counts when its centre lies within the
+    """Distinct passes, days and years per mission over an area. A res-5 index cell counts when its centre lies within the
     area grown by ~one res-5 edge (9 km), so a small radius still reaches the hex it sits in."""
     w, s, e, n = bbox
     kx = 9 / (111.32 * max(math.cos(math.radians((s + n) / 2)), 0.05))
     grown = [w - kx, s - 9 / 111.32, e + kx, n + 9 / 111.32]
     out = {}
     for key in MISSIONS:
-        grans, years, cells = set(), set(), set()
+        grans, years, cells, days, day = set(), set(), set(), set(), _day_of(key)
         for cell, granule, ym in _rows(key):
             lat, lon = h3.cell_to_latlng(h3.int_to_str(int(cell)))
             if _in_bbox(lat, lon, grown):
                 grans.add(granule)
+                days.add(day(granule))
                 cells.add(cell)
                 if ym:
                     years.add(int(str(ym)[:4]))
-        out[key] = {**_mission_row(grans, years), "hexes": len(cells)}
+        out[key] = {**_mission_row(grans, years, days), "hexes": len(cells)}
     return out

@@ -9,14 +9,21 @@ C5B = h3.latlng_to_cell(69.60, -48.20, 5)           # a different res-5 hex
 I = h3.str_to_int
 ROWS = {
     "GLAS": [(I(C5), "GLAH06_a", "2004-03"), (I(C5), "GLAH06_b", "2008-10"), (I(C5B), "GLAH06_a", "2004-03")],
-    "ICESSN": [(I(C5), "ILATM2_x", "2011-05")],
-    "ATL06": [(I(C5), "ATL06_1", "2019-04"), (I(C5), "ATL06_2", "2026-01"), (I(C5), "ATL06_2", "2026-01")],
+    # two ~4-minute slices of one flight: two granules, one day
+    "ICESSN": [(I(C5), "ILATM2_20110505_134446_smooth_nadir3seg_50pt.csv", "2011-05"),
+               (I(C5), "ILATM2_20110505_134841_smooth_nadir3seg_50pt.csv", "2011-05")],
+    "ATL06": [(I(C5), "ATL06_20190401010101_02770103_007_01.h5", "2019-04"),
+              (I(C5), "ATL06_20260101010101_02790106_007_01.h5", "2026-01"),
+              (I(C5), "ATL06_20260101010101_02790106_007_01.h5", "2026-01")],
 }
 
 
 @pytest.fixture
 def fake(monkeypatch):
     monkeypatch.setattr(survey, "_rows", lambda key: ROWS[key])
+    real = survey._day_of   # GLAH06 names carry no date: the index's gdate stands in, faked here
+    monkeypatch.setattr(survey, "_day_of", lambda key: {"GLAH06_a": "20040301", "GLAH06_b": "20081001"}.get
+                        if key == "GLAS" else real(key))
     # GLAS and ATL06 claim exactly C5; IceBridge claims C5 through a coarse ancestor (the claim set is compacted)
     monkeypatch.setattr(survey, "_packed", lambda key: {h3.cell_to_parent(C5, 3)} if key == "ICESSN" else {C5})
 
@@ -27,9 +34,16 @@ def _by(out):
 
 def test_counts_distinct_passes_and_years_per_mission(fake):
     hx = _by(survey.coverage_hexes(5))[C5]
-    assert hx["missions"]["GLAS"] == {"passes": 2, "year_min": 2004, "year_max": 2008, "n_years": 2, "claimed": True}
+    assert hx["missions"]["GLAS"] == {"passes": 2, "days": 2, "year_min": 2004, "year_max": 2008, "n_years": 2,
+                                      "claimed": True}
     assert hx["missions"]["ATL06"]["passes"] == 2               # a duplicated manifest row is one pass
     assert hx["n_missions"] == 3 and hx["claimed"] is True
+
+
+def test_days_count_acquisition_dates_not_granules(fake):
+    m = _by(survey.coverage_hexes(5))[C5]["missions"]
+    assert (m["ICESSN"]["passes"], m["ICESSN"]["days"]) == (2, 1)      # one flight, two granule slices
+    assert (m["ATL06"]["passes"], m["ATL06"]["days"]) == (2, 2)
 
 
 def test_claim_is_per_mission_and_a_hex_builds_only_if_every_mission_is_claimed(fake):
