@@ -9953,7 +9953,11 @@ window.AICESAT = window.AICESAT || {};
       job: id => call('ui_job', {job_id: id}),
       jobs: async () => (await call('ui_jobs')).jobs,
       coregister: id => call('ui_coregister', {scene_id: id}),
-      candidates: (id, opts) => call('ui_candidates', {scene_id: id, ...(opts || {})}),
+      candidates: async (id, opts) => {   // chunked: a hex's full candidate set is several host-sized tool results
+        let text = '', n = 1;
+        for (let c = 0; c < n; c++) { const d = await call('ui_candidates', {scene_id: id, ...(opts || {}), chunk: c}); n = d.n_chunks; text += d.text; }
+        return JSON.parse(text);
+      },
       collections: () => call('ui_collections'),
       claims: () => call('ui_claims'),
       coverageHexes: (res, bbox) => call('ui_coverage_hexes', bbox ? {res, bbox} : {res}),
@@ -9966,7 +9970,11 @@ window.AICESAT = window.AICESAT || {};
       lakeEvict: cells => call('ui_lake_evict', {cells}),
       bench: () => call('ui_bench').catch(() => null),
       openLink: url => app.openLink ? app.openLink({url}) : window.open(url, '_blank'),
-      imageryDataUrl: async id => { const b64 = await chunkedBytes(id, 'imagery'); return b64 ? 'data:image/jpeg;base64,' + b64 : null; },
+      imageryDataUrl: async id => {   // cached: every chart click would otherwise re-fetch the whole image in chunks
+        if (imagery.has(id)) return imagery.get(id);
+        const b64 = await chunkedBytes(id, 'imagery'); const u = b64 ? 'data:image/jpeg;base64,' + b64 : null;
+        if (u) imagery.set(id, u); return u;
+      },
       fullscreen: (mode = 'fullscreen') => app.requestDisplayMode && app.requestDisplayMode({mode}),
     };
   }
@@ -11068,7 +11076,7 @@ AICESAT.SurveyView = class {
     root.innerHTML = `<div class="map" id="svMap"></div>
       <div class="sv-title"><h1>Where has the surface been measured — and what changed?</h1>
         <p>Every hex shows which laser altimeters measured it: ICESat (2003–09), IceBridge (2009–19), ICESat-2 (2018–).
-        Gold = all three, a 20-year record. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
+        Gold = all three measured here, so a 20-year record is possible. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);

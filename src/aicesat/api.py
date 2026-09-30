@@ -895,10 +895,10 @@ def timeseries_cell(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.
 
 
 # --- the demo ladder's change level ---------------------------------------------------------------------------
-# The change map's reference plane is ONE era's: fitted to all missions jointly, the plane mistakes 20 years of
-# thinning for slope wherever the missions sampled different parts of a cell (8806f21187fffff: 6.2 deg joint vs ~2 deg
-# for each mission alone; 2026 read -57 m instead of -87 m). ATL06 alone agrees with GLAS alone to ~1 m there and
-# covers 855 cells at res 8 against GLAS's 112.
+# Each cell's slope comes only from the spread of samples within each year (timeseries._fit_cell, fixed effects):
+# any plane fitted ACROSS years mistakes the change for slope -- one fitted to all missions jointly read 6.2 deg on
+# 8806f21187fffff against ~2 deg per mission, and 2026 as -57 m instead of -87 m. The reference missions now only set
+# which level reads 0; ICESat-2 is present in every demo cell, so the change level anchors on it.
 CHANGE_REF = ["ATL06"]
 REGION_FLAGS = {"with_glas": True, "with_icessn": True, "with_atl06": True, "with_atl03": False,
                 "with_gedi": False, "with_gpstruth": False, "with_coreg": False}

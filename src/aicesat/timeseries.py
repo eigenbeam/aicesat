@@ -204,7 +204,7 @@ def sample_geometry(doc: dict, h3_cell: str, reported_series: list, delta_t: flo
     fmt = lambda v: "n/a" if v is None else f"{v:+.1f} m"
     explanation = (f"The missions sampled different parts of this cell -- their sample centres are up to {sep:.0f} m "
                    f"apart{ground}. Differencing the raw heights would read {fmt(naive)}, and one plane fitted across "
-                   f"all eras {fmt(joint)}; removing the slope with a plane fitted to one era gives {fmt(reported)}.")
+                   f"all eras {fmt(joint)}; taking the slope only from each year's own samples gives {fmt(reported)}.")
     return {"missions": missions, "measured_slope": measured,
             "change_m": {"reported": reported, "ignoring_positions": naive, "one_plane_across_all_eras": joint},
             "explanation": explanation}

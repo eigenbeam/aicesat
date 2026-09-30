@@ -111,6 +111,21 @@ def test_a_geometry_failure_never_costs_the_chart(monkeypatch):
     assert out["view"] == "ts" and "boom" in out["sample_geometry"]["error"]
 
 
+def test_ui_candidates_arrives_in_chunks_a_host_will_carry(monkeypatch):
+    # The demo hex's full candidate set is ~470 KB; an MCP host drops tool results past ~150k characters, which
+    # would blank both the embedded change map and the embedded chart. Chunk it like scene parts.
+    import json
+    big = {"params": {"ref_missions": ["ATL06"]},
+           "candidates": [{"h3": f"cell{i}", "series": [{"year": 2004 + j, "value_m": -1.0 * j} for j in range(20)]}
+                          for i in range(400)]}
+    monkeypatch.setattr(api, "scene_candidates", lambda *a, **k: big)
+    first = server.ui_candidates("s1")
+    parts = [server.ui_candidates("s1", chunk=c) for c in range(first["n_chunks"])]
+    assert first["n_chunks"] > 1
+    assert all(len(p["text"]) <= api.MCP_CHUNK_BYTES for p in parts)
+    assert json.loads("".join(p["text"] for p in parts)) == big
+
+
 def test_survey_coverage_summarises_per_mission_and_opens_the_globe(monkeypatch):
     monkeypatch.setattr(survey, "area_summary", lambda bbox: {k: {"passes": 3, "year_min": 2004, "year_max": 2026,
                                                                   "n_years": 3, "hexes": 1} for k in survey.MISSIONS})

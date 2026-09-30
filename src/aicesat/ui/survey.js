@@ -7,7 +7,7 @@ AICESAT.SurveyView = class {
     root.innerHTML = `<div class="map" id="svMap"></div>
       <div class="sv-title"><h1>Where has the surface been measured — and what changed?</h1>
         <p>Every hex shows which laser altimeters measured it: ICESat (2003–09), IceBridge (2009–19), ICESat-2 (2018–).
-        Gold = all three, a 20-year record. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
+        Gold = all three measured here, so a 20-year record is possible. Toggle missions below. Click a hex to see how the surface changed there.</p></div>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);

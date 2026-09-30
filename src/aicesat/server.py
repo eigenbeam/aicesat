@@ -507,20 +507,19 @@ def survey_coverage(lat: float, lon: float, radius_km: float = 50.0) -> dict:
 
 
 @apps.tool(resource_uri=UI_URI, name="elevation_change")
-def elevation_change(lat: float, lon: float, radius_km: float = 10.0, h3_res: int = 8, limit: int = 10) -> dict:
+def elevation_change(lat: float, lon: float, h3_res: int = 8, limit: int = 10) -> dict:
     """How the ice or land surface height has changed at a place, across ICESat, IceBridge and ICESat-2 (2003-now),
     and where the record is long enough to tell.
 
-    Fetches every mission's measurements over the H3 hex containing (lat, lon) -- res 5 (~17 km across) for
-    radius_km <= 12, else res 4 (~45 km) -- bins them into res-`h3_res` cells (8 ~ 530 m edge) and one-year windows,
-    and removes each cell's surface slope with a plane fitted to ICESat-2 alone (one era, so change is never mistaken
-    for slope). A cell whose slope removal is uncertain by more than 1 m where some mission sampled it -- because that
-    mission's samples lie off the ground ICESat-2 covers -- is low confidence: counted, not listed.
-    Returns the reliable cells ranked by record length: total change in metres, first/last year, rate, contributing
-    missions, slope_removal_err_m and a confidence reason. status "building" means the area is still being fetched:
-    call again with the same arguments. Quote every rate with its caveats (no inter-mission bias correction, no GIA).
-    Use show_timeseries for one cell."""
-    out = _anticipated(api.elevation_change, lat, lon, radius_km=radius_km, h3_res=h3_res, limit=limit)
+    Fetches every mission's measurements over the ~17 km H3 hex containing (lat, lon), bins them into res-`h3_res`
+    cells (8 ~ 530 m edge) and one-year windows, and removes each cell's surface slope -- which matters, because the
+    missions sampled different spots on sloping ground. The slope is taken only from the spread of samples WITHIN each
+    year, so change between years is never mistaken for slope. A cell whose slope removal is uncertain by more than 1 m
+    where some year sampled it is low confidence: counted, not listed. Returns the reliable cells ranked by record
+    length: total change in metres, first/last year, rate, contributing missions, slope_removal_err_m and a
+    confidence reason. status "building" means the area is still being fetched: call again with the same arguments.
+    Quote every rate with its caveats (no inter-mission bias correction, no GIA). Use show_timeseries for one cell."""
+    out = _anticipated(api.elevation_change, lat, lon, radius_km=10.0, h3_res=h3_res, limit=limit)
     return {**out, "view": "scene", "query": "level=region", "open_url": scene_level_url(out["scene_id"], "region")}
 
 
@@ -634,8 +633,14 @@ def ui_scene_delete(scene_id: str) -> dict:
 
 
 @apps.tool(name="ui_candidates", **_APP)
-def ui_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions: list[str] | None = None, min_bins: int = 3) -> dict:
-    return api.scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
+def ui_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions: list[str] | None = None,
+                  min_bins: int = 3, chunk: int = 0) -> dict:
+    """The full candidate set as JSON text in MCP_CHUNK_BYTES slices: a demo hex's is ~470 KB and an MCP host drops
+    tool results past ~150k characters. The search is memoised, so each chunk is a slice of the same answer."""
+    out = api.scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
+    text = json.dumps(out, default=cache._json_default)
+    n, c = max(1, -(-len(text) // api.MCP_CHUNK_BYTES)), int(chunk)
+    return {"n_chunks": n, "chunk": c, "text": text[c * api.MCP_CHUNK_BYTES:(c + 1) * api.MCP_CHUNK_BYTES]}
 
 
 @apps.tool(name="ui_lake_cells", **_APP)
@@ -687,10 +692,12 @@ mcp = MCPServer(
         "record per place. Three tools, one per question: survey_coverage (which missions measured here, and when -- "
         "instant, from the index), elevation_change (how the surface height changed, cell by cell, and where the "
         "record is long enough to tell), show_timeseries (one cell's full record, charted). Resolve place names to "
-        "lat/lon yourself. The missions sampled different spots inside each cell on sloping ground, so every value "
-        "is measured relative to a surface plane fitted to ICESat-2 alone; a cell where that plane must reach "
-        "samples far from where ICESat-2 measured is low confidence, and slope_removal_err_m / plane_err_m say how "
-        "much the slope removal could be off. Every rate is uncorrected for inter-mission bias and GIA: quote it "
+        "lat/lon yourself. The missions sampled different spots inside each cell on sloping ground, so each cell's "
+        "slope is removed first, using only the spread of samples within each year (change is never mistaken for "
+        "slope). slope_removal_err_m / plane_err_m are the standard error of that removal where each year sampled -- "
+        "an optimistic estimate that treats neighbouring samples as independent; above 1 m a cell is low "
+        "confidence. show_timeseries' sample_geometry shows what ignoring the positions would have read. Every rate "
+        "is uncorrected for inter-mission bias and GIA: quote it "
         "with that caveat and with the cell's confidence and `why`, never as a bare number. Say how many cells were "
         "low confidence, not just the ones you were shown."
     ),
