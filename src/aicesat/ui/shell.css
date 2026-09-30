@@ -340,6 +340,28 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .base-switch button:disabled{opacity:.4;cursor:default}
 .ana-tabs[hidden],.study-bar[hidden],.chg-legend[hidden],.base-switch[hidden],.tsctx canvas[hidden]{display:none!important}
 .timeline{bottom:30px}
+/* ladder levels: the panel on the left, basemap switch and legends inside it */
+.view.left-drawer.has-drawer .deck { right:0; left:var(--drawer-w); transition:left .2s ease; }
+.view.left-drawer.has-drawer.drawer-collapsed .deck { left:0; }
+.view.left-drawer .drawer { right:auto; left:0; border-left:none; border-right:1px solid var(--hair); }
+.view.left-drawer .drawer.collapsed { transform:translateX(-100%); }
+.view.left-drawer .dtab { right:auto; left:var(--drawer-w); border:1px solid var(--hair); border-left:none; border-radius:0 9px 9px 0; transition:left .2s ease; }
+.view.left-drawer.drawer-collapsed .dtab { left:0; }
+.view.left-drawer.has-drawer > #attrib { right:8px !important; left:calc(var(--drawer-w) + 8px); text-align:right; }
+.view.left-drawer .ana-tabs { left:calc(var(--drawer-w) + 12px); }
+.view.left-drawer.drawer-collapsed .ana-tabs { left:12px; }
+#tspanel .base-switch { position:static; display:inline-flex; margin:0 0 8px; }
+#tspanel .chg-legend { position:static; transform:none; display:block; padding:0; background:none; margin:0 0 8px; font-size:11.5px; }
+.lg-head { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; margin:6px 0 3px; }
+.lg-ramp { display:flex; align-items:center; gap:6px; }
+.lg-conf { display:flex; align-items:center; gap:4px; margin-bottom:3px; }
+.lg-tile { display:inline-block; width:14px; height:11px; border-radius:2px; margin-left:4px; border:1px solid rgba(255,255,255,.18); }
+.lg-tile:first-child { margin-left:0; }
+.ro-row { display:flex; gap:8px; line-height:1.55; }
+.ro-k { flex:0 0 74px; color:var(--muted); }
+.ro-v { flex:1; }
+.level-region #tspanel label.ctl-row:has(#tsRes), .level-region #tspanel label.ctl-row:has(#tsDt), .level-region .tsgoto,
+.level-study #tspanel label.ctl-row:has(#tsRes), .level-study #tspanel label.ctl-row:has(#tsDt), .level-study .tsgoto { display:none !important; }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
 .pn{position:absolute;transform:translate(-50%,-50%);font:600 12px ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 0 3px #080c14,0 0 3px #080c14,0 0 7px #080c14}

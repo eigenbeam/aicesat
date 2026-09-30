@@ -62,7 +62,7 @@ AICESAT.ready.then(api => {
     $('topBack').hidden = !deep;
     const q = new URLSearchParams(r.arg.split('?')[1] || ''), lvl = q.get('level');
     $('crumb').textContent = !deep ? '' : name === 'ts' ? '› time series' :
-      lvl === 'region' ? '› change' + (q.get('hex') ? ' · H3 ' + q.get('hex') : '') : lvl === 'study' ? '› change › study' : '› scene ' + r.arg.split('?')[0];
+      lvl === 'region' ? '› change' + (q.get('hex') ? ' · ' + AICESAT.ts.fmtLatLon(...h3.cellToLatLng(q.get('hex')), 2) : '') : lvl === 'study' ? '› change › study' : '› scene ' + r.arg.split('?')[0];
     const v = get(name);
     if (deep) { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show(r.arg);
     current = name;

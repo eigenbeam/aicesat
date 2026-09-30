@@ -79,11 +79,12 @@ window.AICESAT = window.AICESAT || {};
     if (!el) return;
     if (!c) { el.innerHTML = ''; return; }
     const m = c.components, sc = m.scores;
-    el.innerHTML = '<div class="conf-why"><span class="conf-badge ' + c.level + '">' + c.level + '</span> ' + c.why + '</div>' +
-      '<details class="tscomp"><summary>confidence breakdown (' + c.confidence + ')</summary><div class="tscomp-body">' +
-      compRow('within-cell roughness', m.roughness_m + ' m', sc.roughness) +
-      compRow('epochs (time windows)', m.epochs, sc.epochs) +
-      compRow('baseline', m.span_yr + ' yr', sc.span) +
+    const pe = m.plane_err_max_m;
+    el.innerHTML = '<details class="tscomp" open><summary>confidence breakdown (score ' + c.confidence + ')</summary><div class="tscomp-body">' +
+      (pe != null ? compRow('slope-removal error', pe.toFixed(2) + ' m', Math.max(0, 1 - pe)) : '') +
+      compRow('scatter in the cell', m.roughness_m + ' m', sc.roughness) +
+      compRow('time windows', m.epochs, sc.epochs) +
+      compRow('record length', m.span_yr + ' yr', sc.span) +
       compRow('reference points', m.ref_pts, sc.density) +
       '</div></details>';
   }
@@ -121,9 +122,12 @@ window.AICESAT = window.AICESAT || {};
       // trend_cm_yr is computed server-side (timeseries._trend_cm_yr). It used to be a linfit here, which meant the
       // number on the chart and the number an API caller got came from two implementations.
       const missions = [...new Set(s.flatMap(p => p.missions))].map(AICESAT.missions.label).join(' → ');
-      readoutEl.innerHTML = 'trend <b>' + Number(c.trend_cm_yr).toFixed(1) + ' cm/yr</b> · ' + s.length +
-                            ' epochs over ' + c.span_years + ' yr · ' + missions +
-                            '<div class="tscell-id">cell <code>' + c.h3 + '</code> · ' + fmtLatLon(c.lat, c.lon, 5) + '</div>';
+      const row = (k, v) => '<div class="ro-row"><span class="ro-k">' + k + '</span><span class="ro-v">' + v + '</span></div>';
+      readoutEl.innerHTML = row('Centre', fmtLatLon(c.lat, c.lon, 4)) +
+        row('Trend', '<b>' + (c.trend_cm_yr >= 0 ? '+' : '−') + Math.abs(c.trend_cm_yr / 100).toFixed(2) + ' m/yr</b>') +
+        row('Record', Math.floor(x0) + '–' + Math.floor(x1) + ' · ' + s.length + ' one-year windows') +
+        row('Missions', missions) +
+        row('Confidence', '<span class="conf-badge ' + c.level + '">' + c.level + '</span>');
     }
   }
 
