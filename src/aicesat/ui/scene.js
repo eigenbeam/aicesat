@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="baseSwitch" class="base-switch" hidden><button data-b="imagery">Imagery</button><button data-b="dem">Shaded DEM</button></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -58,6 +58,7 @@ let LEVEL = null;             // 'region' = change map, 'study' = 3-D study; nul
 let CHANGE_LIM = 1;           // change-map colour limit (cm/yr), from the gated candidates
 const STUDY = new Set();      // H3 cells shift-clicked for a Study build (region level)
 let STUDY_VER = 0, ANA_TAB = 'ts', imageryAuto = false;
+let BASEMAP = 'imagery';     // ladder levels: 'imagery' (draped, unlit) or 'dem' (hillshaded); kept across scenes
 const camAngles = () => LEVEL === 'region' ? {rotationX: 90, rotationOrbit: 0} : {rotationX: 35, rotationOrbit: -25};
 const strip = AICESAT.timeline.mount($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
 
@@ -137,6 +138,7 @@ function plateletLayer(m, s) {
       return [base[0] * b, base[1] * b, base[2] * b, 235];
     },
     _normalize: false,   // simple convex quads
+    ...(LEVEL ? {parameters: AICESAT.timeline.cloudProps(LEVEL).parameters} : {}),   // same as the points, see timeline.js
     updateTriggers: {getPolygon: PT_SCALE, getFillColor: base},   // Z_EXAG now rides the model matrix, no re-tessellation
   });
 }
@@ -184,7 +186,8 @@ function cloudLayers() {
       modelMatrix: zExagMatrix(),
       getFillColor: (LEVEL === 'region' && candidates.length) ? colorOf(m).slice(0, 3).concat(110) : colorOf(m),
       getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
-      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true, pickable: true,
+      radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true,
+      ...AICESAT.timeline.cloudProps(LEVEL),   // on top of terrain + change hexes at the ladder levels (see timeline.js)
       updateTriggers: {getRadius: PT_SCALE, getFillColor: [LEVEL, candidates.length]},
     }));
   }
@@ -651,8 +654,10 @@ function render() {
   // Order is PICKING PRECEDENCE as well as draw order, most specific last: a point beats the graticule line it sits
   // on, and the line beats the hex cell under it. With the graticule below the hex grid (as it first was) a line
   // could not be hovered at all while the grid was on.
-  deckgl.setProps({layers: [...surfaceLayers(), ...hexGridLayers(), ...graticuleLayers(), ...cloudLayers(),
-                            ...candidateLayers(), ...axesLayers(), ...markerLayers(), ...namesLayers()]});
+  // At the change and study levels the measurements move after the change hexes (AICESAT.timeline.stack).
+  const build = {surface: surfaceLayers, hexgrid: hexGridLayers, graticule: graticuleLayers, clouds: cloudLayers,
+                 candidates: candidateLayers, axes: axesLayers, markers: markerLayers, names: namesLayers};
+  deckgl.setProps({layers: AICESAT.timeline.stack(LEVEL).flatMap(k => build[k]())});
 }
 
 function fitView() {
@@ -762,7 +767,7 @@ function updateLabels() {
   }
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '') + ' · Place names: GeoNames (CC BY 4.0)';
   strip.update(MISSION_ORDER.filter(m => scene.series[m]), visible);
-  if (LEVEL && scene.imagery && !imageryAuto) { imageryAuto = true; SHOW_IMAGERY = true; $('imagery').checked = true; render(); }
+  if (LEVEL && scene.imagery && !imageryAuto) { imageryAuto = true; applyBasemap(); }
 }
 
 // ---- progressive load: open the shell instantly, then poll the growing scene doc and paint each new series /
@@ -1088,6 +1093,19 @@ function syncTabs() {
   updateStats();
 }
 $('anaTabs').querySelectorAll('button[data-t]').forEach(b => b.onclick = () => { ANA_TAB = b.dataset.t; syncTabs(); });
+// Basemap switch (change and study levels): drives the same SHOW_IMAGERY / SHOW_SURFACE the hidden controls panel does.
+function applyBasemap() {
+  const has = !!(scene && scene.imagery), el = $('baseSwitch');
+  el.hidden = !LEVEL; if (!LEVEL) return;
+  const s = AICESAT.timeline.basemap(BASEMAP, has);
+  SHOW_IMAGERY = s.imagery; SHOW_SURFACE = s.surface; $('imagery').checked = s.imagery; $('demOn').checked = s.surface;
+  el.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.b === (s.imagery ? 'imagery' : 'dem'));
+    b.disabled = b.dataset.b === 'imagery' && !has;
+  });
+  render();
+}
+$('baseSwitch').querySelectorAll('button').forEach(b => b.onclick = () => { BASEMAP = b.dataset.b; applyBasemap(); });
 $('toRegion').onclick = () => { const p = params.get('parent'); if (p) location.hash = '#scene/' + p + '?level=region'; };
 function renderCandList() { AICESAT.ts.renderCandList($('tsList'), candidates, candSel, selectCand); }
 function selectCand(i) { candSel = i; renderCandList(); drawChart(); renderConf(candidates[i]); render(); }
@@ -1187,6 +1205,7 @@ this.open = async (id, query) => {
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them
     Object.keys(visible).forEach(k => delete visible[k]);   // all missions on by default for the new scene
+    applyBasemap();   // scene is null here: the switch shows, Imagery disabled until this scene's imagery lands
     const ld = $('progress'); if (ld) ld.hidden = false;
     startStream(id);
     await pollUntilReady();   // paints the shell + whatever is ready now; keeps polling if the build is still running
@@ -1195,6 +1214,7 @@ this.open = async (id, query) => {
     if (!streamHandle) startStream(id);               // came back to a still-building scene -> reopen the stream
     await pollUntilReady();   // came back to a still-building scene -> resume progressive polling
   } else {
+    applyBasemap();   // same scene, possibly another level (region <-> study)
     deckgl.redraw && deckgl.redraw(true);
   }
 };

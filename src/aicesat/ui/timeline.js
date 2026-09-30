@@ -49,7 +49,20 @@ window.AICESAT = window.AICESAT || {};
       host.querySelectorAll('.tl-chip').forEach(b => b.onclick = () => onToggle(b.dataset.m));
     }};
   }
-  AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, SPANS, T0, T1};
+  // Basemap of the change and study levels: 'dem' = the hillshaded DEM, no imagery; 'imagery' = the satellite image
+  // draped on the DEM's heights, unlit, without the DEM wireframe. No imagery for the scene -> the DEM.
+  const basemap = (mode, hasImagery) => (mode === 'imagery' && hasImagery) ? {imagery: true, surface: false}
+                                                                           : {imagery: false, surface: true};
+  // At the change and study levels the measurements draw last and ignore depth. The ice has thinned since the DEM was
+  // made, so recent points lie below the terrain and the hex fills draped on it (ATL06 on 69606ee845: median 4.7 m
+  // under the DEM, 93% under the fills), and depth testing hid them - worse the closer the camera, as the depth buffer
+  // resolved the gap. Not pickable there, or a point drawn on top would steal the click meant for its hex.
+  const cloudProps = level => level ? {parameters: {depthTest: false}, pickable: false} : {pickable: true};
+  const stack = level => level
+    ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
+    : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
+
+  AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

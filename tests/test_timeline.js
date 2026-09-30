@@ -31,4 +31,26 @@ assert.deepStrictEqual(kept, ['Big glacier', 'Far island']);
 // keep-out rectangles (the page title, the timeline strip) are treated as already occupied
 const kept2 = AICESAT.declutter(rows, r => at[r[0]], 800, 600, [[380, 280, 420, 320]]).map(r => r[0]);
 assert.deepStrictEqual(kept2, ['Big glacier']);
+
+// Basemap switch at the change and study levels: the hillshaded DEM without imagery, or the image draped on the DEM's
+// heights, unlit and without the DEM wireframe. A scene with no imagery gets the DEM, never a blank ground.
+assert.deepStrictEqual(T.basemap('dem', true), {imagery: false, surface: true});
+assert.deepStrictEqual(T.basemap('imagery', true), {imagery: true, surface: false});
+assert.deepStrictEqual(T.basemap('imagery', false), {imagery: false, surface: true});
+
+// Measurements on top at the change and study levels. The ice has thinned since the DEM was made: on scene
+// 69606ee845 ATL06 sits a median 4.7 m BELOW the DEM and 93% of it below the hex fills draped 8 m above it, so depth
+// testing hid the data behind the terrain and fills - more the closer the camera, as the depth buffer resolved the
+// gap. They draw after the fills, ignore depth, and leave clicks to the hexes (a point on top would steal the pick).
+const onTop = T.cloudProps('region');
+assert.deepStrictEqual(onTop.parameters, {depthTest: false});
+assert.strictEqual(onTop.pickable, false);
+assert.deepStrictEqual(T.cloudProps('study'), onTop);
+const classic = T.cloudProps(null);
+assert.strictEqual(classic.parameters, undefined, 'the classic 3-D view keeps real occlusion');
+assert.strictEqual(classic.pickable, true);
+const st = T.stack('region'), cl = T.stack(null);
+assert.ok(st.indexOf('clouds') > st.indexOf('candidates') && st.indexOf('clouds') > st.indexOf('surface'));
+assert.ok(cl.indexOf('clouds') < cl.indexOf('candidates'), 'classic view keeps its picking order');
+assert.deepStrictEqual([...st].sort(), [...cl].sort(), 'same layers, different order');
 console.log('timeline ok');
