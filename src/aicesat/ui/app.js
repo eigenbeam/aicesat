@@ -43,15 +43,16 @@ AICESAT.ready.then(api => {
     const root = $('view-' + name);
     if (name === 'explore') views[name] = new AICESAT.ExploreView(root, api, id => { location.hash = '#scene/' + id; });
     if (name === 'lake') views[name] = new AICESAT.LakeView(root, api);
+    if (name === 'survey') views[name] = new AICESAT.SurveyView(root, api, (id, hx) => { location.hash = '#scene/' + id + '?level=region&hex=' + hx; });
     if (name === 'scene') views[name] = new AICESAT.SceneView(root, api, () => { location.hash = '#' + lastList; });
     if (name === 'ts') views[name] = new AICESAT.TsView(root, api, () => { location.hash = '#' + lastList; });
     return views[name];
   }
-  let current = null, lastList = 'explore';   // the list view (explore/lake) a scene was opened from
+  let current = null, lastList = 'survey';   // the list view (explore/lake) a scene was opened from
   function route() {
     const r = U.route();
-    const name = ['explore', 'lake', 'scene', 'ts'].includes(r.view) ? r.view : 'explore';
-    if (name === 'explore' || name === 'lake') lastList = name;
+    const name = ['survey', 'explore', 'lake', 'scene', 'ts'].includes(r.view) ? r.view : 'survey';
+    if (name === 'survey' || name === 'explore' || name === 'lake') lastList = name;
     if (current && current !== name) { AICESAT.clearError(); get(current).hide(); }
     document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.classList.toggle('on', t.dataset.view === name));
     const deep = name === 'scene' || name === 'ts';
@@ -59,9 +60,11 @@ AICESAT.ready.then(api => {
     // that named a view but no scene) would otherwise call open('') and fail against the server.
     if (deep && !r.arg) { location.hash = '#' + lastList; return; }
     $('topBack').hidden = !deep;
-    $('crumb').textContent = deep ? '› ' + (name === 'ts' ? 'time series ' : 'scene ') + r.arg.split('?')[0] : '';
+    const q = new URLSearchParams(r.arg.split('?')[1] || ''), lvl = q.get('level');
+    $('crumb').textContent = !deep ? '' : name === 'ts' ? '› time series' :
+      lvl === 'region' ? '› change' + (q.get('hex') ? ' · H3 ' + q.get('hex') : '') : lvl === 'study' ? '› change › study' : '› scene ' + r.arg.split('?')[0];
     const v = get(name);
-    if (deep) { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show();
+    if (deep) { const [id, query] = r.arg.split('?'); v.open(id, query); } else v.show(r.arg);
     current = name;
   }
   document.querySelectorAll('#topbar .tab[data-view]').forEach(t => t.onclick = () => { location.hash = '#' + t.dataset.view; });

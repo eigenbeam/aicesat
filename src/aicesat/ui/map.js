@@ -1,6 +1,7 @@
-/* Shared 3-D globe: EOX imagery draped on the sphere, candidate regions, lake cells, global H3 grid (resolution by
-   zoom, hover stats), scene footprints (ready/loading/error), box/polygon drawing, cell selection. No flat projection.
-   Used by Explore and Lake. Navigate = drag to spin / scroll to zoom; Box/Polygon capture the drag for drawing. */
+/* Shared 3-D globe: Natural Earth basemap, candidate regions, lake cells, global H3 grid (resolution by zoom, hover
+   stats), per-mission coverage hexes (the survey view), scene footprints (ready/loading/error), box/polygon drawing,
+   cell selection. No flat projection. Used by Survey, Explore and Lake. Navigate = drag to spin / scroll to zoom;
+   Box/Polygon capture the drag for drawing. */
 window.AICESAT = window.AICESAT || {};
 AICESAT.MapView = class {
   constructor(container, opts = {}) {
@@ -13,8 +14,12 @@ AICESAT.MapView = class {
     this.tooltip = AICESAT.util.el('div', {class: 'tooltip'}); this.tooltip.hidden = true; container.appendChild(this.tooltip);
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
     this.onSelect = () => {}; this.onOpenScene = () => {}; this.onCellsSelected = () => {};
+    this.coverage = null; this._covKey = 0; this.onHexClick = () => {};
     this.deck = new Deck({
       parent: container, views: new Globe({resolution: 12}),
+      // The device is created asynchronously: layers set before it is ready never drew, so a view sat blank until the
+      // first drag or scroll. Draw once it exists.
+      onLoad: () => this.render(),
       initialViewState: {...this.state.viewState, minZoom: 0, maxZoom: 12}, controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}, layers: [],
       onViewStateChange: ({viewState, interactionState}) => {
         this.state.viewState = viewState;
@@ -49,12 +54,21 @@ AICESAT.MapView = class {
       : {dragPan: true, dragRotate: true, doubleClickZoom: false}});
   }
   closePolygon() { if (this.state.mode === 'poly' && this.state.poly.length >= 3 && !this.state.polyClosed) { this.state.polyClosed = true; this.render(); this.onSelect(this.area()); } }
-  flyTo(bbox, zoom) { const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span))); this.deck.setProps({initialViewState: {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z, minZoom: 0, maxZoom: 12}}); }
+  flyTo(bbox, zoom) {
+    const span = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) || 1; const z = zoom != null ? zoom : Math.max(2, Math.min(10, Math.log2(140 / span)));
+    const vs = {longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2, zoom: z};
+    // Setting initialViewState moves the camera but fires no onViewStateChange, so state.viewState (which picks the
+    // grid and coverage resolution) stayed at the startup zoom until the first drag -- sync it, then redraw.
+    this.state.viewState = {...this.state.viewState, ...vs};
+    this.deck.setProps({initialViewState: {...vs, minZoom: 0, maxZoom: 12}});
+    this.render();
+  }
   setGrid(on) { this.state.grid = on; this.render(); }
   // [{outer, holes, label, color}]: where a build is accepted (the collections' index claims), drawn dashed
   setClaims(list) { this.state.claims = list || []; this.render(); }
   setIndexCells(cells, pct, spanMax) { this.state.indexCells = cells; this.state.indexPct = pct; this.state.indexSpanMax = spanMax || 0; this.render(); }
   click(info) {
+    if (info.layer && info.layer.id === 'coverage' && info.object) { this.onHexClick(info.object); return; }
     const s = this.state;
     if (info.layer && info.layer.id === 'scenes' && info.object) { this.onOpenScene(info.object); return; }
     if (this.opts.selectCells && info.coordinate) {
@@ -70,9 +84,43 @@ AICESAT.MapView = class {
     let html = null;
     if (info.layer && (info.layer.id === 'grid' || info.layer.id === 'grid-data') && info.object) html = this.cellTooltip(info.object);
     else if (info.layer && info.layer.id === 'lake' && info.object) html = this.cellTooltip({hexagon: info.object.properties.cell, stats: info.object.properties});
-    else if (info.layer && info.layer.id === 'claims' && info.object) html = `<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
+    else if (info.layer && info.layer.id === 'coverage' && info.object) html = this.coverageTip(info.object);
+    else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
     this.tooltip.hidden = !html; if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
+  }
+  // ---- demo ladder level 1: per-hex mission coverage (survey.js feeds it from /api/coverage_hexes)
+  setCoverage(byRes, visible) {
+    this.coverage = {byRes, visible}; this._covKey++; this.render();
+    // Observed: the first frame after the coverage arrives is sometimes not drawn until the next interaction (the
+    // layer is in deck's props; any later redraw shows it). Force one on the next frame.
+    requestAnimationFrame(() => this.deck.redraw(true));
+  }
+  coverageRes() { const z = this.state.viewState.zoom; return z < 3 ? 3 : z < 5.8 ? 4 : 5; }
+  coverageLayers(H3HexagonLayer) {
+    const res = this.coverageRes(), key = res + '|' + this._covKey;
+    if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
+    const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
+    const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
+    const C = AICESAT.missions.MISSION_COLORS;
+    const fill = h => {
+      if (on.length === 1) { const c = C[on[0]], p = h.missions[on[0]].passes;
+        return [c[0], c[1], c[2], Math.round(60 + 150 * Math.min(1, Math.log10(1 + p) / 2.3))]; }
+      const n = h.seen.length;   // where all three overlap is where a 20-year record exists
+      return n >= 3 ? [255, 214, 102, 190] : n === 2 ? [120, 200, 220, 130] : [120, 140, 170, 70];
+    };
+    const layers = [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
+      stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
+      getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
+    this._covMemo = {key, layers};
+    return layers;
+  }
+  coverageTip(h) {
+    const L = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2'}, res = h3.getResolution(h.h3);
+    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => { const m = h.missions[k];
+      return `<b>${L[k]}</b> ${m.passes} pass${m.passes === 1 ? '' : 'es'} · ${m.year_min}–${m.year_max}`; });
+    const act = res < 5 ? 'click to zoom in' : h.claimed ? 'click to see how the surface changed here' : 'not fully indexed — pick a bright-edged hex';
+    return `${rows.join('<br>')}<br><i>${act}</i>`;
   }
   cellTooltip(o) {
     const U = AICESAT.util, st = o.stats;
@@ -207,6 +255,7 @@ AICESAT.MapView = class {
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
+    if (this.coverage) layers.push(...this.coverageLayers(H3HexagonLayer));
     if (s.grid) {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {

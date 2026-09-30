@@ -8,11 +8,9 @@
 </head>
 <body>
 <div id="topbar">
-  <span class="brand">Cross-mission altimetry</span>
-  <span class="tagline">compare ICESat-1, IceBridge &amp; ICESat-2 elevations</span>
+  <span class="brand">Altimetry, by place</span>
+  <span class="tagline">ICESat · IceBridge · ICESat-2</span>
   <button id="topBack" class="tab backbtn" hidden title="Back to where you came from">← Back</button>
-  <button class="tab" data-view="explore" title="Pick an area on the globe, then build a scene from the missions there">Explore</button>
-  <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
   <button id="helpBtn" class="tab" title="What is this? How it works">?</button>
@@ -27,14 +25,15 @@
     <b>ICESat-1</b> (2003–09), <b>IceBridge</b> (2009–19), and <b>ICESat-2</b> (2018–).</p>
   <h3 style="font-size:12.5px">How it works</h3>
   <ol>
-    <li><b>Explore</b> — pick an area on the globe (draw a box or polygon, or choose a region).</li>
-    <li><b>Build a scene</b> — fetch the missions you selected over that area.</li>
-    <li><b>Compare</b> — view each mission alone or together, and co-register ICESat-1 ↔ ICESat-2 to read the height difference (Δh).</li>
+    <li><b>Coverage</b> — the globe: which missions measured each hex, and when. Nothing is fetched to show it.</li>
+    <li><b>Change</b> — click a hex: every mission's measurements there, and each small cell coloured by how its surface changed. Click a cell for its 20-year record.</li>
+    <li><b>Study</b> — shift-click cells, then Study: ICESat-2 photons in 3-D and the height difference between missions (Δh).</li>
   </ol>
   <div class="hp-gloss"><b>Co-registration</b> aligns two missions to a common frame and time before comparing. <b>Δh</b> is the
     height difference at the same spot. Hover the <b>?</b> next to any control for more.</div>
 </div>
 <div id="views">
+  <div class="view" id="view-survey"></div>
   <div class="view" id="view-explore"></div>
   <div class="view" id="view-lake"></div>
   <div class="view" id="view-scene"></div>

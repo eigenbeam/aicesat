@@ -96,5 +96,5 @@ window.AICESAT = window.AICESAT || {};
   };
 
   // tiny hash router
-  U.route = () => { const h = location.hash.replace(/^#\/?/, ''); const [view, ...rest] = h.split('/'); return {view: view || 'explore', arg: rest.join('/')}; };
+  U.route = () => { const h = location.hash.replace(/^#\/?/, ''); const [view, ...rest] = h.split('/'); return {view: view || 'survey', arg: rest.join('/')}; };
 })();
