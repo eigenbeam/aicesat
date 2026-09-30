@@ -158,3 +158,22 @@ def test_rows_with_no_frame_in_their_header_are_reported(monkeypatch):
     doc = _icessn_doc(monkeypatch, a, {"native_frame": "ITRF (mixed)"})
     rec = timeseries._load_all(doc, 2005.0)[0]
     assert rec["propagated"] is False and "10 points in no frame in the granule header" in rec["frame_note"]
+
+
+def test_a_rough_cell_is_low_whatever_its_record():
+    # 8806f200d3fffff (res 8, ref ATL06) scored "medium" with 708 m of within-window scatter: epochs and span maxed out
+    # and carried it. Ungated this scores 0.45 -> medium.
+    conf, level, why, comps = timeseries._confidence(roughness=708.5, n_bins=10, span=15.0, n_ref=500)
+    assert level == "low" and conf < 0.35
+    assert comps["gated"] and "gated" in why
+
+
+def test_a_sparse_reference_is_low_even_on_a_smooth_cell():
+    # Ungated this scores 0.85 -> high; 8 points do not constrain a plane across a 530 m hex.
+    conf, level, _, comps = timeseries._confidence(roughness=0.2, n_bins=10, span=20.0, n_ref=8)
+    assert level == "low" and conf < 0.35 and comps["gated"]
+
+
+def test_the_gate_leaves_a_well_measured_cell_alone():
+    conf, level, _, comps = timeseries._confidence(roughness=0.2, n_bins=10, span=20.0, n_ref=40)
+    assert level == "high" and comps["gated"] == []

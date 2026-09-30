@@ -26,6 +26,8 @@ MISSION_LABEL = {"GLAS": "ICESat-1", "ICESSN": "IceBridge ATM", "ATL06": "ICESat
                  "ICESAT2": "ICESat-2 photons", "GEDI": "GEDI", "GPSTRUTH": "Summit GPS traverse"}
 _MIN_BIN_PTS = 3                # a time window needs this many points in the cell to be a usable series point
 _MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
+GATE_MIN_REF = 10              # below this a cell is kept but never better than "low" (see _confidence)
+_GATED_CONF = 0.34             # just under "medium", so a gated cell also ranks below every cell that passed
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
 DEFAULT_REF_MISSION = "GLAS"  # earliest epoch + single sensor: an anchored zero, no inter-sensor bias in the plane's tilt
 # Parallelism for the per-cell reference-plane fit + robust stats (see candidates). Below this many cells the loop is
@@ -116,16 +118,31 @@ def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple
     s_span = clamp(span / 12.0)                 # 12+ yr -> 1
     s_ref = clamp(n_ref / 30.0)                 # 30+ reference pts -> 1
     conf = 0.55 * s_rough + 0.20 * s_epochs + 0.15 * s_span + 0.10 * s_ref
+    # Hard gate on the quality of the EVIDENCE, never on the size of the answer. The weighted score let maxed-out
+    # epochs and span carry 8806f200d3fffff (res 8, ref ATL06: 8 plane points, 708 m within-window scatter,
+    # -263 m/yr) up to "medium". A change map colours by trend, so that cell would be the loudest thing on it.
+    gated = []
+    if s_rough <= 0.0:
+        gated.append(f"within-window scatter {roughness:.1f} m is beyond 1.5 m")
+    if n_ref < GATE_MIN_REF:
+        gated.append(f"only {n_ref} reference points (need {GATE_MIN_REF})")
+    if gated:
+        conf = min(conf, _GATED_CONF)
     level = "high" if conf >= 0.6 else "medium" if conf >= 0.35 else "low"
     limiters = []
     if s_rough < 0.5: limiters.append(f"rough within-cell surface (scatter {roughness:.1f} m) — samples disagree at one time")
     if s_epochs < 0.5: limiters.append(f"only {n_bins} time windows")
     if s_span < 0.5: limiters.append(f"short {span:.1f}-yr baseline")
     if s_ref < 0.5: limiters.append(f"sparse reference ({n_ref} pts)")
-    why = (f"{level.capitalize()} confidence — " + "; ".join(limiters[:2])) if limiters else \
-          f"{level.capitalize()} confidence — smooth cell (scatter {roughness:.1f} m), {n_bins} windows over {span:.1f} yr"
+    if gated:
+        why = "Low confidence — gated: " + "; ".join(gated)
+    elif limiters:
+        why = f"{level.capitalize()} confidence — " + "; ".join(limiters[:2])
+    else:
+        why = f"{level.capitalize()} confidence — smooth cell (scatter {roughness:.1f} m), {n_bins} windows over {span:.1f} yr"
     comps = {"roughness_m": round(roughness, 2), "epochs": int(n_bins), "span_yr": round(span, 1), "ref_pts": int(n_ref),
-             "scores": {"roughness": round(s_rough, 2), "epochs": round(s_epochs, 2), "span": round(s_span, 2), "density": round(s_ref, 2)}}
+             "scores": {"roughness": round(s_rough, 2), "epochs": round(s_epochs, 2), "span": round(s_span, 2), "density": round(s_ref, 2)},
+             "gated": gated}
     return round(conf, 2), level, why, comps
 
 
