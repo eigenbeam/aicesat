@@ -1112,7 +1112,15 @@ AICESAT.util.drawer(root, null);
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
   const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), mh, $('timeline'));
+  // Vertical scale 1x/2x/4x/8x: drives the classic panel's exaggeration slider (#zexag), so one code path applies it.
+  const vs = document.createElement('div'); vs.className = 'ctl-row vscale';
+  vs.innerHTML = '<span class="ctl-lbl">Vertical scale</span><span class="vs-seg">' +
+    [1, 2, 4, 8].map(v => `<button data-v="${v}">${v}×</button>`).join('') + '</span>';
+  const syncVs = () => vs.querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.v === Z_EXAG));
+  vs.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
+  $('zexag').addEventListener('input', syncVs); syncVs();
+  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), vs, mh, $('timeline'));
   leg.append($('chgLegend'), $('tsStatus'));
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }

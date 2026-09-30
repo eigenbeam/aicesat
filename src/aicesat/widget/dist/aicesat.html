@@ -343,6 +343,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .sv-ctl { display:flex; flex-direction:column; gap:6px; }
 .sv-ctl .ctl-row.off { opacity:.45; }
 .lad-mhead { align-self:stretch; margin:8px 0 0; }
+.vscale .vs-seg { display:inline-flex; gap:3px; margin-left:auto; }
+.vscale .vs-seg button { font-size:11.5px; padding:3px 8px; }
+.vscale .vs-seg button.on { background:#2f6fed; color:#fff; }
 .mlist { display:flex; flex-direction:column; gap:3px; align-self:stretch; }
 .ms-row { display:flex; align-items:center; gap:7px; font-size:12.5px; cursor:pointer; }
 .ms-row input { margin:0; }
@@ -12422,7 +12425,15 @@ AICESAT.util.drawer(root, null);
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
   const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), mh, $('timeline'));
+  // Vertical scale 1x/2x/4x/8x: drives the classic panel's exaggeration slider (#zexag), so one code path applies it.
+  const vs = document.createElement('div'); vs.className = 'ctl-row vscale';
+  vs.innerHTML = '<span class="ctl-lbl">Vertical scale</span><span class="vs-seg">' +
+    [1, 2, 4, 8].map(v => `<button data-v="${v}">${v}×</button>`).join('') + '</span>';
+  const syncVs = () => vs.querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.v === Z_EXAG));
+  vs.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
+  $('zexag').addEventListener('input', syncVs); syncVs();
+  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), vs, mh, $('timeline'));
   leg.append($('chgLegend'), $('tsStatus'));
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
