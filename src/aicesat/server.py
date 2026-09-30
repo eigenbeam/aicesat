@@ -22,7 +22,7 @@ from mcp.server import MCPServer
 from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import api, atl03, cache, coverage, geom, regions, scene, stream, uibuild
+from . import api, atl03, cache, coverage, geom, regions, scene, stream, survey, uibuild
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -250,6 +250,12 @@ class Handler(SimpleHTTPRequestHandler):
                 bb, poly = geom.normalize_area(json.loads(qs["bbox"][0]) if "bbox" in qs else None,
                                                json.loads(qs["polygon"][0]) if "polygon" in qs else None)
                 return self._json(200, coverage.check_coverage(bb, polygon=poly))
+            except Exception as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if u.path == "/api/coverage_hexes":
+            try:
+                return self._json(200, survey.coverage_hexes(int(qs.get("res", ["5"])[0]),
+                                                             json.loads(qs["bbox"][0]) if "bbox" in qs else None))
             except Exception as e:
                 return self._json(400, {"error": f"{type(e).__name__}: {e}"})
         if u.path == "/api/claims":
@@ -527,6 +533,11 @@ def ui_coverage(bbox: list[float] | None = None, polygon: list[list[float]] | No
 @apps.tool(name="ui_claims", **_APP)
 def ui_claims() -> dict:
     return api.claim_regions()
+
+
+@apps.tool(name="ui_coverage_hexes", **_APP)
+def ui_coverage_hexes(res: int = 5, bbox: list[float] | None = None) -> dict:
+    return survey.coverage_hexes(res, bbox)
 
 
 @apps.tool(name="ui_fit", **_APP)
