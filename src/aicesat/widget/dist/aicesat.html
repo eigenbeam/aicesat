@@ -11513,6 +11513,10 @@ function surfaceExtent() {
   return {minx: g.x0, maxx: g.x0 + (g.nx - 1) * g.cell, miny: g.y0, maxy: g.y0 + (g.ny - 1) * g.cell, minz, maxz};
 }
 function axesLayers() {
+  // Not at the ladder levels: these ticks sit at round DISTANCES along a straight projected edge and are labelled with
+  // whatever lat/lon falls there (69.156 N ...), so they never meet the graticule's round lines. The graticule labels
+  // its own lines there instead.
+  if (LEVEL) return [];
   const b = surfaceExtent() || bounds;
   if (!b) return [];
   const {minx, maxx, miny, maxy, minz, maxz} = b;
@@ -11639,7 +11643,10 @@ function graticuleLayers() {
   // shared step drew two meridians), labelled to that step's decimals.
   const STEPS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
   const axisStep = span => STEPS.find(s => span / s <= 5) || 10, dp = s => (String(s).split('.')[1] || '').length;
-  const stepLa = axisStep(laMax - laMin), stepLo = axisStep(loMax - loMin);
+  // Longitude's step matched to latitude's in km (a degree of longitude is cos(lat) of one of latitude), so the cells
+  // come out about square.
+  const stepLa = axisStep(laMax - laMin), want = stepLa / Math.max(0.05, Math.cos((laMin + laMax) / 2 * Math.PI / 180));
+  const stepLo = STEPS.reduce((a, s) => Math.abs(Math.log(s / want)) < Math.abs(Math.log(a / want)) ? s : a);
   const lab = (kind, v) => { const s = kind === 'lat' ? stepLa : stepLo, h = kind === 'lat' ? (v >= 0 ? 'N' : 'S') : (v >= 0 ? 'E' : 'W');
     return Math.abs(v).toFixed(dp(s)) + '\u00b0' + h; };
   const g = scene.surface;
@@ -11674,7 +11681,7 @@ function graticuleLayers() {
       getColor: d => d.kind === 'lat' ? LAT_C : LON_C, getWidth: 1.4, widthUnits: 'pixels',
       updateTriggers: {getPath: Z_EXAG}}),
     new TextLayer({id: 'graticule-text', data: texts, getPosition: d => d.position, getText: d => d.text,
-      getColor: d => d.color, getSize: 10, sizeUnits: 'pixels', billboard: true,
+      getColor: d => LEVEL ? [235, 240, 248, 240] : d.color, getSize: LEVEL ? 12.5 : 10, sizeUnits: 'pixels', billboard: true,
       fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
       background: true, getBackgroundColor: [20, 20, 26, 150], backgroundPadding: [2, 1],
       updateTriggers: {getPosition: Z_EXAG}}),
