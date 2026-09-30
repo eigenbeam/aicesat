@@ -10,3 +10,4 @@ __pycache__/
 Screenshot*.png
 # browser-automation scratch (snapshots, console logs)
 .playwright-mcp/
+/data-uwg/
