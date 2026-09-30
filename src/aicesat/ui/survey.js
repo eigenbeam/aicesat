@@ -1,0 +1,1 @@
+window.AICESAT = window.AICESAT || {};

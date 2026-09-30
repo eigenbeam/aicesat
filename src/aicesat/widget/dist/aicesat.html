@@ -309,6 +309,25 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 /* Explore: why Build is off, or what a build will skip, and the fit that fixes it */
 .gate { margin:4px 0 6px; color:var(--amber); line-height:1.35; }
 .gate button { margin-left:4px; }
+
+/* ---- demo ladder (demo/uwg-ladder): timeline strip, change legend, study bar, analysis tabs, survey title ---- */
+.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:0 12px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
+.tl-axis{position:relative;height:20px;border-bottom:1px solid rgba(255,255,255,.12)}
+.tl-tick{position:absolute;top:4px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
+.tl-chip{position:absolute;height:18px;border-radius:9px;border:0;background:var(--c);color:#0b0f16;font:600 11px ui-sans-serif,system-ui;cursor:pointer;overflow:hidden;white-space:nowrap;padding:0 8px;text-align:left}
+.tl-chip.off{background:transparent;color:var(--muted);outline:1px dashed var(--c)}
+.chg-legend{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;align-items:center;font-size:11.5px;background:rgba(14,18,26,.84);padding:5px 12px;border-radius:6px}
+.chg-ramp{display:inline-block;width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgb(210,60,40),rgb(245,245,245),rgb(50,125,230))}
+.study-bar{position:absolute;left:50%;transform:translateX(-50%);bottom:120px;z-index:6;display:flex;gap:8px;align-items:center;background:rgba(14,18,26,.94);border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 10px;font-size:12.5px}
+.ana-tabs{position:absolute;top:12px;left:12px;z-index:6;display:flex;gap:6px;align-items:center}
+.ana-tabs button.on{background:#2f6fed;color:#fff}
+.level-region #controls,.level-study #controls,.level-region #bench,.level-study #bench,.level-region #navhint{display:none!important}
+.level-region #tsFind,.level-study #tsFind,.level-region .tsrefrow,.level-study .tsrefrow,.level-region .tsintro,.level-region #tsList{display:none!important}
+#view-survey .sv-title{position:absolute;top:18px;left:20px;z-index:5;max-width:470px;pointer-events:none}
+#view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
+#view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}
+.tsctx{display:flex;gap:10px;align-items:flex-start;margin-top:8px}
+.tsctx canvas{border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 </style>
 </head>
 <body>
@@ -9647,6 +9666,7 @@ window.AICESAT = window.AICESAT || {};
     candidates: (id, opts) => post(`/api/candidates/${id}`, opts || {}),
     collections: () => j('/api/collections'),
     claims: () => j('/api/claims'),
+    coverageHexes: (res, bbox) => j('/api/coverage_hexes?res=' + res + (bbox ? '&bbox=' + encodeURIComponent(JSON.stringify(bbox)) : '')),
     fit: (a, keys) => j('/api/fit?' + (a.bbox ? `bbox=${encodeURIComponent(JSON.stringify(a.bbox))}` : `polygon=${encodeURIComponent(JSON.stringify(a.polygon))}`) + '&keys=' + encodeURIComponent(keys.join(','))),
     lakeCells: (stats = true, mission = 'ICESAT2') => j(stats ? '/api/lake/cells?mission=' + encodeURIComponent(mission) : '/api/lake_cells'),
     lakeSummary: (mission = 'ICESAT2') => j('/api/lake/summary?mission=' + encodeURIComponent(mission)),
@@ -9924,6 +9944,7 @@ window.AICESAT = window.AICESAT || {};
       candidates: (id, opts) => call('ui_candidates', {scene_id: id, ...(opts || {})}),
       collections: () => call('ui_collections'),
       claims: () => call('ui_claims'),
+      coverageHexes: (res, bbox) => call('ui_coverage_hexes', bbox ? {res, bbox} : {res}),
       fit: (a, keys) => call('ui_fit', {...a, keys}),
       lakeCells: (stats = true, mission = 'ICESAT2') => call('ui_lake_cells', {stats, mission}),
       lakeSummary: (mission = 'ICESAT2') => call('ui_lake_summary', {mission}),
@@ -10857,6 +10878,64 @@ window.AICESAT = window.AICESAT || {};
 
   AICESAT.ts = {cellEdgeM, findCandidate, fmtLatLon, renderCandList, compRow, renderConf, drawChart};
 })();
+
+;
+/* The mission timeline strip -- legend AND show/hide control at every level of the demo ladder -- plus the pure
+   helpers the change map colours with. Each mission is a bar on one 2003-2027 axis, so the strip also says WHEN it
+   flew. Pure helpers are tested by tests/test_timeline.js. */
+window.AICESAT = window.AICESAT || {};
+(function () {
+  const T0 = 2003, T1 = 2027;
+  const SPANS = {GLAS: [2003, 2009.8], ICESSN: [2009, 2019.9], ATL06: [2018.8, 2026.9], ICESAT2: [2018.8, 2026.9],
+                 GEDI: [2019.3, 2026.9], GPSTRUTH: [2006.6, 2025.9]};
+  const SHORT = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2 · land ice', ICESAT2: 'ICESat-2 · photons',
+                 GEDI: 'GEDI', GPSTRUTH: 'GPS traverse'};
+  const place = m => { const s = SPANS[m] || [T0, T1]; return {left: (s[0] - T0) / (T1 - T0) * 100, width: (s[1] - s[0]) / (T1 - T0) * 100}; };
+
+  // Diverging change colour: red = surface fell, blue = surface rose, near-white = no change, clipped at +-lim.
+  // Low confidence is grey whatever its trend (the confidence gate's verdict is the colour's too).
+  const GREY = [150, 150, 158, 90];
+  function trendColor(trendCmYr, level, lim) {
+    if (level === 'low' || !Number.isFinite(trendCmYr)) return GREY;
+    const t = Math.max(-1, Math.min(1, trendCmYr / (lim || 1))), a = level === 'high' ? 215 : 170;
+    return t < 0 ? [Math.round(245 - 35 * -t), Math.round(245 - 185 * -t), Math.round(245 - 205 * -t), a]
+                 : [Math.round(245 - 195 * t), Math.round(245 - 120 * t), Math.round(245 - 15 * t), a];
+  }
+  // Symmetric colour limit: the 98th percentile of |trend| over cells that passed the gate.
+  function trendLimit(cands) {
+    const v = (cands || []).filter(c => c.level !== 'low' && Number.isFinite(c.trend_cm_yr))
+      .map(c => Math.abs(c.trend_cm_yr)).sort((a, b) => a - b);
+    return v.length ? Math.max(1, v[Math.floor(0.98 * (v.length - 1))]) : 1;
+  }
+  // Convex hull (Andrew's monotone chain) of a set of hexes' vertices, as [[lon, lat], ...]: a Study area's polygon.
+  function hullOfCells(cells) {
+    const pts = [];
+    for (const c of cells) for (const [lat, lon] of h3.cellToBoundary(c)) pts.push([lon, lat]);
+    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const half = src => { const h = []; for (const p of src) { while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop(); h.push(p); } return h; };
+    const lo = half(pts), up = half(pts.slice().reverse());
+    return lo.slice(0, -1).concat(up.slice(0, -1)).map(p => [+p[0].toFixed(6), +p[1].toFixed(6)]);
+  }
+  function mount(host, onToggle) {
+    host.classList.add('timeline');
+    return {update(missions, visible) {
+      const M = AICESAT.missions;
+      const ticks = [2003, 2009, 2018, 2026].map(y => `<span class="tl-tick" style="left:${(y - T0) / (T1 - T0) * 100}%">${y}</span>`).join('');
+      host.style.height = (26 + missions.length * 22) + 'px';
+      host.innerHTML = `<div class="tl-axis">${ticks}</div>` + missions.map((m, i) => {
+        const p = place(m), c = M.colorOf(m, null).join(','), on = visible[m] !== false;
+        return `<button class="tl-chip${on ? '' : ' off'}" data-m="${m}" title="${((M.MISSIONS[m] || {}).gloss || m)} — click to show/hide"` +
+          ` style="left:${p.left}%;width:${p.width}%;top:${24 + i * 22}px;--c:rgb(${c})">${SHORT[m] || m}</button>`;
+      }).join('');
+      host.querySelectorAll('.tl-chip').forEach(b => b.onclick = () => onToggle(b.dataset.m));
+    }};
+  }
+  AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, SPANS, T0, T1};
+})();
+
+;
+window.AICESAT = window.AICESAT || {};
 
 ;
 AICESAT.SceneView = class {

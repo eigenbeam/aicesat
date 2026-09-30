@@ -303,3 +303,22 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 /* Explore: why Build is off, or what a build will skip, and the fit that fixes it */
 .gate { margin:4px 0 6px; color:var(--amber); line-height:1.35; }
 .gate button { margin-left:4px; }
+
+/* ---- demo ladder (demo/uwg-ladder): timeline strip, change legend, study bar, analysis tabs, survey title ---- */
+.timeline{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;width:min(640px,calc(100% - 440px));background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:10px;padding:0 12px;z-index:5;backdrop-filter:blur(6px);box-sizing:border-box}
+.tl-axis{position:relative;height:20px;border-bottom:1px solid rgba(255,255,255,.12)}
+.tl-tick{position:absolute;top:4px;transform:translateX(-50%);font-size:10.5px;color:var(--muted)}
+.tl-chip{position:absolute;height:18px;border-radius:9px;border:0;background:var(--c);color:#0b0f16;font:600 11px ui-sans-serif,system-ui;cursor:pointer;overflow:hidden;white-space:nowrap;padding:0 8px;text-align:left}
+.tl-chip.off{background:transparent;color:var(--muted);outline:1px dashed var(--c)}
+.chg-legend{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;align-items:center;font-size:11.5px;background:rgba(14,18,26,.84);padding:5px 12px;border-radius:6px}
+.chg-ramp{display:inline-block;width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgb(210,60,40),rgb(245,245,245),rgb(50,125,230))}
+.study-bar{position:absolute;left:50%;transform:translateX(-50%);bottom:120px;z-index:6;display:flex;gap:8px;align-items:center;background:rgba(14,18,26,.94);border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 10px;font-size:12.5px}
+.ana-tabs{position:absolute;top:12px;left:12px;z-index:6;display:flex;gap:6px;align-items:center}
+.ana-tabs button.on{background:#2f6fed;color:#fff}
+.level-region #controls,.level-study #controls,.level-region #bench,.level-study #bench,.level-region #navhint{display:none!important}
+.level-region #tsFind,.level-study #tsFind,.level-region .tsrefrow,.level-study .tsrefrow,.level-region .tsintro,.level-region #tsList{display:none!important}
+#view-survey .sv-title{position:absolute;top:18px;left:20px;z-index:5;max-width:470px;pointer-events:none}
+#view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
+#view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}
+.tsctx{display:flex;gap:10px;align-items:flex-start;margin-top:8px}
+.tsctx canvas{border-radius:6px;border:1px solid rgba(255,255,255,.15)}
