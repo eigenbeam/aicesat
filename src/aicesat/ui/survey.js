@@ -5,6 +5,7 @@ window.AICESAT = window.AICESAT || {};
 AICESAT.SurveyView = class {
   constructor(root, api, openScene) {
     root.innerHTML = `<div class="map" id="svMap"></div>
+      <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -14,6 +15,9 @@ AICESAT.SurveyView = class {
     // the sphere and clip into jagged shapes) and z-fight the land. Imagery lives one level down, in the change map.
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
+    // Off by default: the globe opens on the Earth itself; the switch shows the grid and the coverage shading.
+    this.map.coverageOn = false;
+    $('svHex').onchange = e => { this.map.coverageOn = e.target.checked; this.map._covMemo = null; this.map.render(); };
     // Names stay clear of the timeline strip.
     this.map.keepOut = () => {
       const c = $('svMap').getBoundingClientRect();
@@ -48,7 +52,8 @@ AICESAT.SurveyView = class {
     this.root.classList.add('on');
     if (!this._loaded) { this._loaded = true; this.load(); }
     const b = (arg || '').split(',').map(Number);
-    this.map.flyTo(b.length === 4 && b.every(Number.isFinite) ? b : [-54, 67.5, -45, 71]);
+    // Default: most of the Earth, centred on Greenland.
+    if (b.length === 4 && b.every(Number.isFinite)) this.map.flyTo(b); else this.map.flyTo([-62, 58, -22, 78], 1.25);
   }
   hide() { this.root.classList.remove('on'); }
 };

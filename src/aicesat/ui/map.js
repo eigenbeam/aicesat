@@ -112,7 +112,15 @@ AICESAT.MapView = class {
     const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
     const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
     const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
-    const layers = [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
+    // The whole Earth's res-3 grid (41,162 cells), built once on first use and kept; drawn only at the overview, where
+    // the coverage is res 3 too -- zoomed in, the coverage hexes are finer and carry the structure themselves.
+    const grid = [];
+    if (res === 3) {
+      this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
+      grid.push(new H3HexagonLayer({id: 'earth-grid', data: this._earthGrid, getHexagon: d => d, highPrecision: 'auto',
+        filled: false, stroked: true, extruded: false, pickable: false, getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5}));
+    }
+    const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
     this._covMemo = {key, layers};
@@ -292,7 +300,7 @@ AICESAT.MapView = class {
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
-    if (this.coverage) layers.push(...this.coverageLayers(H3HexagonLayer));
+    if (this.coverage && this.coverageOn !== false) layers.push(...this.coverageLayers(H3HexagonLayer));
     if (s.grid) {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {

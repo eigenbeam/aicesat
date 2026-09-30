@@ -336,6 +336,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .level-region #controls,.level-study #controls,.level-region #bench,.level-study #bench,.level-region #navhint{display:none!important}
 .level-region #tsFind,.level-study #tsFind,.level-region .tsrefrow,.level-study .tsrefrow,.level-region .tsintro,.level-region #tsList{display:none!important}
 #view-survey .sv-title{position:absolute;top:18px;left:20px;z-index:5;max-width:470px;pointer-events:none}
+#view-survey .sv-toggle{position:absolute;top:14px;left:14px;z-index:6;display:flex;align-items:center;gap:7px;font-size:12.5px;
+  background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:8px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+#view-survey .sv-toggle input{margin:0}
 #view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
 #view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}
 .tsctx{display:flex;gap:10px;align-items:flex-start;margin-top:8px}
@@ -383,6 +386,12 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lad-legend #tsStatus { display:block; margin-top:6px; color:var(--muted); }
 .lg-note { text-transform:none; letter-spacing:0; font-weight:400; opacity:.8; }
 .ts-mode { margin:0 0 4px; color:var(--muted); min-height:1em; }
+.dl-body { display:flex; flex-direction:column; gap:6px; }
+.dl-where { margin-bottom:2px; }
+.dl-row { display:flex; align-items:center; gap:8px; }
+.dl-row button { flex:1; min-width:0; text-align:left; white-space:nowrap; }
+.dl-row button:disabled { opacity:.5; cursor:default; }
+.dl-note { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
 .ts-mode b { color:rgb(150,235,255); }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
@@ -10170,7 +10179,15 @@ AICESAT.MapView = class {
     const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
     const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
     const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
-    const layers = [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
+    // The whole Earth's res-3 grid (41,162 cells), built once on first use and kept; drawn only at the overview, where
+    // the coverage is res 3 too -- zoomed in, the coverage hexes are finer and carry the structure themselves.
+    const grid = [];
+    if (res === 3) {
+      this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
+      grid.push(new H3HexagonLayer({id: 'earth-grid', data: this._earthGrid, getHexagon: d => d, highPrecision: 'auto',
+        filled: false, stroked: true, extruded: false, pickable: false, getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5}));
+    }
+    const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
     this._covMemo = {key, layers};
@@ -10350,7 +10367,7 @@ AICESAT.MapView = class {
     // dark ocean sphere + Natural Earth land polygons (vector basemap; raster tiles do not index on a globe)
     layers.push(new SolidPolygonLayer({id: 'globe-bg', data: [[[-180, 90], [0, 90], [180, 90], [180, -90], [0, -90], [-180, -90]]], getPolygon: d => d, stroked: false, filled: true, getFillColor: [11, 20, 34]}));
     if (window.__NE_LAND) layers.push(new GeoJsonLayer({id: 'land', data: window.__NE_LAND, stroked: true, filled: true, getFillColor: [42, 54, 47], getLineColor: [80, 96, 88], lineWidthMinPixels: 0.5}));
-    if (this.coverage) layers.push(...this.coverageLayers(H3HexagonLayer));
+    if (this.coverage && this.coverageOn !== false) layers.push(...this.coverageLayers(H3HexagonLayer));
     if (s.grid) {
       for (const L of this.gridLayers(H3HexagonLayer)) layers.push(L);
     } else if (s.cells) {
@@ -10937,7 +10954,7 @@ window.AICESAT = window.AICESAT || {};
   // Red and blue belong to the change map (surface fell / rose), so no mission may use them: ATL06 was the ramp's blue
   // and IceBridge its red, and a track read as change the data did not show. GLAS yellow, IceBridge magenta, ATL06
   // teal, ATL03 green — each >= 35 deg of hue from both ramp ends and from each other (tests/test_timeline.js).
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [222, 102, 222], ATL06: [24, 196, 176], ICESAT2: [120, 220, 90], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
+  const MISSION_COLORS = {GLAS: [212, 182, 92], ICESSN: [176, 132, 220], ATL06: [72, 184, 152], ICESAT2: [150, 196, 100], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,
@@ -11172,6 +11189,7 @@ window.AICESAT = window.AICESAT || {};
 AICESAT.SurveyView = class {
   constructor(root, api, openScene) {
     root.innerHTML = `<div class="map" id="svMap"></div>
+      <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label>
       <div id="svStrip"></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
@@ -11181,6 +11199,9 @@ AICESAT.SurveyView = class {
     // the sphere and clip into jagged shapes) and z-fight the land. Imagery lives one level down, in the change map.
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
+    // Off by default: the globe opens on the Earth itself; the switch shows the grid and the coverage shading.
+    this.map.coverageOn = false;
+    $('svHex').onchange = e => { this.map.coverageOn = e.target.checked; this.map._covMemo = null; this.map.render(); };
     // Names stay clear of the timeline strip.
     this.map.keepOut = () => {
       const c = $('svMap').getBoundingClientRect();
@@ -11215,7 +11236,8 @@ AICESAT.SurveyView = class {
     this.root.classList.add('on');
     if (!this._loaded) { this._loaded = true; this.load(); }
     const b = (arg || '').split(',').map(Number);
-    this.map.flyTo(b.length === 4 && b.every(Number.isFinite) ? b : [-54, 67.5, -45, 71]);
+    // Default: most of the Earth, centred on Greenland.
+    if (b.length === 4 && b.every(Number.isFinite)) this.map.flyTo(b); else this.map.flyTo([-62, 58, -22, 78], 1.25);
   }
   hide() { this.root.classList.remove('on'); }
 };
@@ -11223,7 +11245,7 @@ AICESAT.SurveyView = class {
 ;
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="baseSwitch" class="base-switch" hidden><button data-b="imagery">Imagery</button><button data-b="dem">Shaded DEM</button></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="ladCtl" class="panel ladder-only" data-title="controls"><div id="ladCtlBody" class="lad-ctl"></div></div>\n<div id="ladLegend" class="panel ladder-only" data-title="legend"><div id="ladLegendBody" class="lad-legend"></div></div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <div id="tsMode" class="small ts-mode"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-mission bias correction or GIA applied.</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="baseSwitch" class="base-switch" hidden><button data-b="imagery">Imagery</button><button data-b="dem">Shaded DEM</button></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="ladCtl" class="panel ladder-only" data-title="controls"><div id="ladCtlBody" class="lad-ctl"></div></div>\n<div id="ladLegend" class="panel ladder-only" data-title="legend"><div id="ladLegendBody" class="lad-legend"></div></div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <div id="tsMode" class="small ts-mode"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-mission bias correction or GIA applied.</div>\n</div>\n<div id="ladDl" class="panel ladder-only" data-title="download"><div id="dlBody" class="dl-body"></div></div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -12336,8 +12358,7 @@ $('stats').addEventListener('reopen', () => updateStats());
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1, candHover = -1;
-const TS_HINT = () => 'Hover a cell to preview its record; click to hold it.' +
-  (LEVEL === 'region' ? ' Shift-click cells to select them for Study.' : '');
+const TS_HINT = () => 'Hover a cell to preview its record; click to hold it.';
 function tsLabels() { const r = +$('tsRes').value; $('tsResLbl').textContent = 'res ' + r + ' · ~' + (AICESAT.ts.cellEdgeM(r) || '?') + ' m'; $('tsDtLbl').textContent = (+$('tsDt').value).toFixed(2) + ' yr'; }
 function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked')].map(i => i.value); }
 function initTimeSeries() {
@@ -12421,10 +12442,28 @@ function selectCand(i) { candSel = i; renderCandList(); showCell(); render(); }
 // The panel shows the selected cell, or -- while none is selected -- the last one hovered.
 function showCell() {
   const k = candSel >= 0 ? candSel : candHover, c = k >= 0 ? candidates[k] : null;
-  drawChart(); renderConf(c);
+  drawChart(); renderConf(c); renderDownload();
   $('tsMode').innerHTML = !LEVEL || !c ? '' : candSel >= 0 ? '<b>Selected</b> · click the cell again to release'
                                                           : 'Preview · click the cell to hold it';
   if (!c && LEVEL && candidates.length) $('tsReadout').textContent = TS_HINT();
+}
+function renderDownload() {
+  const el = $('dlBody'); if (!el) return;
+  const c = candSel >= 0 ? candidates[candSel] : null;
+  if (!c) { el.innerHTML = '<div class="small">Click a cell to hold it, then download its data.</div>'; return; }
+  const planned = ['Measurements · CSV', 'Measurements · HDF5', 'Measurements · GeoParquet'];
+  el.innerHTML = `<div class="small dl-where">Cell at ${AICESAT.ts.fmtLatLon(c.lat, c.lon, 4)}</div>` +
+    `<div class="dl-row"><button id="dlTs">Time series · CSV</button></div>` +
+    planned.map(t => `<div class="dl-row"><button disabled>${t}</button><span class="dl-note">planned</span></div>`).join('');
+  $('dlTs').onclick = () => {
+    // one row per time window: its centre year, the median height relative to the cell's reference plane, its MAD
+    const rows = [['year', 'height_rel_plane_m', 'mad_m', 'missions']]
+      .concat(c.series.map(p => [p.year, p.value_m, p.mad_m, p.missions.join('+')]));
+    const url = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n') + '\n'], {type: 'text/csv'}));
+    const a = document.createElement('a'); a.href = url;
+    a.download = `timeseries_${c.lat.toFixed(4)}_${c.lon.toFixed(4)}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
 }
 function hoverCand(i) { if (i < 0 || i === candHover) return; candHover = i; if (candSel < 0) showCell(); }
 function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
@@ -12445,8 +12484,7 @@ function candidateLayers() {
     lineWidthUnits: 'pixels', getLineWidth: d => d.sel ? (LEVEL ? 4 : 3) : d.study ? 3 : LEVEL ? 0.7 : 1.8, lineWidthMinPixels: 0.5,
     onClick: (info, ev) => {
       if (!info || info.index == null || info.index < 0) return;
-      if (LEVEL === 'region' && ev && ev.srcEvent && ev.srcEvent.shiftKey) toggleStudy(candidates[info.index].h3);
-      else if (LEVEL && info.index === candSel) { candHover = info.index; selectCand(-1); }   // click again: release
+      if (LEVEL && info.index === candSel) { candHover = info.index; selectCand(-1); }   // click again: release
       else selectCand(info.index);
     },
     onHover: info => { if (LEVEL && info && info.index != null) hoverCand(info.index); },

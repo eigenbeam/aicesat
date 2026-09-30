@@ -21,7 +21,7 @@ window.AICESAT = window.AICESAT || {};
   // Red and blue belong to the change map (surface fell / rose), so no mission may use them: ATL06 was the ramp's blue
   // and IceBridge its red, and a track read as change the data did not show. GLAS yellow, IceBridge magenta, ATL06
   // teal, ATL03 green — each >= 35 deg of hue from both ramp ends and from each other (tests/test_timeline.js).
-  const MISSION_COLORS = {GLAS: [240, 228, 66], ICESSN: [222, 102, 222], ATL06: [24, 196, 176], ICESAT2: [120, 220, 90], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
+  const MISSION_COLORS = {GLAS: [212, 182, 92], ICESSN: [176, 132, 220], ATL06: [72, 184, 152], ICESAT2: [150, 196, 100], GEDI: [200, 130, 235], GPSTRUTH: [230, 159, 0]};
 
   AICESAT.missions = {
     MISSIONS, MISSION_ORDER, MISSION_COLORS,
