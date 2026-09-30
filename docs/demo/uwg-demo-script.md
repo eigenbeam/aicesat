@@ -43,7 +43,12 @@ isn't three minutes of downloading. Everything you see is computed live from tho
 
 ## 4. Study (shift-click 2–3 red cells around `8806f21187fffff`, then Study)
 
-- Builds that sub-area with ICESat-2 photons (ATL03) and co-registration; 3-D view; the Δh tab.
+- Builds that sub-area with ICESat-2 photons (ATL03) and co-registration; 3-D view at ~200 m cells.
+  Measured 30 Sep: 319,091 photons, 95 chunks / 130 MB cold from NASA (ATL03 is not pre-warmed) — clip the wait.
+  Toggle "ICESat-2 · land ice" off to let the photon tracks show.
+- **Do not show the Δh tab here.** It pairs GLAS shots with photons within 35 m and drops pairs > 50 m apart as
+  blunders; on a trunk that fell ~87 m that leaves 1 pair of 7. It was built for the cm-scale plate-motion story.
+- Needs commits 5438215 (serve.py guard: without it the ATL03 leg hangs forever) and e43aef5 (coreg `stride`).
 
 ## 5. Claude Desktop close
 
