@@ -160,20 +160,63 @@ def test_rows_with_no_frame_in_their_header_are_reported(monkeypatch):
     assert rec["propagated"] is False and "10 points in no frame in the granule header" in rec["frame_note"]
 
 
-def test_a_rough_cell_is_low_whatever_its_record():
-    # 8806f200d3fffff (res 8, ref ATL06) scored "medium" with 708 m of within-window scatter: epochs and span maxed out
-    # and carried it. Ungated this scores 0.45 -> medium.
-    conf, level, why, comps = timeseries._confidence(roughness=708.5, n_bins=10, span=15.0, n_ref=500)
-    assert level == "low" and conf < 0.35
-    assert comps["gated"] and "gated" in why
+def test_roughness_alone_does_not_gate_a_cell():
+    # Roughness is a real surface property (crevasses), already weighed in the score. It is not evidence that the
+    # slope removal failed, so it must not force "low" by itself.
+    conf, level, why, comps = timeseries._confidence(roughness=2.5, n_bins=18, span=21.0, n_ref=1500, plane_err_max=0.4)
+    assert comps["gated"] == []
 
 
-def test_a_sparse_reference_is_low_even_on_a_smooth_cell():
-    # Ungated this scores 0.85 -> high; 8 points do not constrain a plane across a 530 m hex.
-    conf, level, _, comps = timeseries._confidence(roughness=0.2, n_bins=10, span=20.0, n_ref=8)
-    assert level == "low" and conf < 0.35 and comps["gated"]
+def test_slope_removal_error_beyond_the_error_budget_is_low_whatever_the_record():
+    # 1 m of possible slope-removal error at a window swamps the ~0.1-0.3 m the instruments measure ice to.
+    conf, level, why, comps = timeseries._confidence(roughness=0.3, n_bins=18, span=21.0, n_ref=1500, plane_err_max=1.5)
+    assert level == "low" and conf < 0.35 and comps["gated"] and "gated" in why
+
+
+def test_a_singular_reference_is_gated():
+    conf, level, _, comps = timeseries._confidence(roughness=0.3, n_bins=10, span=15.0, n_ref=8, plane_err_max=float("inf"))
+    assert level == "low" and comps["gated"] and comps["plane_err_max_m"] is None
 
 
 def test_the_gate_leaves_a_well_measured_cell_alone():
-    conf, level, _, comps = timeseries._confidence(roughness=0.2, n_bins=10, span=20.0, n_ref=40)
+    conf, level, _, comps = timeseries._confidence(roughness=0.2, n_bins=10, span=20.0, n_ref=40, plane_err_max=0.3)
     assert level == "high" and comps["gated"] == []
+
+
+def _track_recs(ref_half_width_deg):
+    """ATL06 (the reference) on one north-south track through a res-9 cell, +-ref_half_width_deg of longitude wide;
+    GLAS 2005 samples ~52 m east of it. The surface rises 5 cm per metre eastward. A plane fitted to one straight
+    track cannot say how the surface slopes ACROSS it, so it cannot carry the GLAS samples back to the track."""
+    clat, clon = h3.cell_to_latlng(h3.latlng_to_cell(72.0, -45.0, 9))
+    cx, _ = scene_mod.to_local(FRAME, np.array([clon]), np.array([clat]))
+    rng = np.random.default_rng(3)
+    recs = []
+    for mission, years, dlon, width in (("ATL06", [2019.5, 2020.5, 2021.5], 0.0, ref_half_width_deg),
+                                        ("GLAS", [2005.05], 1.5e-3, 1e-5)):
+        n = 40 * len(years)
+        lat = clat + rng.uniform(-6e-4, 6e-4, n)
+        lon = clon + dlon + rng.uniform(-width, width, n)
+        x, y = scene_mod.to_local(FRAME, lon, lat)
+        h = 1000.0 + 0.05 * (x - cx[0]) + rng.normal(0, 0.3, n)
+        yr = np.repeat(np.asarray(years, "f8"), 40) + rng.uniform(-0.04, 0.04, n)
+        recs.append({"mission": mission, "lat": lat, "lon": lon, "x": x, "y": y, "h": h, "yr": yr})
+    return recs
+
+
+def _one_cell(monkeypatch, recs):
+    monkeypatch.setattr(timeseries, "_load_all", lambda doc, epoch: recs)
+    out = timeseries.candidates(DOC, h3_res=9, delta_t=1.0, ref_missions=["ATL06"])
+    assert len(out["candidates"]) == 1
+    return out["candidates"][0]
+
+
+def test_a_single_track_reference_is_gated_where_other_samples_sit_off_it(monkeypatch):
+    c = _one_cell(monkeypatch, _track_recs(1.5e-5))          # ~0.5 m wide: one track
+    assert c["level"] == "low" and c["components"]["gated"]
+    assert max(p["plane_err_m"] for p in c["series"]) > 2.0
+
+
+def test_a_reference_spread_across_the_cell_carries_a_small_plane_error(monkeypatch):
+    c = _one_cell(monkeypatch, _track_recs(1.5e-3))          # ~100 m wide
+    assert c["components"]["gated"] == []
+    assert max(p["plane_err_m"] for p in c["series"]) < 0.5

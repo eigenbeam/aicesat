@@ -25,8 +25,13 @@ log = logging.getLogger("aicesat.timeseries")
 MISSION_LABEL = {"GLAS": "ICESat-1", "ICESSN": "IceBridge ATM", "ATL06": "ICESat-2 land ice",
                  "ICESAT2": "ICESat-2 photons", "GEDI": "GEDI", "GPSTRUTH": "Summit GPS traverse"}
 _MIN_BIN_PTS = 3                # a time window needs this many points in the cell to be a usable series point
-_MIN_REF_PTS = 6               # minimum reference points to fit a stable local plane
-GATE_MIN_REF = 10              # below this a cell is kept but never better than "low" (see _confidence)
+_MIN_REF_PTS = 6               # floor for estimating the plane's residual scatter at all -- NOT a trust measure: a count
+                               # cannot tell 20 points spread across a cell from 20 on one straight track (see below)
+PLANE_ERR_GATE_M = 1.0         # slope-removal error (m) at a window's samples above which a cell is never better than
+                               # "low". Set from the error budget, not from which cells pass: the instruments measure
+                               # smooth ice to ~0.1-0.3 m, so past ~1 m the geometry term dominates the window's error.
+                               # (Across 855 res-8 Jakobshavn cells: median 0.29 m, p90 1.5 m, single-track planes
+                               # 500-4000 m; count gates passed collinear 14-21-point planes.)
 _GATED_CONF = 0.34             # just under "medium", so a gated cell also ranks below every cell that passed
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
 DEFAULT_REF_MISSION = "GLAS"  # earliest epoch + single sensor: an anchored zero, no inter-sensor bias in the plane's tilt
@@ -107,7 +112,7 @@ def _load_all(doc: dict, common_epoch: float) -> list[dict]:
     return recs
 
 
-def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple:
+def _confidence(roughness: float, n_bins: int, span: float, n_ref: int, plane_err_max: float = 0.0) -> tuple:
     """Deterministic 0-1 confidence from four measurables (roughness dominates — it's the failure mode:
     on rough/crevassed cells different missions sample different sub-cell relief, faking a trend). Roughness
     is the WITHIN-window scatter (median per-window MAD) so real between-window change is not mistaken for it.
@@ -119,13 +124,13 @@ def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple
     s_ref = clamp(n_ref / 30.0)                 # 30+ reference pts -> 1
     conf = 0.55 * s_rough + 0.20 * s_epochs + 0.15 * s_span + 0.10 * s_ref
     # Hard gate on the quality of the EVIDENCE, never on the size of the answer. The weighted score let maxed-out
-    # epochs and span carry 8806f200d3fffff (res 8, ref ATL06: 8 plane points, 708 m within-window scatter,
-    # -263 m/yr) up to "medium". A change map colours by trend, so that cell would be the loudest thing on it.
+    # epochs and span carry 8806f200d3fffff (res 8, ref ATL06: 8 collinear plane points, -263 m/yr) up to "medium".
+    # What made it garbage is not its count or its roughness but where its plane was ASKED to predict: the other
+    # windows' samples sat off the one track the plane was fitted to, ~3.6 km of prediction error.
     gated = []
-    if s_rough <= 0.0:
-        gated.append(f"within-window scatter {roughness:.1f} m is beyond 1.5 m")
-    if n_ref < GATE_MIN_REF:
-        gated.append(f"only {n_ref} reference points (need {GATE_MIN_REF})")
+    if not plane_err_max <= PLANE_ERR_GATE_M:          # also catches NaN / inf from a singular reference
+        gated.append(f"slope removal uncertain by {plane_err_max:.1f} m where some windows sampled: they lie outside "
+                     "the ground the reference points cover, or those points fall on a single track")
     if gated:
         conf = min(conf, _GATED_CONF)
     level = "high" if conf >= 0.6 else "medium" if conf >= 0.35 else "low"
@@ -142,7 +147,7 @@ def _confidence(roughness: float, n_bins: int, span: float, n_ref: int) -> tuple
         why = f"{level.capitalize()} confidence — smooth cell (scatter {roughness:.1f} m), {n_bins} windows over {span:.1f} yr"
     comps = {"roughness_m": round(roughness, 2), "epochs": int(n_bins), "span_yr": round(span, 1), "ref_pts": int(n_ref),
              "scores": {"roughness": round(s_rough, 2), "epochs": round(s_epochs, 2), "span": round(s_span, 2), "density": round(s_ref, 2)},
-             "gated": gated}
+             "plane_err_max_m": round(float(plane_err_max), 3) if np.isfinite(plane_err_max) else None, "gated": gated}
     return round(conf, 2), level, why, comps
 
 
@@ -224,6 +229,10 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
             coef, *_ = np.linalg.lstsq(A, gh[rmask], rcond=None)
         except Exception:
             return None
+        try:
+            ata_inv = np.linalg.inv(A.T @ A)                 # near-singular (one straight track) -> huge, as it should be
+        except np.linalg.LinAlgError:
+            ata_inv = None
         resid = gh - (coef[0] + coef[1] * (gx - xc) + coef[2] * (gy - yc))
         # Blunder clip: distance from the point's OWN time window's median, scaled by the pooled within-window
         # scatter. Clipping about the cell-wide median would drop real change between windows (or a whole
@@ -245,8 +254,13 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
                 continue
             r = resid[m]; rmed = float(np.median(r))
             rough_pool.append(r - rmed)                      # within-window residuals -> pooled spatial roughness
+            # How wrong the slope removal can be WHERE THIS WINDOW SAMPLED: the plane's standard error at the window's
+            # sample centroid. Small inside the reference points' footprint, large when extrapolated off it.
+            pv = np.array([1.0, float(gx[m].mean()) - xc, float(gy[m].mean()) - yc])
+            perr = float(plane_rms * np.sqrt(max(float(pv @ ata_inv @ pv), 0.0))) if ata_inv is not None else float("inf")
             series.append({"year": round(float(YR[gi][m].mean()), 3), "value_m": round(rmed, 3),
                            "mad_m": round(float(np.median(np.abs(r - rmed))), 3), "n": int(m.sum()),
+                           "plane_err_m": round(min(perr, 1e6), 3),
                            "missions": sorted({recs[j]["mission"] for j in np.unique(mic[m])})})
         if len(series) < min_bins:
             return None
@@ -261,7 +275,8 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
         span_years = round(series[-1]["year"] - series[0]["year"], 2)
         pooled = np.concatenate(rough_pool)                          # spatial scatter after removing slope + per-window signal
         roughness = float(1.4826 * np.median(np.abs(pooled - np.median(pooled))))
-        conf, level, why, comps = _confidence(roughness, len(series), span_years, int(rmask.sum()))
+        conf, level, why, comps = _confidence(roughness, len(series), span_years, int(rmask.sum()),
+                                              max(p["plane_err_m"] for p in series))
         return {"h3": hexstr, "lat": round(float(clat), 5), "lon": round(float(clon), 5),
                 "center": [round(float(cx[0]), 2), round(float(cy[0]), 2), round(float(coef[0] - z0), 2)],
                 "xy": [[round(float(px), 2), round(float(py), 2)] for px, py in zip(bx, by)],
