@@ -346,6 +346,11 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .base-switch button:disabled{opacity:.4;cursor:default}
 .ana-tabs[hidden],.study-bar[hidden],.chg-legend[hidden],.base-switch[hidden],.tsctx canvas[hidden]{display:none!important}
 .timeline{bottom:30px}
+/* ladder levels: graticule labels pinned where each line is on screen (scene.js placeGratLabels) */
+.grat-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+.grat-overlay .gl{position:absolute;font:600 12px ui-sans-serif,system-ui,sans-serif;color:#eef2f8;background:rgba(16,18,24,.72);padding:1px 5px;border-radius:3px;white-space:nowrap}
+.grat-overlay .gl.lat{transform:translate(2px,-50%)}
+.grat-overlay .gl.lon{transform:translate(-50%,3px)}
 /* ladder levels: the panel on the left, basemap switch and legends inside it */
 .view.left-drawer.has-drawer .deck { right:0; left:var(--drawer-w); transition:left .2s ease; }
 .view.left-drawer.has-drawer.drawer-collapsed .deck { left:0; }
@@ -11293,7 +11298,34 @@ const deckgl = new Deck({
     }
   },
   layers: [],
+  onAfterRender: () => placeGratLabels(),
 });
+
+// Ladder levels: graticule labels are HTML pinned where each line is still on screen -- parallels at their leftmost
+// visible point, meridians at their topmost -- so zooming in or tilting never takes a line's label off screen or
+// behind a ridge. Recomputed only when the camera moves (key), from GRAT_LABELS that graticuleLayers() fills.
+let GRAT_LABELS = [], gratKey = '';
+const gratEl = document.createElement('div'); gratEl.className = 'grat-overlay'; $('deck').appendChild(gratEl);
+function placeGratLabels() {
+  if (!LEVEL || !GRAT_ON || !GRAT_LABELS.length) { if (gratEl.innerHTML) gratEl.innerHTML = ''; gratKey = ''; return; }
+  let vp = null; try { vp = deckgl.getViewports()[0]; } catch (e) { return; }
+  if (!vp) return;
+  const key = [vp.width, vp.height, vp.zoom, ...(vp.cameraPosition || []), Z_EXAG, GRAT_LABELS.length].join();
+  if (key === gratKey) return; gratKey = key;
+  const M = 6, W = vp.width, H = vp.height, out = [];
+  for (const g of GRAT_LABELS) {
+    let best = null;
+    for (const s of g.pts) {
+      const [x, y] = vp.project([s[0], s[1], (s[2] + GRAT_LIFT_M) * Z_EXAG]);
+      // lat labels run right from the left edge, below the meridians' row; lon labels are centred, right of the parallels' column;
+      // 110 keeps both clear of the timeline strip
+      if (g.kind === 'lat' ? !(x >= M && x <= W - 80 && y >= 46 && y <= H - 110) : !(x >= 80 && x <= W - 45 && y >= M && y <= H - 110)) continue;
+      if (!best || (g.kind === 'lat' ? x < best[0] : y < best[1])) best = [x, y];
+    }
+    if (best) out.push(`<span class="gl ${g.kind}" style="left:${best[0].toFixed(1)}px;top:${best[1].toFixed(1)}px">${g.text}</span>`);
+  }
+  gratEl.innerHTML = out.join('');
+}
 
 const indices = n => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = i; return a; };
 const ease = t => t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
@@ -11635,7 +11667,7 @@ function edgeMostEnd(segs, cx, cy) {
 }
 
 function graticuleLayers() {
-  if (!GRAT_ON || !scene || !scene.frame) return [];
+  if (!GRAT_ON || !scene || !scene.frame) { GRAT_LABELS = []; return []; }
   const b = surfaceExtent(); if (!b) return [];
   const fr = scene.frame;
   const {loMin, loMax, laMin, laMax} = surfaceLonLatBounds(fr, b);
@@ -11674,8 +11706,9 @@ function graticuleLayers() {
   };
   for (const v of ticksIn(laMin, laMax, stepLa)) walk('lat', v);
   for (const v of ticksIn(loMin, loMax, stepLo)) walk('lon', v);
+  GRAT_LABELS = LEVEL ? paths.map(p => ({pts: p.seg, kind: p.kind, text: lab(p.kind, p.value)})) : []; gratKey = '';
   if (!paths.length) return [];
-  return [
+  const lines = [
     new PathLayer({id: 'graticule', data: paths, pickable: true,
       getPath: d => d.seg.map(s2 => [s2[0], s2[1], (s2[2] + GRAT_LIFT_M) * Z_EXAG]),
       getColor: d => d.kind === 'lat' ? LAT_C : LON_C, getWidth: 1.4, widthUnits: 'pixels',
@@ -11684,8 +11717,10 @@ function graticuleLayers() {
       getColor: d => LEVEL ? [235, 240, 248, 240] : d.color, getSize: LEVEL ? 12.5 : 10, sizeUnits: 'pixels', billboard: true,
       fontFamily: 'ui-sans-serif, system-ui, sans-serif', characterSet: 'auto',
       background: true, getBackgroundColor: [20, 20, 26, 150], backgroundPadding: [2, 1],
+      parameters: {depthTest: false},   // as the place names: tilted, a ridge in front cut the labels in half
       updateTriggers: {getPosition: Z_EXAG}}),
   ];
+  return LEVEL ? lines.slice(0, 1) : lines;   // ladder levels: the labels are the HTML overlay (placeGratLabels)
 }
 
 // ---------------------------------------------------------------- H3 grid overlay

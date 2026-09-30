@@ -340,6 +340,11 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .base-switch button:disabled{opacity:.4;cursor:default}
 .ana-tabs[hidden],.study-bar[hidden],.chg-legend[hidden],.base-switch[hidden],.tsctx canvas[hidden]{display:none!important}
 .timeline{bottom:30px}
+/* ladder levels: graticule labels pinned where each line is on screen (scene.js placeGratLabels) */
+.grat-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+.grat-overlay .gl{position:absolute;font:600 12px ui-sans-serif,system-ui,sans-serif;color:#eef2f8;background:rgba(16,18,24,.72);padding:1px 5px;border-radius:3px;white-space:nowrap}
+.grat-overlay .gl.lat{transform:translate(2px,-50%)}
+.grat-overlay .gl.lon{transform:translate(-50%,3px)}
 /* ladder levels: the panel on the left, basemap switch and legends inside it */
 .view.left-drawer.has-drawer .deck { right:0; left:var(--drawer-w); transition:left .2s ease; }
 .view.left-drawer.has-drawer.drawer-collapsed .deck { left:0; }
