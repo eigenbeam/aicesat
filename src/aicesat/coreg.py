@@ -346,7 +346,8 @@ def coregister_scene(doc: dict, common_epoch: float = 2005.0, colocation_radius_
         x0, y0 = scene_mod.to_local(frame, arrays["lon"], arrays["lat"])
         x1, y1 = scene_mod.to_local(frame, clon, clat)
         data[mission] = dict(x0=x0, y0=y0, h0=arrays["h"], x1=x1, y1=y1, h1=ch, t=t, disp=disp,
-                             stride=s["stride"], native_frame=meta["native_frame"])
+                             # series stopped carrying `stride` once every point was stored (a0c8a8b); older docs keep theirs
+                             stride=int(s.get("stride", 1)), native_frame=meta["native_frame"])
         log.info("%s: epoch %.2f→%.1f, median horizontal displacement %.3f m", mission, float(np.median(t)), p.common_epoch, float(np.median(disp)))
 
     I, Gd = data["ICESAT2"], data["GLAS"]

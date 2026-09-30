@@ -37,6 +37,29 @@ def test_same_epoch_is_identity():
     assert coreg.horizontal_displacement_m(lon, lat, clon, clat)[0] < 0.001
 
 
+def test_a_scene_built_after_stride_was_retired_still_coregisters(monkeypatch):
+    """The transport refactor (a0c8a8b) stopped writing the series' `stride` (always 1 once every point was stored);
+    coregister_scene still read it, so every Study build with co-registration failed with KeyError: 'stride'."""
+    from aicesat import scene as scene_mod
+
+    rng = np.random.default_rng(0)
+
+    def arrays(lat, when):
+        return {"lon": np.full_like(lat, -49.33), "lat": lat,
+                "h": 800.0 + 0.01 * (lat - 69.16) * 111_000 + rng.normal(0, 0.05, lat.size),
+                "t": np.full(lat.size, np.datetime64(when, "ms"))}
+
+    store = {"i2": (arrays(np.linspace(69.16, 69.19, 3000), "2021-06-01"), {"native_frame": "ITRF2014"}),
+             "g": (arrays(np.linspace(69.162, 69.188, 20), "2005-03-01"), {"native_frame": "ITRF2008"})}
+    monkeypatch.setattr(coreg, "_reload_arrays", lambda s: store[s["cache_key"]])
+    monkeypatch.setattr(coreg, "_gia_block", lambda *a: None)
+    doc = {"frame": scene_mod.local_frame((-49.4, 69.15, -49.3, 69.2)), "z0": 800.0,
+           "series": {"ICESAT2": {"cache_key": "i2", "meta": {}}, "GLAS": {"cache_key": "g", "meta": {}}}}
+    res = coreg.coregister_scene(doc)
+    assert res["n_pairs"]["native"] > 10
+    assert len(res["pair_display_indices"]["GLAS"]) == res["n_pairs"]["native"]   # every paired shot is displayed
+
+
 def test_silent_identity_trap_detected():
     """If the 4th (time) coordinate is dropped, PROJ returns the input unchanged. Prove the trap exists so the
     guard in coregister_scene is meaningful."""
