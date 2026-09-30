@@ -91,6 +91,8 @@ AICESAT.MapView = class {
     else if (info.layer && info.layer.id === 'earth-grid' && info.object) html = this.centreLine(info.object);
     else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
+    // The globe's hex details go to the side panel when the view has one (survey), not a floating tooltip.
+    if (this.hoverPanel && info.layer && /^(coverage|earth-grid)$/.test(info.layer.id)) { this.hoverPanel(html); html = null; }
     this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && /^(coverage|earth-grid)$/.test(info.layer.id)));
     if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }

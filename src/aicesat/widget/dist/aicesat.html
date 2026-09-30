@@ -337,8 +337,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .level-region #controls,.level-study #controls,.level-region #bench,.level-study #bench,.level-region #navhint{display:none!important}
 .level-region #tsFind,.level-study #tsFind,.level-region .tsrefrow,.level-study .tsrefrow,.level-region .tsintro,.level-region #tsList{display:none!important}
 #view-survey .sv-title{position:absolute;top:18px;left:20px;z-index:5;max-width:470px;pointer-events:none}
-#view-survey .sv-toggle{position:absolute;top:14px;left:14px;z-index:6;display:flex;align-items:center;gap:7px;font-size:12.5px;
-  background:rgba(14,18,26,.84);border:1px solid rgba(150,190,230,.18);border-radius:8px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+#view-survey .sv-toggle{display:flex;align-items:center;justify-content:center;gap:7px;font-size:12.5px;cursor:pointer;color:var(--ink)}
+.cov-ramp{display:inline-block;width:110px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgba(214,230,250,.08),rgba(214,230,250,.55));border:1px solid rgba(214,230,250,.25)}
+.sv-hexbody .covtip{font-size:12px}
 #view-survey .sv-toggle input{margin:0}
 #view-survey .sv-title h1{font:600 21px ui-sans-serif,system-ui;margin:0 0 6px;color:#eef2f8}
 #view-survey .sv-title p{margin:0;color:#b8c2d0;font-size:13px;line-height:1.45}
@@ -356,8 +357,8 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .grat-overlay .gl.lat{transform:translate(2px,-50%)}
 .grat-overlay .gl.lon{transform:translate(-50%,3px)}
 /* ladder levels: the panel on the left, basemap switch and legends inside it */
-.view.left-drawer.has-drawer .deck { right:0; left:var(--drawer-w); transition:left .2s ease; }
-.view.left-drawer.has-drawer.drawer-collapsed .deck { left:0; }
+.view.left-drawer.has-drawer .deck, .view.left-drawer.has-drawer .map { right:0; left:var(--drawer-w); transition:left .2s ease; }
+.view.left-drawer.has-drawer.drawer-collapsed .deck, .view.left-drawer.has-drawer.drawer-collapsed .map { left:0; }
 .view.left-drawer .drawer { right:auto; left:0; border-left:none; border-right:1px solid var(--hair); }
 .view.left-drawer .drawer.collapsed { transform:translateX(-100%); }
 .view.left-drawer .dtab { right:auto; left:var(--drawer-w); border:1px solid var(--hair); border-left:none; border-radius:0 9px 9px 0; transition:left .2s ease; }
@@ -10159,6 +10160,8 @@ AICESAT.MapView = class {
     else if (info.layer && info.layer.id === 'earth-grid' && info.object) html = this.centreLine(info.object);
     else if (info.layer && info.layer.id === 'claims' && info.object) html =`<b>${info.object.label}</b><br>indexed here: a box drawn inside this outline builds`;
     else if (info.layer && info.layer.id === 'scenes' && info.object) html = `<b>${info.object.question || info.object.scene_id}</b><br>${(info.object.series || []).join(' + ')} · <span class="status ${info.object.status}">${info.object.status}</span><br>click to open`;
+    // The globe's hex details go to the side panel when the view has one (survey), not a floating tooltip.
+    if (this.hoverPanel && info.layer && /^(coverage|earth-grid)$/.test(info.layer.id)) { this.hoverPanel(html); html = null; }
     this.tooltip.hidden = !html; this.tooltip.classList.toggle('wide', !!(info.layer && /^(coverage|earth-grid)$/.test(info.layer.id)));
     if (html) { this.tooltip.innerHTML = html; this.tooltip.style.left = (info.x + 12) + 'px'; this.tooltip.style.top = (info.y + 12) + 'px'; }
   }
@@ -11203,9 +11206,17 @@ window.AICESAT = window.AICESAT || {};
 window.AICESAT = window.AICESAT || {};
 AICESAT.SurveyView = class {
   constructor(root, api, openScene) {
+    // Side panel as at the change map, simpler: Controls (the hex switch), Legend (coverage ramp, the mission strip),
+    // and the hovered hex's details in place of a floating tooltip.
     root.innerHTML = `<div class="map" id="svMap"></div>
-      <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label>
-      <div id="svStrip"></div>
+      <div id="svCtl" class="panel" data-title="controls">
+        <label class="sv-toggle"><input type="checkbox" id="svHex"> Hex grid &amp; coverage</label></div>
+      <div id="svLeg" class="panel" data-title="legend"><div class="lad-legend">
+        <div class="lg-head">Coverage</div>
+        <div class="lg-ramp"><span>fewer</span><i class="cov-ramp"></i><span>more granules</span></div>
+        <div class="lg-head">Missions <span class="lg-note">click to show / hide</span></div>
+        <div id="svStrip"></div></div></div>
+      <div id="svHexInfo" class="panel" data-title="hex"><div id="svHexBody" class="sv-hexbody small">Turn on the hex grid, then hover a hex.</div></div>
       <div id="attrib">Basemap: Natural Earth (public domain) · Place names: GeoNames (CC BY 4.0)</div>`;
     const $ = id => root.querySelector('#' + id);
     this.api = api; this.root = root; this.openScene = openScene;
@@ -11214,15 +11225,12 @@ AICESAT.SurveyView = class {
     // the sphere and clip into jagged shapes) and z-fight the land. Imagery lives one level down, in the change map.
     this.map = new AICESAT.MapView($('svMap'), {grid: false, draw: false, footprints: false});
     this.map.onHexClick = h => this.openHex(h);
+    this.map.hoverPanel = html => { if (html) $('svHexBody').innerHTML = html; };   // sticky: the last hex stays shown
+    AICESAT.util.drawer(root, null); root.classList.add('left-drawer');
     // Off by default: the globe opens on the Earth itself; the switch shows the grid and the coverage shading.
     this.map.coverageOn = false;
     $('svHex').onchange = e => { this.map.coverageOn = e.target.checked; this.map._covMemo = null; this.map.render(); };
-    // Names stay clear of the timeline strip.
-    this.map.keepOut = () => {
-      const c = $('svMap').getBoundingClientRect();
-      return [$('svStrip')].map(e => e.getBoundingClientRect())
-        .map(r => [r.left - c.left, r.top - c.top, r.right - c.left, r.bottom - c.top]);
-    };
+    this.map.keepOut = () => [];   // the strip lives in the side panel now, off the map
     this.strip = AICESAT.timeline.mount($('svStrip'), m => { this.visible[m] = this.visible[m] === false; this.paint(); });
     this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible);
   }
