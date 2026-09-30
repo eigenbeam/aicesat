@@ -98,7 +98,7 @@ AICESAT.TsView = class {
           present = M.MISSION_ORDER.filter(m => meta.series && meta.series[m]);
         } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); return; }
         // Same rule as timeseries._reference_set: GLAS anchors when present (earliest epoch, single sensor).
-        const defRef = present.includes('GLAS') ? ['GLAS'] : present;
+        const defRef = present.includes('ATL06') ? ['ATL06'] : present.includes('GLAS') ? ['GLAS'] : present;   // one era's plane: api.CHANGE_REF
         $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '"' +
           (defRef.includes(m) ? ' checked' : '') + '> ' + M.label(m) + '</label>').join('');
         $('tsRef').querySelectorAll('input').forEach(i => i.onchange = () => find());

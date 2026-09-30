@@ -1,6 +1,6 @@
 AICESAT.SceneView = class {
   constructor(root, api, back) {
-    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
+    root.innerHTML = '<div id="deck" class="deck"></div>\n<div id="timeline"></div>\n<div id="chgLegend" class="chg-legend" hidden></div>\n<div id="studyBar" class="study-bar" hidden><span id="studyMsg"></span><button id="studyGo">Study →</button><button id="studyClear">clear</button></div>\n<div id="anaTabs" class="ana-tabs" hidden><button data-t="ts" class="on">Time series</button><button data-t="dh">Δh between missions</button><button id="toRegion">← region</button><span id="dhNote" class="small"></span></div>\n<div id="progress" class="panel" data-title="build progress" hidden>\n  <div class="sl-head"><span id="slSpin" class="spinner"></span><span id="slTitle">Building scene…</span><span id="slElapsed" class="sl-elapsed"></span></div>\n  <div id="progRows" class="prog-rows"></div>\n  <div id="slNow" class="prog-now"></div>\n</div>\n<div id="navhint">drag to orbit · scroll to zoom</div>\n<div id="exagWarn" class="exag-badge" hidden></div>\n<div id="controls" class="panel" data-title="controls">\n  <div class="ctl-group">\n    <div class="ctl-head">Missions <span class="ctl-note">show / hide</span></div>\n    <div id="missionToggles" class="misrows"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><input id="demOn" type="checkbox" checked> DEM base surface</label>\n    <label class="ctl-row"><input id="gratOn" type="checkbox" checked> Lat/lon grid on terrain</label>\n    <label class="ctl-row"><input id="hexOn" type="checkbox"> H3 cell grid</label>\n    <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="hexRes" type="range" min="5" max="11" step="1" value="8" class="ctl-range" disabled><b id="hexResLbl" class="ctl-val"></b></label>\n    <label class="ctl-row"><input id="imagery" type="checkbox" disabled> Show satellite imagery</label>\n    <div id="imageryStatus" class="ctl-info"></div>\n  </div>\n  <div class="ctl-group">\n    <label class="ctl-row"><span class="ctl-lbl">Vertical ×<b id="zexagVal">1</b></span><input id="zexag" type="range" min="1" max="10" step="1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Points ×<b id="ptSizeVal">1</b></span><input id="ptSize" type="range" min="0.4" max="3" step="0.1" value="1" class="ctl-range"></label>\n    <label class="ctl-row"><span class="ctl-lbl">Terrain <b id="terrAlphaVal">solid</b></span><input id="terrAlpha" type="range" min="0.3" max="1" step="0.05" value="1" class="ctl-range"></label>\n  </div>\n  <button id="benchBtn" hidden>How the data got here</button>\n</div>\n<div id="attrib" style="position:absolute; bottom:4px; right:396px; font-size:10px; color:var(--muted)"></div>\n<div id="bench" class="panel" data-title="access comparison" hidden style="top:112px; left:12px; width:440px; max-height:calc(100% - 200px); overflow:auto">\n  <h2 style="font-size:13px;margin:0 0 4px">How the data got here — access-method comparison</h2>\n  <div class="small" id="benchMeta"></div>\n  <table id="benchTable" style="width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px"></table>\n  <div class="small" style="margin-top:6px">Measured on the same area, granules, and photons across every method. The real wins are how many files get opened and parsed — not just bytes moved.</div>\n  <button id="benchClose" style="margin-top:6px">hide</button>\n</div>\n<div id="stats" class="panel" data-title="Δh panels" hidden>\n  <h2>Height difference Δh — ICESat-2 minus ICESat-1</h2>\n  <canvas class="hist" id="histDh"></canvas>\n  <div class="hist-cap">← lower · Δh (metres) · higher → · bar height = number of co-located pairs · dashed line = 0</div>\n  <div class="readout" id="readout1"></div>\n  <h2 style="margin-top:10px">Effect of the plate-motion correction on Δh</h2>\n  <canvas class="hist" id="histArt"></canvas>\n  <div class="hist-cap">how much re-aligning the footprints changes each pair (metres)</div>\n  <div class="readout" id="readout2"></div>\n  <div id="unresolved"></div>\n</div>\n<div id="tspanel" class="panel" data-title="time series">\n  <h2>Elevation time series</h2>\n  <div class="small tsintro">Cells observed across time; height plotted there as a residual about a local reference plane (so surface slope is removed, not mistaken for change).</div>\n  <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n  <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n  <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n  <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n  <div class="row tsgoto"><input id="tsGoto" type="text" placeholder="go to: H3 cell id, or lat, lon" spellcheck="false"><button id="tsGo">Go</button></div>\n  <div id="tsList" class="tslist"></div>\n  <canvas id="tsChart" class="tschart" hidden></canvas>\n  <div id="tsReadout" class="small"></div>\n  <div id="tsConf" class="small"></div>\n  <div id="tsCaveat" class="small tscaveat" hidden>No inter-campaign / inter-sensor bias adjustment yet (coming later).</div>\n</div>';
 /* Demo B widget: two point clouds, OFF/ON co-registration toggle, Δh histograms, honesty labels,
    plus visual cues: DEM surface, paired-shot highlighting.
    Corrections (plate motion, …) are applied to the Δh computation via checkboxes; the true positional shift is
@@ -53,6 +53,13 @@ let SHOW_PAIRS = true;
 const {MISSIONS, MISSION_ORDER, MISSION_COLORS} = AICESAT.missions;
 const visible = {};   // mission key -> shown; initialised per scene (all on)
 const colorOf = m => AICESAT.missions.colorOf(m, scene);
+// ---- demo ladder: the level this scene was opened at (#scene/<id>?level=region|study)
+let LEVEL = null;             // 'region' = change map, 'study' = 3-D study; null = the classic scene view
+let CHANGE_LIM = 1;           // change-map colour limit (cm/yr), from the gated candidates
+const STUDY = new Set();      // H3 cells shift-clicked for a Study build (region level)
+let STUDY_VER = 0, ANA_TAB = 'ts', imageryAuto = false;
+const camAngles = () => LEVEL === 'region' ? {rotationX: 90, rotationOrbit: 0} : {rotationX: 35, rotationOrbit: -25};
+const strip = AICESAT.timeline.mount($('timeline'), m => { visible[m] = visible[m] === false; render(); updateLabels(); });
 
 const deckgl = new Deck({
   parent: $('deck'),
@@ -175,9 +182,10 @@ function cloudLayers() {
       id: 'pc-' + m,
       data: cloudData(m, src),
       modelMatrix: zExagMatrix(),
-      getFillColor: colorOf(m), getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
+      getFillColor: (LEVEL === 'region' && candidates.length) ? colorOf(m).slice(0, 3).concat(110) : colorOf(m),
+      getRadius: (FOOTPRINT_M[m] || 14) * PT_SCALE, radiusUnits: 'meters',
       radiusMinPixels: 1, radiusMaxPixels: 6, billboard: true, pickable: true,
-      updateTriggers: {getRadius: PT_SCALE},
+      updateTriggers: {getRadius: PT_SCALE, getFillColor: [LEVEL, candidates.length]},
     }));
   }
   return out;
@@ -531,6 +539,10 @@ function sceneTooltip(info) {
     text = lineTip(info.object.kind, info.object.value);
   } else if (id === 'hexgrid' && info.object) {
     text = gridTip(info.object.cell, info.object.res, info.object.edge_m, info.object.counts);
+  } else if (id === 'cands' && info.object && info.object.c) {
+    const c = info.object.c;
+    text = `H3 ${c.h3}\n${(c.trend_cm_yr / 100).toFixed(2)} m/yr over ${Math.round(c.span_years)} yr · ${c.level} confidence` +
+           (LEVEL === 'region' ? '\nclick: its record · shift-click: add to study' : '');
   } else if (id.startsWith('pc-') || id.startsWith('pl-') || id.startsWith('paired-')) {
     const m = id.slice(id.indexOf('-') + 1);
     const sr = scene && scene.series && scene.series[m];
@@ -650,7 +662,17 @@ function fitView() {
   // the miss so the caller leaves didFit alone and tries again on the next frame of data.
   if (!Number.isFinite(zoom)) return false;
   curZoom = zoom;   // seed the LOD zoom so the first render picks dots-vs-platelets correctly before any interaction
-  deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], rotationX: 35, rotationOrbit: -25, zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
+  deckgl.setProps({initialViewState: {target: [(minx + maxx) / 2, (miny + maxy) / 2, 0], ...camAngles(), zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
+  return true;
+}
+
+// The MCP App transport carries no points, so there is nothing for fitView to frame: frame the DEM instead.
+function fitSurface() {
+  const b = surfaceExtent(); if (!b) return false;
+  const span = Math.max(b.maxx - b.minx, b.maxy - b.miny) || 1, px = Math.min(root.clientWidth, root.clientHeight);
+  const zoom = Math.log2(px / (span * 1.1)); if (!Number.isFinite(zoom)) return false;
+  curZoom = zoom; bounds = b;
+  deckgl.setProps({initialViewState: {target: [(b.minx + b.maxx) / 2, (b.miny + b.maxy) / 2, 0], ...camAngles(), zoom, minZoom: zoom - 6, maxZoom: zoom + 8}});
   return true;
 }
 
@@ -673,7 +695,9 @@ function drawHist(canvas, values, {color, refLine = 0, range} = {}) {
 }
 
 function updateStats() {
-  if (!coreg) { $('stats').hidden = true; return; }
+  const dhTabOff = LEVEL === 'study' && ANA_TAB !== 'dh';
+  const note = $('dhNote'); if (note) note.textContent = (LEVEL === 'study' && ANA_TAB === 'dh' && !coreg) ? 'no Δh here: it needs ICESat-1 shots and ICESat-2 photons in the study area' : '';
+  if (!coreg || dhTabOff) { $('stats').hidden = true; return; }
   $('stats').hidden = false;
   const on = adj.plate_motion;
   const g = (adj.gia && coreg.gia) ? coreg.gia.dh_shift_m : 0;   // GIA is an additive Δh shift (near-constant over a scene)
@@ -721,6 +745,8 @@ function updateLabels() {
     else { imgc.disabled = true; if (ist) ist.textContent = 'imagery unavailable for this area'; }
   }
   $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
+  strip.update(MISSION_ORDER.filter(m => scene.series[m]), visible);
+  if (LEVEL && scene.imagery && !imageryAuto) { imageryAuto = true; SHOW_IMAGERY = true; $('imagery').checked = true; render(); }
 }
 
 // ---- progressive load: open the shell instantly, then poll the growing scene doc and paint each new series /
@@ -792,7 +818,7 @@ function applyDoc(doc) {
   $('hexOn').checked = HEX_ON; $('hexRes').value = HEX_RES; $('hexRes').disabled = !HEX_ON; hexResLabel();
   $('imagery').checked = SHOW_IMAGERY;
   const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
-  if (!didFit && hasPositions && fitView()) didFit = true;   // frame the data once, on the first series to arrive
+  if (!didFit && (hasPositions ? fitView() : (!api.sceneStreamRun && fitSurface()))) didFit = true;   // frame once: points, or the DEM when no points can arrive
   render(); updateLabels(); updateStats();
   const sig = keys.slice().sort().join(',');
   if (sig !== lastSeriesSig) { lastSeriesSig = sig; if (keys.length) initTimeSeries(); }   // reset TS UI only when the mission set changes
@@ -937,6 +963,7 @@ function finishLoad() {
   // co-registration compute stays server-side; the Δh panel shows only if a scene already carries coreg on disk.
   void schemaRefreshed;
   console.log('[aicesat] scene loaded', Object.entries(scene.series).map(([m, s]) => m + ':' + s.n).join(' '), 'surface', scene.surface ? scene.surface.n_cells_observed : 'none', 'meshOk', meshOk);
+  if (LEVEL && !candidates.length) { $('tsRes').value = LEVEL === 'region' ? 8 : 9; tsLabels(); findCandidates(); }
 }
 
 const syncExag = () => { const w = $('exagWarn'); if (w) { w.hidden = Z_EXAG <= 1; w.textContent = 'Heights exaggerated \u00d7' + Z_EXAG + ' \u2014 vertical only'; } };
@@ -988,7 +1015,7 @@ function tsRefMissions() { return [...$('tsRef').querySelectorAll('input:checked
 function initTimeSeries() {
   candidates = []; candSel = -1;
   const present = Object.keys(scene.series);
-  const defRef = present.includes('GLAS') ? ['GLAS'] : present;   // same rule as timeseries._reference_set: earliest-epoch, single-sensor anchor
+  const defRef = present.includes('ATL06') ? ['ATL06'] : present.includes('GLAS') ? ['GLAS'] : present;   // one era's plane: see api.CHANGE_REF
   $('tsRef').innerHTML = present.map(m => '<label class="tsref-item"><input type="checkbox" value="' + m + '"' + (defRef.includes(m) ? ' checked' : '') + '> ' + ((MISSIONS[m] || {}).name || m) + '</label>').join('');
   $('tsRef').querySelectorAll('input').forEach(i => i.onchange = () => findCandidates());
   tsLabels(); renderCandList(); renderConf(null); $('tsChart').hidden = true; $('tsReadout').textContent = ''; $('tsCaveat').hidden = true; $('tsStatus').textContent = ''; $('tsGoto').value = '';
@@ -1002,10 +1029,46 @@ async function findCandidates() {
     $('tsStatus').textContent = candidates.length + (candidates.length === 1 ? ' cell' : ' cells');
     $('tsCaveat').hidden = !candidates.length;
     renderCandList(); render();
-    if (candidates.length) selectCand(0); else { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'no cells with 3+ time windows — try a larger cell size or a wider time window'; }
+    CHANGE_LIM = AICESAT.timeline.trendLimit(candidates); renderChgLegend();
+    const want = params.get('sel'), wi = want ? candidates.findIndex(c => c.h3 === want) : -1;
+    if (candidates.length && (!LEVEL || wi >= 0)) selectCand(Math.max(0, wi));
+    else if (candidates.length) { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'click a hex to see its record · shift-click hexes to study them'; }
+    else { $('tsChart').hidden = true; renderConf(null); $('tsReadout').textContent = 'no cells with 3+ time windows — try a larger cell size or a wider time window'; }
   } catch (e) { $('tsStatus').textContent = 'error'; AICESAT.showError(e); }
   $('tsFind').disabled = false;
 }
+function renderChgLegend() {
+  const el = $('chgLegend'); el.hidden = !LEVEL || !candidates.length; if (el.hidden) return;
+  const low = candidates.filter(c => c.level === 'low').length;
+  el.innerHTML = `<span>surface fell</span><i class="chg-ramp"></i><span>rose</span><b>±${(CHANGE_LIM / 100).toFixed(1)} m/yr</b>` +
+    `<span class="small">${candidates.length - low} cells · ${low} low-confidence in grey</span>`;
+}
+function toggleStudy(h) { if (STUDY.has(h)) STUDY.delete(h); else STUDY.add(h); STUDY_VER++; syncStudyBar(); render(); }
+function syncStudyBar() {
+  const n = STUDY.size; $('studyBar').hidden = LEVEL !== 'region' || !n;
+  $('studyMsg').textContent = `${n} cell${n === 1 ? '' : 's'} selected — study with ICESat-2 photons and Δh`;
+}
+async function startStudy() {
+  const cells = [...STUDY]; if (!cells.length) return;
+  $('studyGo').disabled = true; AICESAT.clearError();
+  try {
+    const d = await api.extract({polygon: AICESAT.timeline.hullOfCells(cells), question: `study: ${cells.length} cells of ${scene.question || sceneId}`,
+      with_glas: true, with_icessn: true, with_atl06: true, with_atl03: true, with_coreg: true, with_gedi: false, with_gpstruth: false});
+    location.hash = `#scene/${d.scene_id}?level=study&parent=${sceneId}`;
+  } catch (e) { AICESAT.showError(e); }
+  $('studyGo').disabled = false;
+}
+$('studyGo').onclick = startStudy;
+$('studyClear').onclick = () => { STUDY.clear(); STUDY_VER++; syncStudyBar(); render(); };
+function syncTabs() {
+  const study = LEVEL === 'study';
+  $('anaTabs').hidden = !study;
+  $('tspanel').hidden = study && ANA_TAB !== 'ts';
+  $('anaTabs').querySelectorAll('button[data-t]').forEach(b => b.classList.toggle('on', b.dataset.t === ANA_TAB));
+  updateStats();
+}
+$('anaTabs').querySelectorAll('button[data-t]').forEach(b => b.onclick = () => { ANA_TAB = b.dataset.t; syncTabs(); });
+$('toRegion').onclick = () => { const p = params.get('parent'); if (p) location.hash = '#scene/' + p + '?level=region'; };
 function renderCandList() { AICESAT.ts.renderCandList($('tsList'), candidates, candSel, selectCand); }
 function selectCand(i) { candSel = i; renderCandList(); drawChart(); renderConf(candidates[i]); render(); }
 function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
@@ -1016,13 +1079,19 @@ function candidateLayers() {
   // height (the GLAS-era surface: 40-70 m above today's ice on a thinning glacier), and perspective then shifted and
   // enlarged them against the grid. The plane height stays the fallback over a DEM hole.
   const onGround = (x, y, c) => drapedZ(surfaceHeightAt, x, y, c.center[2], GRAT_LIFT_M) * Z_EXAG;
-  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], onGround(xy[0], xy[1], c)]), sel: i === candSel}));
+  const TL = AICESAT.timeline;
+  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], onGround(xy[0], xy[1], c)]), sel: i === candSel, study: STUDY.has(c.h3), c}));
+  // Classic view: faint fills, emphasis by outline. Ladder levels: the fill IS the change map (trend colour, grey = low).
   const layers = [new deck.PolygonLayer({id: 'cands', data: rings, getPolygon: d => d.poly, filled: true, stroked: true, pickable: true,
-    getFillColor: d => d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24],   // faint fills only — no cyan blob on the selected hex; emphasis is the outline + leader marker
-    getLineColor: d => d.sel ? [150, 235, 255, 255] : [200, 214, 245, 180],
-    lineWidthUnits: 'pixels', getLineWidth: d => d.sel ? 3 : 1.8, lineWidthMinPixels: 1.5,
-    onClick: info => { if (info && info.index != null && info.index >= 0) selectCand(info.index); },
-    updateTriggers: {getFillColor: candSel, getLineColor: candSel, getLineWidth: candSel, getPolygon: Z_EXAG}})];
+    getFillColor: d => LEVEL ? TL.trendColor(d.c.trend_cm_yr, d.c.level, CHANGE_LIM) : (d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24]),
+    getLineColor: d => d.sel ? [150, 235, 255, 255] : d.study ? [255, 255, 255, 255] : LEVEL ? [20, 20, 26, 110] : [200, 214, 245, 180],
+    lineWidthUnits: 'pixels', getLineWidth: d => (d.sel || d.study) ? 3 : LEVEL ? 0.7 : 1.8, lineWidthMinPixels: 0.5,
+    onClick: (info, ev) => {
+      if (!info || info.index == null || info.index < 0) return;
+      if (LEVEL === 'region' && ev && ev.srcEvent && ev.srcEvent.shiftKey) toggleStudy(candidates[info.index].h3);
+      else selectCand(info.index);
+    },
+    updateTriggers: {getFillColor: [candSel, CHANGE_LIM, LEVEL], getLineColor: [candSel, STUDY_VER, LEVEL], getLineWidth: [candSel, STUDY_VER, LEVEL], getPolygon: Z_EXAG}})];
   // selected cell: a vertical marker rising from the surface + a floating label, so the current time-series cell is
   // unmistakable in the 3-D scene.
   const c = candidates[candSel];
@@ -1084,6 +1153,9 @@ this.open = async (id, query) => {
   params = new URLSearchParams(query || '');
   if (params.get('zexag')) { Z_EXAG = parseFloat(params.get('zexag')); }
   STREAM_BUDGET = parseInt(params.get('budget') || '0', 10) || 0;
+  LEVEL = params.get('level') || null;
+  root.classList.toggle('level-region', LEVEL === 'region'); root.classList.toggle('level-study', LEVEL === 'study');
+  ANA_TAB = 'ts'; STUDY.clear(); STUDY_VER++; imageryAuto = false; syncStudyBar(); syncTabs();
   if (id !== sceneId) {
     stopPoll(); stopStream(); clearLayerMemos();
     sceneId = id; scene = null; coreg = null; bounds = null; deckgl.setProps({layers: []});
