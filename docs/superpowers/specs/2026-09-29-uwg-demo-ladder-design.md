@@ -66,9 +66,19 @@ checkbox (moves into the Δh tab), "How the data got here" (moves under `?`).
    → per hex per mission `{passes, year_min, year_max, n_years}`. Rows are keyed at res 5; res 3/4 roll up to parents.
    Dates from `gdate` / granule names. Restricted to claimed cells.
 2. **Implicit build** = existing `extract` / `build_scene` with a polygon. No new build machinery.
-3. **Change map:** `candidates(doc, h3_res, ref_missions=all present)`. All missions as the reference gives 855–890 cells at res 8
-   on the Jakobshavn scene against 112 for GLAS-only. **Verify** that the story cell `8806f21187fffff` still reads −87 m
-   2005→2026 with the 2017–19 rebound under this reference before relying on it.
+3. **Change map:** `candidates(doc, h3_res, ref_missions=["ATL06"])`: a **single-era** reference plane. Measured on
+   the story cell `8806f21187fffff` (2026-09-29):
+   - The three missions see the **same surface slope** when fitted separately (GLAS 1.99°, IceBridge 2.55°, ATL06
+     1.97°).
+   - They sampled **different parts of the cell**: GLAS and IceBridge centroids sit ~330–400 m east of ATL06's.
+   - A plane fitted to **all missions jointly** therefore mistakes the 20-year thinning for an eastward slope (6.2°,
+     three times the real one). That distorts the series by tens of metres depending on where each year's tracks fell
+     (2026 −57 m instead of −87 m). **Rejected.**
+   - **GLAS-only** and **ATL06-only** references agree to about 1 m on that cell (−86.7 / −87.7 m 2005→2026, with the
+     2017–19 rebound).
+   - ATL06 gives 855 cells at res 8 against GLAS's 112, so it is the change map's reference.
+   - Unverified beyond this cell: where ATL06 crosses a hex as one narrow strip, the cross-track slope is poorly
+     constrained. The confidence gate does not test plane conditioning.
 4. **Confidence gate (science fix, required):** in `timeseries._confidence`, force `level = "low"` when the roughness
    score is 0 (within-window scatter ≥ 1.5 m) or `n_ref < 10`. Gate on the *quality of the evidence*, never on the size
    of the answer. Motivating case: `8806f200d3fffff` at res 8 / ref ATL06 reports −263 m/yr at "medium" (8 ref points,
@@ -118,3 +128,15 @@ at ~2 s per 1M) · the all-missions reference plane is unverified on the story c
 
 A single continuous globe→3-D canvas, viewport-driven loading, the EC2 box, merging to `main`, fixing the
 shared-granule re-index bug (issue only).
+
+## Known limitation and first post-demo step (2026-09-29, raised by Kevin)
+
+The fitted reference plane re-derives something several products measure directly. ILATM2 platelets carry
+`sn_slope`/`we_slope`, which we already carry into every scene. ATL06 segments carry `dh_fit_dx`/`dh_fit_dy`, which our
+index and lake do NOT carry (#19). The principled method projects each measurement to the cell centre with the slope
+measured in its own epoch, so no cross-epoch fit can confuse change with slope. First check on the story cell:
+IceBridge's measured slopes agree with every fitted plane east–west (+28…+37 m/km). North–south they say −30 m/km,
+where GLAS and ATL06 fits say −7…−10. The cause is unexplained (a steeper trunk during the 2010s, local 80 m
+platelets, or a sign convention). About 3 m of projected height rides on it, the size of the 2017–19 rebound. The demo
+keeps the single-era ATL06 plane; the per-measurement method, with this discrepancy as its first validation case,
+is the first job after it.
