@@ -1,8 +1,10 @@
-# UWG demo — recording script (2026-09-30)
+# UWG demo — script (2026-09-30)
 
-Everything below runs on the isolated store `data-uwg/` from the `demo/uwg-ladder` worktree.
-Honest framing to say once: *"The region was indexed last night and these two areas were fetched once, so the video
-isn't three minutes of downloading. Everything you see is computed live from those measurements by the same code."*
+App frozen at `demo/uwg-ladder` `4136554`, isolated store `data-uwg/`. Each beat is **DO** (what to click, what appears) and
+**SAY** (a spare draft of the narration; Kevin rewrites it). Every number below was read off the running app at freeze.
+
+Honest framing to say once: *"The region was indexed last night and this area was fetched once, so the video isn't
+minutes of downloading. Everything you see is computed live from those measurements by the same code."*
 
 ## Pronunciation
 
@@ -21,59 +23,85 @@ a `k` made further back in the throat, so a plain `k` is fine.
 
 ## Setup
 
-- Web UI: `AICESAT_PORT=8791 AICESAT_DATA_DIR=/Users/kebe6994/projects/hackathon/aicesat/data-uwg uv run scripts/serve.py`
-  (from `.claude/worktrees/uwg-ladder`), open `http://127.0.0.1:8791/`.
-- Claude Desktop: merge `deploy/claude-desktop-demo.json` into `claude_desktop_config.json`, restart Desktop.
-- Pre-warmed: hex `8506f213fffffff` (lower trunk, scene `f66beabec8`) and hex `8506f20bfffffff` (at the calving
-  front, scene `63b9c8c660`).
+- Web UI (from `.claude/worktrees/uwg-ladder`), **restart it** so the server matches the frozen code:
+  `AICESAT_PORT=8791 AICESAT_DATA_DIR=/Users/kebe6994/projects/hackathon/aicesat/data-uwg uv run scripts/serve.py`,
+  then open `http://127.0.0.1:8791/` and hard-reload.
+- Claude Desktop: `deploy/claude-desktop-demo.json` merged into `claude_desktop_config.json`; **restart Desktop** so its
+  server loads today's code. Not rehearsed since the UI changes: do one dry run of section 5 before recording.
+- Hold each view a few seconds longer than feels natural: easier to talk over than to rush.
 
-## 1. Coverage: "where has the surface been measured?" (globe)
+## Cells used (hex id · centre)
 
-- Open on West Greenland. Gold hexes = all three missions measured there: a 20-year record.
-- Toggle the strip: ICESat alone (143 passes, 2003–09), IceBridge alone (1,728 flight passes, 2009–19), ICESat-2
-  alone (800 passes, 2018–). Point out *when* each flew and *where*: that is the whole idea, place first.
-- Hover a hex: passes and years per mission. Zoom in: glaciers, fjords and bays are named (GeoNames).
-- Nothing was fetched to draw this: it is the index.
+| Where | Hex id | Centre | What it is |
+|---|---|---|---|
+| Globe, click 1 | `8306f2fffffffff` (res 3) | 69.10°N 49.49°W | West-central Greenland; zooms in |
+| Globe, click 2 | `8406f21ffffffff` (res 4) | 69.10°N 49.49°W | The Jakobshavn cluster; zooms in (same centre as click 1) |
+| Globe, click 3 | `8506f213fffffff` (res 5) | 69.20°N 49.15°W | Lower trunk of Jakobshavn Isbræ; opens its change map (scene `f66beabec8`) |
+| Change map | `8806f21187fffff` (res 8) | 69.1752°N 49.3276°W | Story cell: all three missions, 2004–2026 |
+| Change map | `8806f21153fffff` (res 8) | 69.2212°N 49.2212°W | Grey contrast cell: −12 m/yr the tool will not vouch for |
 
-## 2. Change: "what changed here?" (click the lower-trunk hex)
+The panels show centres, not ids: hover first, check the centre in the panel, then click.
 
-- The change map: every 530 m cell coloured by its trend; grey = the tool will not vouch for it.
-  233 cells, 204 reliable, 29 grey; median −2.0 m/yr; 48 cells with a record of 15 years or more.
-- Click cell **`8806f2129dfffff`** (69.144°N, 49.002°W). All three missions, 2004–2026:
-  ~86 m of thinning through 2016, a ~+18 m rebound 2016–2019 (IceBridge against itself), then ICESat-2 shows
-  thinning resume. The rebound matches the published slowdown (Khazendar et al. 2019, *Nature Geoscience*) — cite
-  it; the tool does not attribute cause.
-- Caveats to say out loud: no inter-mission bias correction, no GIA; the tool says so on every answer.
+## 1. The globe: where has the surface been measured?
 
-## 3. The geometry lesson (why the service matters)
+**DO** Open on the globe (most of the Earth, centred on Greenland). Tick **Hex grid**, then **Coverage shading**.
+**SAY** Every hex is a place. Shading is how many granules the three missions left there; nothing was fetched to draw
+this, it is the index. Three missions: ICESat 2003–2009, IceBridge 2009–2019, ICESat-2 2018 to now.
 
-- Cell **`8806f21187fffff`** (69.175°N, 49.328°W): the missions sampled different spots inside the cell. Their
-  sample centres are up to 448 m apart on ground sloping ~2.4°. Reported change 2004→2026: **−87.6 m**, medium
-  confidence (slope-removal error 0.39 m); IceBridge shows **+6.1 m** in 2017→19. Differencing the raw heights would
-  say **−105.1 m**; fitting one plane across all eras would say **−53.3 m**. Same data, three answers — the right
-  one takes the slope only from each year's own samples, so change between years is never read as slope.
-- Next step to mention: the products carry their own slopes (ATL06 `dh_fit_dx/dy`, IceBridge platelet slopes);
-  a service that uses them is exactly what an agent should not have to know about. (Not used yet: ATL06's are
-  not carried through the index, issue #19.)
+**DO** Hover the bright hex on Greenland's west coast: panel reads **69.10°N 49.49°W** (`8306f2fffffffff`), with
+GLAH06 / ILATM2 / ATL06 granule counts and *not fully indexed*. Click it.
+**SAY** This coast is where all three overlap, so a twenty-year record is possible. ("Not fully indexed": this big hex
+reaches past the area indexed for the demo.)
 
-## 4. Study (shift-click 2–3 red cells around `8806f21187fffff`, then Study)
+**DO** The view zooms to the Jakobshavn cluster. Optional: untick and re-tick missions in Controls to show each alone.
+Click the brightest hex in the middle: panel again **69.10°N 49.49°W** (`8406f21ffffffff`).
 
-- Builds that sub-area with ICESat-2 photons (ATL03) and co-registration; 3-D view at ~200 m cells.
-  Measured 30 Sep: 319,091 photons, 95 chunks / 130 MB cold from NASA (ATL03 is not pre-warmed) — clip the wait.
-  Toggle "ICESat-2 · land ice" off to let the photon tracks show.
-- **Do not show the Δh tab here.** It pairs GLAS shots with photons within 35 m and drops pairs > 50 m apart as
-  blunders; on a trunk that fell ~87 m that leaves 1 pair of 7. It was built for the cm-scale plate-motion story.
-- Needs commits 5438215 (serve.py guard: without it the ATL03 leg hangs forever) and e43aef5 (coreg `stride`).
+**DO** The view zooms to single hexes. Hover the hex **just east (right) of the "Jakobshavn Isbræ" label**: panel reads
+**69.20°N 49.15°W** (`8506f213fffffff`). Click it.
+**SAY** This is the lower trunk of Jakobshavn Isbræ, officially Sermeq Kujalleq.
+
+## 2. The change map: what changed here?
+
+**DO** The change map opens tilted over shaded terrain (~10 s for the cells). Point at the Legend.
+**SAY** Every 530 m cell is coloured by its elevation trend, red down, blue up, clipped at ±4.3 m/yr. Grey means the tool
+will not vouch for it: 233 cells, 204 coloured, 29 grey. The lines are the measurements themselves: ICESat footprints in
+gold, IceBridge in lavender, ICESat-2 in green.
+
+## 3. The story cell
+
+**DO** Hover cells to show the Time series panel previewing. Hover the cell at the **west edge of the cluster, on the
+gold ICESat track**: panel Centre **69.1752°N 49.3276°W** (`8806f21187fffff`). Click it to hold (black-and-white outline).
+**SAY** All three missions in one record, 2004 to 2026, 19 one-year windows. ICESat and IceBridge show the surface
+falling about 82 m to 2017. IceBridge against itself then shows it rising about 6 m to 2019, which matches the slowdown
+Khazendar et al. 2019 reported (the tool does not attribute cause). ICESat-2 then shows thinning resume, about 10 m since 2020. About 88 m in all, −4.2 m/yr.
+Confidence medium, 0.45: the breakdown says why, led by how well the slope could be removed (0.39 m).
+
+**SAY** (caveat, once) No inter-mission bias correction and no GIA yet; the panel says so under every record.
+
+## 4. A cell the tool will not vouch for
+
+**DO** Click the story cell again to release it. Hover the grey cell **about 7 km north-east**: Centre
+**69.2212°N 49.2212°W** (`8806f21153fffff`). Click to hold.
+**SAY** Taken at face value this cell says −12 m a year. But the chart has a 130 m cliff between IceBridge in 2019 and
+ICESat-2 in 2020: IceBridge flew over ground inside this cell that ICESat-2 never measured, so removing the slope
+between them is uncertain by 37 m. The tool greys it out rather than hand you a number it cannot defend.
+
+**DO** (optional) Hold the story cell again; in **Download**, click **Time series · CSV** (the other formats are marked
+planned).
 
 ## 5. Claude Desktop close
 
-Prompt (anchor the place — the published Jakobshavn coordinate is the calving front, where cells sit on the fjord
-walls and read ~0 change, a nice control but not the story):
+**DO** Prompt (anchor the place: the published Jakobshavn coordinate is the calving front, where cells sit on the fjord
+walls and read ~0 change):
 
 > *Has the ice on the lower trunk of Jakobshavn Isbræ, around 69.18°N 49.3°W, changed since ICESat? Where is the
 > record long enough to tell, and how sure can we be?*
 
-Expected: `survey_coverage` → `elevation_change` (204 reliable of 233; median −2.0 m/yr; the embed opens the change
-map) → `show_timeseries` on a cell (chart + where-it-is map + Open in 3D). Follow-up to ask:
-*"Why can't I just difference the heights?"* — `show_timeseries` returns `sample_geometry`, so Claude can answer
-with this cell's own numbers.
+Expected: `survey_coverage` (within 50 km: ICESat 143 days, IceBridge 65 flight days, ICESat-2 681 days) →
+`elevation_change` (204 reliable of 233; median −2.0 m/yr; the embed opens the change map) → `show_timeseries` on a
+cell (chart, where-it-is map, Open in 3D).
+
+**DO** Follow-up: *"Why can't I just difference the heights?"* On the story cell, `show_timeseries` returns
+`sample_geometry`: missions sampled spots up to 448 m apart on ground sloping ~2.4°. Differencing raw heights says
+**−105.1 m**, one plane across all years says **−53.3 m**, the reported change is **−87.6 m**: same data, three answers.
+The right one takes the slope only from each year's own samples, so change between years is never read as slope.
