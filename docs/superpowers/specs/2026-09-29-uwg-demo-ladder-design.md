@@ -79,10 +79,17 @@ checkbox (moves into the Δh tab), "How the data got here" (moves under `?`).
    - ATL06 gives 855 cells at res 8 against GLAS's 112, so it is the change map's reference.
    - Unverified beyond this cell: where ATL06 crosses a hex as one narrow strip, the cross-track slope is poorly
      constrained. The confidence gate does not test plane conditioning.
-4. **Confidence gate (science fix, required):** in `timeseries._confidence`, force `level = "low"` when the roughness
-   score is 0 (within-window scatter ≥ 1.5 m) or `n_ref < 10`. Gate on the *quality of the evidence*, never on the size
-   of the answer. Motivating case: `8806f200d3fffff` at res 8 / ref ATL06 reports −263 m/yr at "medium" (8 ref points,
-   708 m scatter). The test must fail with the gate removed.
+   - **Superseded (built 2026-09-30):** an ATL06-only plane still spans 2018–2026, so on a thinning cell it reads
+     ATL06's own change as slope. What shipped is a **fixed-effects plane**: one level per (window, mission) group
+     and a shared slope estimated *only* from the spread of samples within each group, so change between years can
+     never become slope. `ref_missions` now only choose which level reads 0. Story cell: −87.6 m 2004→2026 with
+     the 2017–19 rebound.
+4. **Confidence gate (as built):** `level = "low"` when the slope-removal error at any window's centroid,
+   `plane_err = σ·√(dᵀ(TᵀT)⁻¹d)`, exceeds **1.0 m** (`PLANE_ERR_GATE_M`, set from the error budget, not from any
+   cell's result). This replaces the first version, which gated on `roughness == 0 or n_ref < 10`: a proxy that
+   greyed well-constrained cells and passed poorly constrained ones. Gate on the *quality of the evidence*, never on
+   the size of the answer, and never so that a chosen cell survives. The tests fail with the gate removed.
+   Region result: 233 cells, 204 reliable, 29 low.
 
 ## MCP (Claude Desktop close)
 

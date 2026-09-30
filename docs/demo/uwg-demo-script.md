@@ -23,7 +23,7 @@ isn't three minutes of downloading. Everything you see is computed live from tho
 ## 2. Change: "what changed here?" (click the lower-trunk hex)
 
 - The change map: every 530 m cell coloured by its trend; grey = the tool will not vouch for it.
-  232 cells, 180 reliable, 52 grey.
+  233 cells, 204 reliable, 29 grey; median −2.0 m/yr; 48 cells with a record of 15 years or more.
 - Click cell **`8806f2129dfffff`** (69.144°N, 49.002°W). All three missions, 2004–2026:
   ~86 m of thinning through 2016, a ~+18 m rebound 2016–2019 (IceBridge against itself), then ICESat-2 shows
   thinning resume. The rebound matches the published slowdown (Khazendar et al. 2019, *Nature Geoscience*) — cite
@@ -32,15 +32,16 @@ isn't three minutes of downloading. Everything you see is computed live from tho
 
 ## 3. The geometry lesson (why the service matters)
 
-- Cell **`8806f21185fffff`** (69.184°N, 49.324°W): the missions sampled different spots inside the cell on sloping
-  ground. Reported change 2004→2026: **−76.6 m**. Differencing the raw heights would say **−96 m**; fitting one
-  plane across all eras would say **−53 m**. Same data, three answers — the right one needs the sample geometry.
-- The former demo cell `8806f21187fffff` is now *grey*: its IceBridge samples sit ~330 m outside where ICESat-2
-  constrains the surface slope, so the slope removal is uncertain by 1.2 m. The tool says why.
+- Cell **`8806f21187fffff`** (69.175°N, 49.328°W): the missions sampled different spots inside the cell. Their
+  sample centres are up to 448 m apart on ground sloping ~2.4°. Reported change 2004→2026: **−87.6 m**, medium
+  confidence (slope-removal error 0.39 m); IceBridge shows **+6.1 m** in 2017→19. Differencing the raw heights would
+  say **−105.1 m**; fitting one plane across all eras would say **−53.3 m**. Same data, three answers — the right
+  one takes the slope only from each year's own samples, so change between years is never read as slope.
 - Next step to mention: the products carry their own slopes (ATL06 `dh_fit_dx/dy`, IceBridge platelet slopes);
-  a service that uses them is exactly what an agent should not have to know about.
+  a service that uses them is exactly what an agent should not have to know about. (Not used yet: ATL06's are
+  not carried through the index, issue #19.)
 
-## 4. Study (shift-click 2–3 red cells around `8806f21185fffff`, then Study)
+## 4. Study (shift-click 2–3 red cells around `8806f21187fffff`, then Study)
 
 - Builds that sub-area with ICESat-2 photons (ATL03) and co-registration; 3-D view; the Δh tab.
 
@@ -52,7 +53,7 @@ walls and read ~0 change, a nice control but not the story):
 > *Has the ice on the lower trunk of Jakobshavn Isbræ, around 69.18°N 49.3°W, changed since ICESat? Where is the
 > record long enough to tell, and how sure can we be?*
 
-Expected: `survey_coverage` → `elevation_change` (180 reliable of 232; median −1.66 m/yr; the embed opens the change
+Expected: `survey_coverage` → `elevation_change` (204 reliable of 233; median −2.0 m/yr; the embed opens the change
 map) → `show_timeseries` on a cell (chart + where-it-is map + Open in 3D). Follow-up to ask:
 *"Why can't I just difference the heights?"* — `show_timeseries` returns `sample_geometry`, so Claude can answer
 with this cell's own numbers.
