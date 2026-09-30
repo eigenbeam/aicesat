@@ -1,0 +1,14 @@
+{
+  "_comment": "UWG demo: a local stdio server on the ISOLATED demo store. Merge into ~/Library/Application Support/Claude/claude_desktop_config.json and restart Claude Desktop. The --directory is the demo worktree (branch demo/uwg-ladder). AICESAT_PORT 8792 keeps it off Kevin's 8765 and the test server's 8791; Open in 3D opens that port in the browser.",
+  "mcpServers": {
+    "aicesat-demo": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["--directory", "/Users/kebe6994/projects/hackathon/aicesat/.claude/worktrees/uwg-ladder", "run", "aicesat-server"],
+      "env": {
+        "AICESAT_DATA_DIR": "/Users/kebe6994/projects/hackathon/aicesat/data-uwg",
+        "AICESAT_PORT": "8792",
+        "AICESAT_EDL_FILE": "/Users/kebe6994/.edl/token.prod"
+      }
+    }
+  }
+}
