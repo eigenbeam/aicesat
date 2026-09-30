@@ -106,10 +106,118 @@ def _load_all(doc: dict, common_epoch: float) -> list[dict]:
         if note:
             log.warning("%s not fully plate-motion propagated (observed positions kept): %s", mission, note)
         x, y = scene_mod.to_local(frame, lon, lat)
+        # Surface slopes the PRODUCT measured, per point (ILATM2 platelet plane fits: dz/dnorth, dz/deast), when the
+        # series carries them -- sample_geometry sets them beside the slopes our own fits imply.
+        sn, we = arrays.get("sn_slope"), arrays.get("we_slope")
+        same = sn is not None and we is not None and len(sn) == len(h) and len(we) == len(h)
         recs.append({"mission": mission, "lat": np.asarray(lat, "f8"), "lon": np.asarray(lon, "f8"),
                      "x": np.asarray(x, "f8"), "y": np.asarray(y, "f8"), "h": np.asarray(h, "f8"), "yr": np.asarray(yr, "f8"),
+                     "sn": np.asarray(sn, "f8") if same else None, "we": np.asarray(we, "f8") if same else None,
                      "propagated": note is None, "frame_note": note})
     return recs
+
+
+# The product fields a measured slope comes from, per mission (GLAH06 carries none; ATL06's dh_fit_dx/dy are not yet
+# carried by our index -- issue #19).
+SLOPE_SOURCE = {"ICESSN": "ILATM2 platelet plane fits (sn_slope, we_slope)", "ATL06": "ATL06 dh_fit_dx / dh_fit_dy"}
+_MIN_SPREAD_M = 25.0   # a mission's points must spread at least this far across their narrowest direction to imply a slope
+
+
+def _plane(x, y, h):
+    xc, yc = float(x.mean()), float(y.mean())
+    coef, *_ = np.linalg.lstsq(np.column_stack([np.ones(x.size), x - xc, y - yc]), h, rcond=None)
+    return coef, xc, yc
+
+
+def _slope_row(gx: float, gy: float) -> dict:
+    return {"dh_dx_m_per_km": round(gx * 1000, 1), "dh_dy_m_per_km": round(gy * 1000, 1),
+            "slope_deg": round(float(np.degrees(np.arctan(np.hypot(gx, gy)))), 2)}
+
+
+def sample_geometry(doc: dict, h3_cell: str, reported_series: list, delta_t: float = 1.0,
+                    common_epoch: float = 2005.0) -> dict:
+    """Why a cell's series needs its sample geometry, in numbers.
+
+    The missions sample different spots inside a cell, on sloping ground. This says where each one sampled (centroid
+    offsets from the cell's sample centroid), what slope its own points imply, what slope the product itself measured
+    where it carries one, and what the first-to-last change would read two naive ways -- differencing raw heights
+    (ignoring positions), and removing one plane fitted across all eras (which mistakes change for slope) -- beside
+    the change reported with a single-era reference plane."""
+    recs = _load_all(doc, common_epoch)
+    res, target = h3.get_resolution(h3_cell), h3.str_to_int(h3_cell)
+    parts = [(r, m) for r in recs for m in [_cells_of(r["lat"], r["lon"], res) == target] if m.any()]
+    if not parts:
+        raise ValueError(f"no points in cell {h3_cell}")
+    t0 = min(float(r["yr"].min()) for r in recs if r["yr"].size)
+    frame = doc["frame"]
+    E = np.asarray(frame.get("east_xy") or [1.0, 0.0], "f8"); N = np.asarray(frame.get("north_xy") or [0.0, 1.0], "f8")
+    X = np.concatenate([r["x"][m] for r, m in parts]); Y = np.concatenate([r["y"][m] for r, m in parts])
+    H = np.concatenate([r["h"][m] for r, m in parts]); YR = np.concatenate([r["yr"][m] for r, m in parts])
+    cx, cy = float(X.mean()), float(Y.mean())
+
+    missions, measured, centroids = {}, {}, {}
+    for r, m in parts:
+        x, y, hh = r["x"][m], r["y"][m], r["h"][m]
+        # The slope a mission's points imply, from ONE time window: fitted across its own epochs, the change between
+        # them becomes slope wherever its tracks moved (GLAS 2004-09 read 13 deg on a cell ICESat-2 measured at 2.9).
+        # And only from points spread across the cell both ways -- one track cannot say how the ground slopes across
+        # it. None says "not measurable from this mission's samples here".
+        fitted = None
+        wy = np.floor((r["yr"][m] - t0) / delta_t).astype(int)
+        for w in sorted(np.unique(wy), key=lambda w: -int((wy == w).sum())):
+            k = wy == w
+            if int(k.sum()) < _MIN_REF_PTS:
+                break
+            xw, yw = x[k], y[k]
+            minor = float(np.sqrt(max(np.linalg.eigvalsh(np.cov(np.c_[xw - xw.mean(), yw - yw.mean()].T))[0], 0.0)))
+            if minor >= _MIN_SPREAD_M:
+                coef, _, _ = _plane(xw, yw, hh[k])
+                fitted = {**_slope_row(float(coef[1]), float(coef[2])), "window_year": int(r["yr"][m][k].mean()),
+                          "n": int(k.sum())}
+                break
+        centroids[r["mission"]] = (float(x.mean()), float(y.mean()))
+        missions[r["mission"]] = {"n": int(x.size), "centroid_offset_m": [round(float(x.mean()) - cx), round(float(y.mean()) - cy)],
+                                  "fitted_slope": fitted}
+        if r.get("sn") is not None and r.get("we") is not None:
+            s_, w_ = r["sn"][m], r["we"][m]
+            ok = np.isfinite(s_) & np.isfinite(w_)
+            if ok.any():
+                gs, gw = float(np.median(s_[ok])), float(np.median(w_[ok]))   # dz/dnorth, dz/deast -> local x/y
+                measured[r["mission"]] = {"n": int(ok.sum()), **_slope_row(gw * E[0] + gs * N[0], gw * E[1] + gs * N[1]),
+                                          "source": SLOPE_SOURCE.get(r["mission"], "product slope fields")}
+
+    tb = np.floor((YR - t0) / delta_t).astype(int)
+
+    def change(v):
+        med = [float(np.median(v[tb == w])) for w in np.unique(tb) if int((tb == w).sum()) >= _MIN_BIN_PTS]
+        return round(med[-1] - med[0], 1) if len(med) >= 2 else None
+
+    coef, xc, yc = _plane(X, Y, H)
+    joint = change(H - (coef[0] + coef[1] * (X - xc) + coef[2] * (Y - yc)))
+    naive = change(H)
+    reported = round(reported_series[-1]["value_m"] - reported_series[0]["value_m"], 1)
+    pts = list(centroids.values())
+    sep = max((float(np.hypot(a[0] - b[0], a[1] - b[1])) for a in pts for b in pts), default=0.0)
+    biggest = max(parts, key=lambda p: int(p[1].sum()))[0]["mission"]
+    slope = (missions[biggest]["fitted_slope"] or {}).get("slope_deg")
+    ground = f" on ground sloping about {slope:.1f} deg" if slope is not None else ""
+    fmt = lambda v: "n/a" if v is None else f"{v:+.1f} m"
+    explanation = (f"The missions sampled different parts of this cell -- their sample centres are up to {sep:.0f} m "
+                   f"apart{ground}. Differencing the raw heights would read {fmt(naive)}, and one plane fitted across "
+                   f"all eras {fmt(joint)}; removing the slope with a plane fitted to one era gives {fmt(reported)}.")
+    return {"missions": missions, "measured_slope": measured,
+            "change_m": {"reported": reported, "ignoring_positions": naive, "one_plane_across_all_eras": joint},
+            "explanation": explanation}
+
+
+def _cells_of(lat, lon, res) -> np.ndarray:
+    """H3 cell (u8) of every point. Vectorized (matches index_atl06): it re-runs on every h3_res/delta_t sweep."""
+    try:
+        from h3ronpy.vector import coordinates_to_cells
+        return np.asarray(coordinates_to_cells(np.asarray(lat, "f8"), np.asarray(lon, "f8"), int(res)), dtype="u8")
+    except Exception:
+        return np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), int(res))) for la, lo in zip(lat, lon)],
+                        dtype="u8")
 
 
 def _confidence(roughness: float, n_bins: int, span: float, n_ref: int, plane_err_max: float = 0.0) -> tuple:
@@ -196,11 +304,7 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
 
     t0 = float(YR.min())
     tbin = np.floor((YR - t0) / delta_t).astype("i4")
-    try:   # vectorized cell assignment (matches index_atl06); re-runs on every h3_res/delta_t sweep, so it must be fast
-        from h3ronpy.vector import coordinates_to_cells
-        cells = np.asarray(coordinates_to_cells(LAT.astype("f8"), LON.astype("f8"), int(h3_res)), dtype="u8")
-    except Exception:
-        cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), int(h3_res))) for la, lo in zip(LAT, LON)], dtype="u8")
+    cells = _cells_of(LAT, LON, h3_res)
 
     order = np.argsort(cells, kind="mergesort")
     cs = cells[order]

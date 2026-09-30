@@ -134,7 +134,11 @@ shared-granule re-index bug (issue only).
 The fitted reference plane re-derives something several products measure directly. ILATM2 platelets carry
 `sn_slope`/`we_slope`, which we already carry into every scene. ATL06 segments carry `dh_fit_dx`/`dh_fit_dy`, which our
 index and lake do NOT carry (#19). The principled method projects each measurement to the cell centre with the slope
-measured in its own epoch, so no cross-epoch fit can confuse change with slope. First check on the story cell:
+measured in its own epoch, so no cross-epoch fit can confuse change with slope. (Update, Task 3b: fitting each
+mission's points from ONE time window, the story cell's slopes agree: GLAS 2.49°, IceBridge 2.30°, ATL06 2.36°,
+IceBridge-measured 2.35°. The fitted north–south components are −14, −16 and −9 m/km. The earlier −24 m/km came
+from fitting IceBridge across its own epochs. The measured platelet north–south slope, −30 m/km, still stands apart.)
+First check on the story cell, with all-epoch fits:
 IceBridge's measured slopes agree with every fitted plane east–west (+28…+37 m/km). North–south they say −30 m/km,
 where GLAS and ATL06 fits say −7…−10. The cause is unexplained (a steeper trunk during the 2010s, local 80 m
 platelets, or a sign convention). About 3 m of projected height rides on it, the size of the 2017–19 rebound. The demo

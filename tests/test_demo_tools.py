@@ -98,6 +98,19 @@ def test_show_timeseries_defaults_to_the_change_levels_search(monkeypatch):
     assert seen["h3_res"] == 8 and seen["ref_missions"] == ["ATL06"] and out["res"] == 8
 
 
+def test_show_timeseries_carries_the_sample_geometry(monkeypatch):
+    monkeypatch.setattr(api, "timeseries_cell", lambda sid, h, **kw: {"scene_id": sid, "h3": h})
+    monkeypatch.setattr(api, "cell_geometry", lambda sid, h, *a, **kw: {"explanation": "apart"})
+    assert server.show_timeseries("s1", "a")["sample_geometry"] == {"explanation": "apart"}
+
+
+def test_a_geometry_failure_never_costs_the_chart(monkeypatch):
+    monkeypatch.setattr(api, "timeseries_cell", lambda sid, h, **kw: {"scene_id": sid, "h3": h})
+    monkeypatch.setattr(api, "cell_geometry", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = server.show_timeseries("s1", "a")
+    assert out["view"] == "ts" and "boom" in out["sample_geometry"]["error"]
+
+
 def test_survey_coverage_summarises_per_mission_and_opens_the_globe(monkeypatch):
     monkeypatch.setattr(survey, "area_summary", lambda bbox: {k: {"passes": 3, "year_min": 2004, "year_max": 2026,
                                                                   "n_years": 3, "hexes": 1} for k in survey.MISSIONS})

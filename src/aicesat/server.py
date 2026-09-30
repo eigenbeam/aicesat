@@ -533,12 +533,21 @@ def show_timeseries(scene_id: str, h3: str, h3_res: int = 8, delta_t: float = 1.
     search that produced it. Returns each one-year window's median height relative to the cell's ICESat-2 reference
     plane, with its MAD error bar, its slope-removal error (plane_err_m) and the missions that contributed, plus the
     confidence breakdown and the least-squares trend in cm/yr. The trend is uncorrected for inter-mission bias and
-    GIA -- relay that with it."""
+    GIA -- relay that with it.
+
+    `sample_geometry` says where each mission sampled the cell, the slopes the data implies and (where the product
+    carries one) measures, and what the change would read if those positions were ignored -- differencing raw heights,
+    or one plane fitted across all eras. Use it to explain why the answer needs the geometry."""
     ref = ref_missions or api.CHANGE_REF
     out = _anticipated(api.timeseries_cell, scene_id, h3, h3_res=h3_res, delta_t=delta_t,
                        ref_missions=ref, min_bins=min_bins)
+    try:   # an explanation: its failure must never cost the chart
+        geometry = api.cell_geometry(scene_id, h3, h3_res, delta_t, ref)
+    except Exception as e:
+        log.warning("sample geometry for %s/%s failed: %s", scene_id, h3, e)
+        geometry = {"error": f"{type(e).__name__}: {e}"}
     return {**out, "view": "ts", "select": h3, "res": h3_res, "url": ts_url(scene_id, h3),
-            "open_url": scene_level_url(scene_id, "region")}
+            "open_url": scene_level_url(scene_id, "region"), "sample_geometry": geometry}
 
 
 # ----------------------------------------------------------------------------- app-visible tools (MCP Apps data plane)

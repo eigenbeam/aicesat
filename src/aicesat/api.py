@@ -939,6 +939,16 @@ def region_scene(hx: str) -> dict:
         return {**_region_jobs[hx], "status": "loading"}
 
 
+def cell_geometry(scene_id: str, h3: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None) -> dict:
+    """timeseries.sample_geometry for one cell of a built scene, beside the series reported for it."""
+    from . import timeseries
+    doc = cache.load_scene(scene_id)
+    if doc is None:
+        raise KeyError(scene_id)
+    cell = timeseries_cell(scene_id, h3, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions or CHANGE_REF)
+    return timeseries.sample_geometry(doc, h3, cell["series"], delta_t=delta_t)
+
+
 def _change_row(c: dict) -> dict:
     s = c["series"]
     return {"h3": c["h3"], "lat": round(c["lat"], 4), "lon": round(c["lon"], 4),
