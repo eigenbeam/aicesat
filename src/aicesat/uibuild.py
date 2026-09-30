@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 UI, VENDOR, DIST = ROOT / "ui", ROOT / "widget" / "vendor", ROOT / "widget" / "dist" / "aicesat.html"
-SOURCES = ["util.js", "geo.js", "adapter.js", "map.js", "explore.js", "lake.js",
+SOURCES = ["util.js", "geo.js", "geonames_data.js", "adapter.js", "map.js", "explore.js", "lake.js",
            "tspanel.js", "timeline.js", "survey.js", "scene.js", "ts.js", "app.js"]  # order matters: scene.js aliases from geo.js and tspanel.js
 
 

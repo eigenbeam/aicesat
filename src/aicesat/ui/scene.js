@@ -629,6 +629,22 @@ function markerLayers() {
 }
 
 
+// Physical place names inside the scene (geonames_data.js), set on the terrain so a fjord or glacier is named where
+// it is. Filtered to the DEM extent, so a name only appears over ground the scene actually shows.
+function namesLayers() {
+  const G = AICESAT.GEONAMES, fr = scene && scene.frame, b = surfaceExtent();
+  if (!G || !fr || !b) return [];
+  const {loMin, loMax, laMin, laMax} = surfaceLonLatBounds(fr, b);
+  const data = [];
+  for (const r of G) {
+    if (r[1] < laMin || r[1] > laMax || r[2] < loMin || r[2] > loMax) continue;
+    const [x, y] = lonLatToLocal(fr, r[2], r[1]);
+    if (x < b.minx || x > b.maxx || y < b.miny || y > b.maxy) continue;
+    data.push({r, p: [x, y, drapedZ(surfaceHeightAt, x, y, b.minz, GRAT_LIFT_M * 4) * Z_EXAG]});
+  }
+  return data.length ? [AICESAT.nameLabels('names', data, d => d.p, {updateTriggers: {getPosition: Z_EXAG}})] : [];
+}
+
 // ---------------------------------------------------------------- render / view
 function render() {
   if (!scene) return;
@@ -636,7 +652,7 @@ function render() {
   // on, and the line beats the hex cell under it. With the graticule below the hex grid (as it first was) a line
   // could not be hovered at all while the grid was on.
   deckgl.setProps({layers: [...surfaceLayers(), ...hexGridLayers(), ...graticuleLayers(), ...cloudLayers(),
-                            ...candidateLayers(), ...axesLayers(), ...markerLayers()]});
+                            ...candidateLayers(), ...axesLayers(), ...markerLayers(), ...namesLayers()]});
 }
 
 function fitView() {
@@ -744,7 +760,7 @@ function updateLabels() {
     else if (st === 'pending' || (!sceneReady && st !== 'unavailable')) { imgc.disabled = true; if (ist) ist.textContent = 'fetching imagery…'; }
     else { imgc.disabled = true; if (ist) ist.textContent = 'imagery unavailable for this area'; }
   }
-  $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '');
+  $('attrib').textContent = (scene.imagery ? `Imagery: ${scene.imagery.attribution}` : '') + (scene.surface && scene.surface.attribution ? ` · DEM: ${scene.surface.attribution}` : '') + ' · Place names: GeoNames (CC BY 4.0)';
   strip.update(MISSION_ORDER.filter(m => scene.series[m]), visible);
   if (LEVEL && scene.imagery && !imageryAuto) { imageryAuto = true; SHOW_IMAGERY = true; $('imagery').checked = true; render(); }
 }

@@ -15,11 +15,14 @@ AICESAT.MapView = class {
     this.badge = AICESAT.util.el('div', {class: 'mode-badge'}); this.badge.hidden = true; container.appendChild(this.badge);   // on-map "you are in X mode" indicator
     this.onSelect = () => {}; this.onOpenScene = () => {}; this.onCellsSelected = () => {};
     this.coverage = null; this._covKey = 0; this.onHexClick = () => {};
+    this.namesEl = AICESAT.util.el('div', {class: 'name-overlay'}); container.appendChild(this.namesEl);
     this.deck = new Deck({
       parent: container, views: new Globe({resolution: 12}),
       // The device is created asynchronously: layers set before it is ready never drew, so a view sat blank until the
       // first drag or scroll. Draw once it exists.
-      onLoad: () => this.render(),
+      onLoad: () => { this._covMemo = null; this._gridCache = null; this.render(); },
+      // Names follow the frame actually drawn (placed before layout they piled into the corner of a 300x150 canvas).
+      onAfterRender: () => this._namesAfterRender(),
       initialViewState: {...this.state.viewState, minZoom: 0, maxZoom: 12}, controller: {dragPan: true, dragRotate: true, doubleClickZoom: false}, layers: [],
       onViewStateChange: ({viewState, interactionState}) => {
         this.state.viewState = viewState;
@@ -92,9 +95,10 @@ AICESAT.MapView = class {
   // ---- demo ladder level 1: per-hex mission coverage (survey.js feeds it from /api/coverage_hexes)
   setCoverage(byRes, visible) {
     this.coverage = {byRes, visible}; this._covKey++; this.render();
-    // Observed: the first frame after the coverage arrives is sometimes not drawn until the next interaction (the
-    // layer is in deck's props; any later redraw shows it). Force one on the next frame.
-    requestAnimationFrame(() => this.deck.redraw(true));
+    // A coverage layer instance created before deck's device was ready never draws, and the memo would hand that
+    // same dead instance back on every render (a strip toggle, which rebuilds it, made the hexes appear). So rebuild
+    // it -- not just redraw -- a few times while the page settles. Idempotent.
+    [60, 400, 1200].forEach(t => setTimeout(() => { this._covMemo = null; this.render(); }, t));
   }
   coverageRes() { const z = this.state.viewState.zoom; return z < 3 ? 3 : z < 5.8 ? 4 : 5; }
   coverageLayers(H3HexagonLayer) {
@@ -114,6 +118,36 @@ AICESAT.MapView = class {
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
     this._covMemo = {key, layers};
     return layers;
+  }
+  // Physical place names (geonames_data.js, filtered by feature code -- never political or populated places), in
+  // zoom tiers: the ice sheet from afar; glaciers, fjords, bays and straits once a region fills the view; islands and
+  // peaks at a few tens of km. Overlaps are resolved by rank (the collision filter keeps the higher-ranked name).
+  // Drawn as an HTML overlay, not a deck TextLayer: TextLayer does not render on this GlobeView (verified: 56 labels
+  // in props, none on screen, with or without depth test or SDF). Positions come from the viewport's own projection,
+  // so they track the globe; names on the far side of the sphere are skipped.
+  _namesAfterRender() {
+    let vp = null;
+    try { vp = this.deck.getViewports()[0]; } catch (e) { return; }
+    if (!vp) return;
+    const key = [vp.width, vp.height, vp.longitude, vp.latitude, vp.zoom].map(v => typeof v === 'number' ? v.toFixed(4) : v).join();
+    if (key !== this._namesKey) { this._namesKey = key; this.placeNames(); }
+  }
+  placeNames() {
+    const G = AICESAT.GEONAMES, el = this.namesEl; if (!G || !el) return;
+    let vp = null;
+    try { vp = this.deck.getViewports()[0]; } catch (e) { vp = null; }   // asserts until deck has initialised
+    if (!vp) return;
+    const vs = this.state.viewState, z = vs.zoom, tier = z < 5 ? 0 : z < 7 ? 1 : 2, D = Math.PI / 180;
+    const show = r => r[4] === 0 ? (tier >= 1 || /Greenland/.test(r[0])) : r[4] <= 3 ? tier >= 1 : tier >= 2;
+    const facing = r => Math.sin(vs.latitude * D) * Math.sin(r[1] * D) +
+                        Math.cos(vs.latitude * D) * Math.cos(r[1] * D) * Math.cos((r[2] - vs.longitude) * D) > 0.2;
+    const pos = new Map();
+    const rows = AICESAT.declutter(G.filter(r => show(r) && facing(r)), r => {
+      const p = vp.project([r[2], r[1]]); pos.set(r, p); return p; }, vp.width, vp.height, this.keepOut ? this.keepOut() : []);
+    const LAND = new Set(['ISL', 'PK', 'MT', 'MTS', 'NTK']);
+    const esc = s => String(s).replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c]));
+    el.innerHTML = rows.map(r => { const p = pos.get(r);
+      return `<span class="pn ${LAND.has(r[3]) ? 'land' : 'water'} r${r[4]}" style="left:${p[0].toFixed(1)}px;top:${p[1].toFixed(1)}px">${esc(r[0])}</span>`; }).join('');
   }
   coverageTip(h) {
     const L = {GLAS: 'ICESat', ICESSN: 'IceBridge', ATL06: 'ICESat-2'}, res = h3.getResolution(h.h3);

@@ -23,4 +23,12 @@ assert.strictEqual(T.hullOfCells([c]).length, 6);
 const ring = h3.gridDisk(c, 1), hull = T.hullOfCells(ring);
 const lons = ring.flatMap(x => h3.cellToBoundary(x).map(p => p[1]));
 assert.ok(Math.min(...hull.map(p => p[0])) <= Math.min(...lons) + 1e-6 && Math.max(...hull.map(p => p[0])) >= Math.max(...lons) - 1e-6);
+// declutter keeps the higher-ranked of two overlapping names, drops off-screen ones, keeps separated ones
+const rows = [['Small bay', 0, 0, 'BAY', 3], ['Big glacier', 0, 0, 'GLCR', 1], ['Far island', 0, 0, 'ISL', 4], ['Gone', 0, 0, 'PK', 4]];
+const at = {'Small bay': [100, 100], 'Big glacier': [104, 102], 'Far island': [400, 300], 'Gone': null};
+const kept = AICESAT.declutter(rows, r => at[r[0]], 800, 600).map(r => r[0]);
+assert.deepStrictEqual(kept, ['Big glacier', 'Far island']);
+// keep-out rectangles (the page title, the timeline strip) are treated as already occupied
+const kept2 = AICESAT.declutter(rows, r => at[r[0]], 800, 600, [[380, 280, 420, 320]]).map(r => r[0]);
+assert.deepStrictEqual(kept2, ['Big glacier']);
 console.log('timeline ok');

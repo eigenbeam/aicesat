@@ -50,4 +50,32 @@ window.AICESAT = window.AICESAT || {};
     }};
   }
   AICESAT.timeline = {mount, place, trendColor, trendLimit, hullOfCells, SPANS, T0, T1};
+
+  // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
+  // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.
+  const LAND = new Set(['ISL', 'PK', 'MT', 'MTS', 'NTK']);
+  AICESAT.nameLabels = (id, data, getPosition, extra = {}) => new deck.TextLayer({id, data, getPosition,
+    getText: r => (r.r || r)[0],
+    getColor: d => LAND.has((d.r || d)[3]) ? [232, 208, 165, 240] : [165, 208, 255, 240],
+    getSize: d => (d.r || d)[4] === 0 ? 15 : (d.r || d)[4] <= 3 ? 12.5 : 11, sizeUnits: 'pixels',
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontWeight: 600, characterSet: 'auto', billboard: true,
+    background: true, getBackgroundColor: [10, 14, 22, 175], backgroundPadding: [4, 2],   // the style scene markers use
+    parameters: {depthTest: false},   // labels sit at the surface: with depth on they z-fight the terrain and vanish
+    ...extra});
+
+  // Greedy screen-space decluttering: keep names in rank order whose label boxes do not overlap one already kept.
+  // `project` maps a row to [x, y] pixels (or null when off screen). Pure; tested in tests/test_timeline.js.
+  // `occupied` holds keep-out rectangles [x0, y0, x1, y1] (the page title, the timeline strip). Boxes are roomier than
+  // the text, so the names read as sparse labels rather than a wall of text over the data.
+  AICESAT.declutter = (rows, project, w, h, occupied = []) => {
+    const kept = [], boxes = occupied.slice();
+    for (const r of rows.slice().sort((a, b) => a[4] - b[4])) {
+      const p = project(r); if (!p) continue;
+      const [x, y] = p, hw = (r[0].length * 7.5 + 28) / 2, hh = 15;
+      if (x < 0 || y < 0 || x > w || y > h) continue;
+      if (boxes.some(b => x - hw < b[2] && x + hw > b[0] && y - hh < b[3] && y + hh > b[1])) continue;
+      boxes.push([x - hw, y - hh, x + hw, y + hh]); kept.push(r);
+    }
+    return kept;
+  };
 })();
