@@ -103,7 +103,18 @@ AICESAT.MapView = class {
   }
   coverageRes() { const z = this.state.viewState.zoom; return z < 3 ? 3 : z < 5.8 ? 4 : 5; }
   coverageLayers(H3HexagonLayer) {
-    const res = this.coverageRes(), key = res + '|' + this._covKey;
+    // The grid under the coverage, at the coverage's own resolution so the empty hexes and the shaded ones line up.
+    // Res 3: the whole Earth (41,162 cells), built once and kept. Finer (288k / 2M cells) cannot be drawn whole, so it
+    // is the patch around the view: gridDisk from the centre child of the view's res-2-coarser ancestor, rebuilt only
+    // when that ancestor changes -- a pan within it reuses the patch, which is sized to cover the view from there.
+    const res = this.coverageRes(), vs = this.state.viewState;
+    let anchor = '', k = 0;
+    if (res > 3) {
+      try { anchor = h3.cellToParent(h3.latLngToCell(vs.latitude, vs.longitude, res), res - 2); } catch (e) { anchor = ''; }
+      const halfKm = Math.min(80, 70 / Math.pow(1.7, Math.max(0, vs.zoom))) * 111, stepKm = {4: 39, 5: 14.8}[res];
+      k = Math.min(45, Math.ceil(halfKm / stepKm) + 5);
+    }
+    const key = res + '|' + this._covKey + '|' + anchor + '|' + k;
     if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
     const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
     const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
@@ -112,14 +123,11 @@ AICESAT.MapView = class {
     const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
     const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
     const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
-    // The whole Earth's res-3 grid (41,162 cells), built once on first use and kept; drawn only at the overview, where
-    // the coverage is res 3 too -- zoomed in, the coverage hexes are finer and carry the structure themselves.
-    const grid = [];
-    if (res === 3) {
-      this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
-      grid.push(new H3HexagonLayer({id: 'earth-grid', data: this._earthGrid, getHexagon: d => d, highPrecision: 'auto',
-        filled: false, stroked: true, extruded: false, pickable: false, getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5}));
-    }
+    let cells = [];
+    if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
+    else if (anchor) { try { cells = h3.gridDisk(h3.cellToCenterChild(anchor, res), k); } catch (e) { cells = []; } }
+    const grid = cells.length ? [new H3HexagonLayer({id: 'earth-grid', data: cells, getHexagon: d => d, highPrecision: 'auto',
+      filled: false, stroked: true, extruded: false, pickable: false, getLineColor: [200, 215, 235, 38], lineWidthMinPixels: 0.5})] : [];
     const layers = [...grid, new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
