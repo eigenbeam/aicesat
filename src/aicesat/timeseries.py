@@ -327,17 +327,29 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
         if int(rmask.sum()) < _MIN_REF_PTS:
             return None
         gx, gy, gh, mic = X[gi], Y[gi], H[gi], misi[gi]
-        xc = float(gx[rmask].mean()); yc = float(gy[rmask].mean())
-        A = np.column_stack([np.ones(int(rmask.sum())), gx[rmask] - xc, gy[rmask] - yc])
+        # The surface slope, from WITHIN-window spatial spread only: a fixed-effects plane, one level per (time
+        # window, mission) group and one shared slope. Any single plane fitted across windows -- all missions, or even
+        # one mission's own years -- turns the change between them into slope wherever the passes moved, and its
+        # residual scatter then grows with the change (the gate read the answer: same geometry, 0 -> -3 m/yr went
+        # high -> gated). With a level per group, change cannot enter the slope or the error estimate.
+        xc, yc = float(gx.mean()), float(gy.mean())
+        dx, dy = gx - xc, gy - yc
+        _, inv = np.unique(bins_here.astype("i8") * 64 + mic.astype("i8"), return_inverse=True)
+        cnt = np.bincount(inv).astype("f8")
+        tx = dx - (np.bincount(inv, dx) / cnt)[inv]
+        ty = dy - (np.bincount(inv, dy) / cnt)[inv]
+        th = gh - (np.bincount(inv, gh) / cnt)[inv]
+        normal = np.array([[tx @ tx, tx @ ty], [tx @ ty, ty @ ty]])
         try:
-            coef, *_ = np.linalg.lstsq(A, gh[rmask], rcond=None)
-        except Exception:
-            return None
-        try:
-            ata_inv = np.linalg.inv(A.T @ A)                 # near-singular (one straight track) -> huge, as it should be
+            slope_inv = np.linalg.inv(normal)                # near-singular (every pass on one line) -> huge, as it should be
+            sb, sc = slope_inv @ np.array([tx @ th, ty @ th])
         except np.linalg.LinAlgError:
-            ata_inv = None
-        resid = gh - (coef[0] + coef[1] * (gx - xc) + coef[2] * (gy - yc))
+            slope_inv, sb, sc = None, 0.0, 0.0
+        within = th - sb * tx - sc * ty                      # residual inside each group: carries no change at all
+        resid = gh - (sb * dx + sc * dy)                     # slope removed, every window's change kept
+        level0 = float(np.median(resid[rmask]))              # the reference missions' level reads 0
+        resid = resid - level0
+        coef = (level0, sb, sc)
         # Blunder clip: distance from the point's OWN time window's median, scaled by the pooled within-window
         # scatter. Clipping about the cell-wide median would drop real change between windows (or a whole
         # inter-sensor offset) once it exceeds a few MADs of the scatter -- with a single-epoch reference that
@@ -348,8 +360,8 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
             dev[m] = resid[m] - np.median(resid[m])
         scale = float(1.4826 * np.median(np.abs(dev))) or 1e-6
         good = np.abs(dev) <= _BLUNDER_MAD * scale
-        ref_resid = resid[rmask & good]                      # reference-point residuals about the plane
-        plane_rms = float(1.4826 * np.median(np.abs(ref_resid - np.median(ref_resid)))) if ref_resid.size >= 3 else scale
+        wg = within[good]                                    # noise about the plane inside each group (no change in it)
+        plane_rms = float(1.4826 * np.median(np.abs(wg - np.median(wg)))) if wg.size >= 3 else scale
 
         series = []; rough_pool = []
         for bval in np.unique(bins_here):
@@ -358,10 +370,11 @@ def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=No
                 continue
             r = resid[m]; rmed = float(np.median(r))
             rough_pool.append(r - rmed)                      # within-window residuals -> pooled spatial roughness
-            # How wrong the slope removal can be WHERE THIS WINDOW SAMPLED: the plane's standard error at the window's
-            # sample centroid. Small inside the reference points' footprint, large when extrapolated off it.
-            pv = np.array([1.0, float(gx[m].mean()) - xc, float(gy[m].mean()) - yc])
-            perr = float(plane_rms * np.sqrt(max(float(pv @ ata_inv @ pv), 0.0))) if ata_inv is not None else float("inf")
+            # How wrong the slope removal can be WHERE THIS WINDOW SAMPLED: the slope's uncertainty projected on how far
+            # the window's samples sit from the cell's sample centre. Large only when windows are offset in a direction
+            # no window's own spread constrains (every pass on one line, and the passes moved across it).
+            pv = np.array([float(dx[m].mean()), float(dy[m].mean())])
+            perr = float(plane_rms * np.sqrt(max(float(pv @ slope_inv @ pv), 0.0))) if slope_inv is not None else float("inf")
             series.append({"year": round(float(YR[gi][m].mean()), 3), "value_m": round(rmed, 3),
                            "mad_m": round(float(np.median(np.abs(r - rmed))), 3), "n": int(m.sum()),
                            "plane_err_m": round(min(perr, 1e6), 3),

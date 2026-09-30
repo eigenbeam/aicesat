@@ -220,3 +220,44 @@ def test_a_reference_spread_across_the_cell_carries_a_small_plane_error(monkeypa
     c = _one_cell(monkeypatch, _track_recs(1.5e-3))          # ~100 m wide
     assert c["components"]["gated"] == []
     assert max(p["plane_err_m"] for p in c["series"]) < 0.5
+
+
+def _alternating_recs(rate_m_per_yr):
+    """ATL06 (the reference) over four yearly windows on ground rising 3 cm per metre eastward, thinning at `rate`.
+    Each year's pass pair lands on the OTHER side of the cell (centred 60 m west, then 60 m east, ...), +-40 m wide;
+    GLAS 2005 sits 100 m east. The truth for ATL06 is 0, rate, 2*rate, 3*rate relative to its first window."""
+    clat, clon = h3.cell_to_latlng(h3.latlng_to_cell(72.0, -45.0, 9))
+    cx, _ = scene_mod.to_local(FRAME, np.array([clon]), np.array([clat]))
+    k = 1 / (111320 * np.cos(np.radians(clat)))
+    rng = np.random.default_rng(5)
+    parts = {}
+    groups = [("GLAS", 2005.1, 100.0, 0.0)] + [("ATL06", 2019.5 + i, -60.0 if i % 2 == 0 else 60.0, 5.0 + rate_m_per_yr * i)
+                                              for i in range(4)]
+    for mission, yr, east, dh in groups:
+        lon = clon + (east + rng.uniform(-40, 40, 60)) * k
+        lat = clat + rng.uniform(-60, 60, 60) / 111320
+        x, y = scene_mod.to_local(FRAME, lon, lat)
+        h = 1000.0 + 0.03 * (x - cx[0]) + dh + rng.normal(0, 0.1, 60)
+        p = parts.setdefault(mission, {k2: [] for k2 in ("lat", "lon", "x", "y", "h", "yr")})
+        for k2, v in (("lat", lat), ("lon", lon), ("x", x), ("y", y), ("h", h), ("yr", np.full(60, yr))):
+            p[k2].append(v)
+    return [{"mission": mi, **{k2: np.concatenate(v) for k2, v in d.items()}} for mi, d in parts.items()]
+
+
+def test_the_confidence_verdict_does_not_depend_on_how_much_the_surface_changed(monkeypatch):
+    # Same sampling geometry, only the thinning rate differs. A gate that reads the answer flips (the review measured
+    # 0 -> -3 m/yr going from high to gated). Slope-removal error is a property of the geometry, not of the change.
+    errs, levels = [], []
+    for rate in (0.0, -1.0, -3.0):
+        c = _one_cell(monkeypatch, _alternating_recs(rate))
+        errs.append(c["components"]["plane_err_max_m"]); levels.append(c["level"])
+    assert max(errs) - min(errs) < 0.1, errs
+    assert len(set(levels)) == 1, levels
+
+
+def test_passes_alternating_sides_of_a_cell_do_not_bend_the_slope_or_the_series(monkeypatch):
+    c = _one_cell(monkeypatch, _alternating_recs(-3.0))
+    assert abs(c["slope_deg"] - 1.72) < 0.1, c["slope_deg"]
+    atl = [p["value_m"] for p in c["series"] if p["missions"] == ["ATL06"]]
+    rel = [round(v - atl[0], 2) for v in atl]
+    assert all(abs(a - b) < 0.3 for a, b in zip(rel, [0.0, -3.0, -6.0, -9.0])), rel
