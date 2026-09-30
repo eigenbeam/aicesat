@@ -107,11 +107,11 @@ AICESAT.MapView = class {
     if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
     const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
     const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
-    // One neutral ramp: how many days the shown missions measured the hex, linear up to the 95th percentile of the
-    // hexes at this resolution. Which missions, and how often each, is the tooltip's job.
-    const days = h => h.seen.reduce((a, k) => a + (h.missions[k].days ?? h.missions[k].passes), 0);
-    const v = data.map(days).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
-    const fill = h => [214, 230, 250, Math.round(30 + 180 * Math.min(1, days(h) / hi))];
+    // One neutral ramp: the shown missions' granules over the hex (the tooltip's numbers), linear up to the 95th
+    // percentile of the hexes at this resolution. Which missions, and how many each, is the tooltip's job.
+    const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
+    const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
+    const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
     const layers = [new H3HexagonLayer({id: 'coverage', data, getHexagon: d => d.h3, highPrecision: 'auto', filled: true,
       stroked: true, extruded: false, pickable: true, getFillColor: fill, lineWidthMinPixels: 1,
       getLineColor: d => d.claimed ? [255, 255, 255, 150] : [255, 255, 255, 35]})];
@@ -149,14 +149,14 @@ AICESAT.MapView = class {
       return `<span class="pn ${LAND.has(r[3]) ? 'land' : 'water'} r${r[4]}" style="left:${p[0].toFixed(1)}px;top:${p[1].toFixed(1)}px">${esc(r[0])}</span>`; }).join('');
   }
   coverageTip(h) {
-    // NSIDC collection, what it is, and the days it measured this hex in a right-aligned column. Days, not granules:
-    // an IceBridge granule is a few minutes of one flight (survey.py).
+    // The shown missions only: NSIDC collection, what it is, and its granules over this hex in a right-aligned column.
+    // Granules are files, so they do not compare across collections (an ILATM2 granule is minutes of one flight).
     const C = {GLAS: ['GLAH06', 'ICESat laser altimeter'], ICESSN: ['ILATM2', 'IceBridge airborne lidar'],
                ATL06: ['ATL06', 'ICESat-2 land ice height']};
-    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => h.missions[k]).map(k => {
-      const m = h.missions[k], [n, u] = m.days != null ? [m.days, 'day'] : [m.passes, 'pass'];   // older server: passes
+    const rows = ['GLAS', 'ICESSN', 'ATL06'].filter(k => (h.seen || []).includes(k)).map(k => { const n = h.missions[k].passes;
       return `<tr style="--c:rgb(${AICESAT.missions.colorOf(k, null).join(',')})"><td class="cc">${C[k][0]}</td>` +
-        `<td class="cd">${C[k][1]}</td><td class="cn">${n.toLocaleString('en-US')} ${u}${n === 1 ? '' : u === 'day' ? 's' : 'es'}</td></tr>`; });
+        `<td class="cd">${C[k][1]}</td><td class="cn">${n.toLocaleString('en-US')} granule${n === 1 ? '' : 's'}</td></tr>`; });
+    if (!rows.length) return null;
     return `<table class="covtip">${rows.join('')}</table>` + (h.claimed ? '' : '<i>not fully indexed</i>');
   }
   cellTooltip(o) {

@@ -498,7 +498,7 @@ def survey_coverage(lat: float, lon: float, radius_km: float = 50.0) -> dict:
     `long_record` true means all three missions overlap there, so a 20-year elevation record is possible.
     `days` is how many distinct days a mission measured the area -- the count to quote. `passes` counts granules, and
     an IceBridge granule is a few minutes of one flight, so its passes overstate how often it flew there.
-    Opens the globe on the area, each hex shaded by how many days it was measured."""
+    Opens the globe on the area, each hex shaded by its granule count."""
     bbox = survey.area_bbox(lat, lon, radius_km)
     s = survey.area_summary(bbox)
     return {"area": {"lat": lat, "lon": lon, "radius_km": radius_km}, "bbox": bbox,
