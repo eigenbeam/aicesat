@@ -399,7 +399,15 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .dl-row button { flex:1; min-width:0; text-align:left; white-space:nowrap; }
 .dl-row button:disabled { opacity:.5; cursor:default; }
 .dl-note { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-.ts-mode b { color:rgb(150,235,255); }
+.ts-mode b { color:var(--ink); }
+/* confidence: grey = low, as on the map; high and medium neutral (the number and the 0-1 tick carry the detail) */
+.ro-v .conf-badge.high, .ro-v .conf-badge.medium { background:rgba(235,240,248,.14); color:var(--ink); }
+.ro-v .conf-badge.low { background:rgba(150,150,158,.3); color:#c9c9d1; }
+.conf-scale { display:inline-block; position:relative; width:70px; height:6px; margin-left:8px; border-radius:3px; vertical-align:middle;
+  background:linear-gradient(90deg, rgba(150,150,158,.35), rgba(235,240,248,.45)); }
+.conf-scale i { position:absolute; top:-3px; width:2px; height:12px; background:var(--ink); transform:translateX(-1px); }
+.tscomp { margin:2px 0 4px 16px; padding-left:8px; border-left:1px solid var(--hair); }
+.corr-note { color:var(--muted); }
 /* physical place names over the globe (map.js placeNames): water/ice cool blue, land warm tan */
 .name-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2}
 .pn{position:absolute;transform:translate(-50%,-50%);font:600 12px ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 0 3px #080c14,0 0 3px #080c14,0 0 7px #080c14}

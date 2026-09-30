@@ -15,7 +15,7 @@ window.AICESAT = window.AICESAT || {};
   const GREY = [150, 150, 158, 90];
   function trendColor(trendCmYr, level, lim) {
     if (level === 'low' || !Number.isFinite(trendCmYr)) return GREY;
-    const t = Math.max(-1, Math.min(1, trendCmYr / (lim || 1))), a = level === 'high' ? 215 : 170;
+    const t = Math.max(-1, Math.min(1, trendCmYr / (lim || 1))), a = 200;   // high and medium alike: colour = vouched for
     return t < 0 ? [Math.round(245 - 35 * -t), Math.round(245 - 185 * -t), Math.round(245 - 205 * -t), a]
                  : [Math.round(245 - 195 * t), Math.round(245 - 120 * t), Math.round(245 - 15 * t), a];
   }

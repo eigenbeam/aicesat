@@ -80,13 +80,13 @@ window.AICESAT = window.AICESAT || {};
     if (!c) { el.innerHTML = ''; return; }
     const m = c.components, sc = m.scores;
     const pe = m.plane_err_max_m;
-    el.innerHTML = '<details class="tscomp" open><summary>confidence breakdown (score ' + c.confidence + ')</summary><div class="tscomp-body">' +
+    el.innerHTML = '<div class="tscomp"><div class="tscomp-body">' +
       (pe != null ? compRow('slope-removal error', pe.toFixed(2) + ' m', Math.max(0, 1 - pe)) : '') +
       compRow('scatter in the cell', m.roughness_m + ' m', sc.roughness) +
       compRow('time windows', m.epochs, sc.epochs) +
       compRow('record length', m.span_yr + ' yr', sc.span) +
       compRow('reference points', m.ref_pts, sc.density) +
-      '</div></details>';
+      '</div></div>';
   }
 
   // The chart: per-window median residual about the cell's reference plane, with the within-window MAD as the
@@ -126,8 +126,8 @@ window.AICESAT = window.AICESAT || {};
       readoutEl.innerHTML = row('Centre', fmtLatLon(c.lat, c.lon, 4)) +
         row('Trend', '<b>' + (c.trend_cm_yr >= 0 ? '+' : '−') + Math.abs(c.trend_cm_yr / 100).toFixed(2) + ' m/yr</b>') +
         row('Record', Math.floor(x0) + '–' + Math.floor(x1) + ' · ' + s.length + ' one-year windows') +
-        row('Missions', missions) +
-        row('Confidence', '<span class="conf-badge ' + c.level + '">' + c.level + '</span>');
+        row('Confidence', '<span class="conf-badge ' + c.level + '">' + c.level + '</span> <b>' + Number(c.confidence).toFixed(2) +
+            '</b><span class="conf-scale" title="0 to 1"><i style="left:' + Math.round(Math.max(0, Math.min(1, c.confidence)) * 100) + '%"></i></span>');
     }
   }
 
