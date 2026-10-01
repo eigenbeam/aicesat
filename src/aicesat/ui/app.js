@@ -16,6 +16,15 @@ AICESAT.showError = (msg) => {
   el.hidden = false;
   el.querySelector('.x').onclick = () => { el.hidden = true; };
 };
+// Profile: 'full' (default) or 'demo', the UWG demo's look (AltimetryDeck brand; no Explore / Data Lake / help tabs;
+// compact cell readouts without the H3 id). Set by the server (AICESAT_PROFILE=demo injects window.AICESAT_PROFILE)
+// or per page with ?profile=demo.
+AICESAT.profile = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('profile')) ||
+  (typeof window !== 'undefined' && window.AICESAT_PROFILE) || 'full';
+if (typeof document !== 'undefined' && document.documentElement) {   // tests eval this file under node, without a DOM
+  document.documentElement.classList.toggle('profile-demo', AICESAT.profile === 'demo');
+  if (AICESAT.profile === 'demo') document.title = 'AltimetryDeck';
+}
 AICESAT.clearError = () => { const el = document.getElementById('apperr'); if (el) el.hidden = true; };
 
 // The JSON payload of a tool result.

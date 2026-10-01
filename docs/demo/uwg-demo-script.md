@@ -24,10 +24,11 @@ a `k` made further back in the throat, so a plain `k` is fine.
 ## Setup
 
 - Web UI (from `.claude/worktrees/uwg-ladder`), **restart it** so the server matches the frozen code:
-  `AICESAT_PORT=8791 AICESAT_DATA_DIR=/Users/kebe6994/projects/hackathon/aicesat/data-uwg uv run scripts/serve.py`,
+  `AICESAT_PROFILE=demo AICESAT_PORT=8791 AICESAT_DATA_DIR=/Users/kebe6994/projects/hackathon/aicesat/data-uwg uv run scripts/serve.py`,
   then open `http://127.0.0.1:8791/` and hard-reload.
 - Claude Desktop: `deploy/claude-desktop-demo.json` merged into `claude_desktop_config.json`; **restart Desktop** so its
-  server loads today's code. Not rehearsed since the UI changes: do one dry run of section 5 before recording.
+  server loads today's code. The config must set `AICESAT_PROFILE=demo` (the demo's 3 tools and look; the default
+  `full` profile has 14 tools and the Explore / Data Lake tabs). Not rehearsed since the UI changes: do one dry run of section 5 before recording.
 - Hold each view a few seconds longer than feels natural: easier to talk over than to rush.
 
 ## Cells used (hex id · centre)

@@ -199,7 +199,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/" or self.path.startswith("/?") or self.path == "/index.html":
             dist = uibuild.DIST
             if dist.exists():
-                body = dist.read_bytes()
+                body = _with_profile(dist.read_text()).encode()
                 self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers()
                 return self._write(body)
         if self.path.startswith("/api/scene/") and self.path.endswith("/imagery.jpg"):
@@ -380,6 +380,11 @@ apps = Apps()
 PROFILE = os.environ.get("AICESAT_PROFILE", "full").strip().lower()
 
 
+def _with_profile(html: str) -> str:
+    """The page learns the profile from the server: AICESAT_PROFILE=demo gives the demo UI too (ui/app.js)."""
+    return html.replace("<head>", '<head><script>window.AICESAT_PROFILE="demo"</script>', 1) if PROFILE == "demo" else html
+
+
 def _full(register):
     """Register a model tool only in the full profile; in the demo profile the function stays a plain function."""
     return register if PROFILE != "demo" else (lambda f: f)
@@ -391,7 +396,7 @@ def _ui_html() -> str:
             uibuild.build()
     except Exception as e:
         log.warning("UI build failed: %s", e)
-    return uibuild.DIST.read_text() if uibuild.DIST.exists() else "<!doctype html><p>UI not built</p>"
+    return _with_profile(uibuild.DIST.read_text()) if uibuild.DIST.exists() else "<!doctype html><p>UI not built</p>"
 
 
 apps.add_html_resource(

@@ -3,17 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AltimetryDeck</title>
+<title>Cross-mission altimetry</title>
 <style>{{CSS}}</style>
 </head>
 <body>
 <div id="topbar">
-  <span class="brand">AltimetryDeck</span>
+  <span class="brand brand-full">Cross-mission altimetry</span><span class="brand brand-demo">AltimetryDeck</span>
   <span class="tagline">ICESat · IceBridge · ICESat-2</span>
   <button id="topBack" class="tab backbtn" hidden title="Back to where you came from">← Back</button>
+  <button class="tab" data-view="survey" title="Which missions measured each hex, and when; click a hex to see how its surface changed">Coverage</button>
+  <button class="tab" data-view="explore" title="Pick an area on the globe, then build a scene from the missions there">Explore</button>
+  <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
-  <button id="helpBtn" class="tab" hidden title="What is this? How it works">?</button>
+  <button id="helpBtn" class="tab" title="What is this? How it works">?</button>
   <button id="sourcesBtn" class="tab" title="Data sources and credits">ⓘ Sources</button>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
@@ -28,8 +31,8 @@
   <h3 style="font-size:12.5px">How it works</h3>
   <ol>
     <li><b>Coverage</b> — the globe: which missions measured each hex, and when. Nothing is fetched to show it.</li>
-    <li><b>Change</b> — click a hex: every mission's measurements there, and each small cell coloured by how its surface changed. Click a cell for its 20-year record.</li>
-    <li><b>Study</b> — shift-click cells, then Study: ICESat-2 photons in 3-D and the height difference between missions (Δh).</li>
+    <li><b>Change</b> — click a hex: every mission's measurements there, and each small cell coloured by how its surface changed. Hover a cell for its record, click to hold it.</li>
+    <li><b>Explore</b> — pick any area (box, polygon or region), build a scene from the missions you choose, and co-register ICESat-1 ↔ ICESat-2 to read the height difference (Δh).</li>
   </ol>
   <div class="hp-gloss"><b>Co-registration</b> aligns two missions to a common frame and time before comparing. <b>Δh</b> is the
     height difference at the same spot. Hover the <b>?</b> next to any control for more.</div>

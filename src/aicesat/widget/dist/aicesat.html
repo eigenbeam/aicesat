@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AltimetryDeck</title>
+<title>Cross-mission altimetry</title>
 <style>:root { --bg:#14141a; --panel:rgba(20,20,26,.9); --ink:#ece9e0; --muted:#a6a39a; --hair:#3a3a44; --blue:#378ADD; --coral:#D85A30; --amber:#E0A030; --green:#4caf7d; --red:#d9534f; --violet:#a882e6; --ink-dim:#cbc8bf; }
 html, body { margin:0; height:100vh; position:relative; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 /* MCP App inline: the host sizes the iframe to content height, and an absolute+100% layout collapses to 0.
@@ -417,8 +417,13 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .conf-scale i { position:absolute; top:-3px; width:2px; height:12px; background:var(--ink); transform:translateX(-1px); }
 .tscomp { margin:2px 0 4px 16px; padding-left:8px; border-left:1px solid var(--hair); }
 .corr-note { color:var(--muted); }
-/* credits live behind the top bar's Sources button, not on the map */
-.view #attrib { display:none !important; }
+/* credits live behind the top bar's Sources button, not on the globe or the scene views (Explore / Lake keep theirs) */
+#view-survey #attrib, #view-scene #attrib { display:none !important; }
+/* profile: the demo hides the view tabs and help, and swaps the brand */
+.brand-demo { display:none; }
+.profile-demo .brand-full { display:none; }
+.profile-demo .brand-demo { display:inline; }
+.profile-demo #topbar .tab[data-view], .profile-demo #helpBtn { display:none !important; }
 #sourcespanel { position:absolute; top:46px; right:12px; z-index:40; width:min(420px, calc(100% - 24px)); background:var(--panel);
   border:1px solid var(--hair); border-radius:9px; padding:10px 14px; font-size:12px; backdrop-filter:blur(6px); }
 #sourcespanel h3 { margin:0 0 6px; font-size:12.5px; }
@@ -434,12 +439,15 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 </head>
 <body>
 <div id="topbar">
-  <span class="brand">AltimetryDeck</span>
+  <span class="brand brand-full">Cross-mission altimetry</span><span class="brand brand-demo">AltimetryDeck</span>
   <span class="tagline">ICESat · IceBridge · ICESat-2</span>
   <button id="topBack" class="tab backbtn" hidden title="Back to where you came from">← Back</button>
+  <button class="tab" data-view="survey" title="Which missions measured each hex, and when; click a hex to see how its surface changed">Coverage</button>
+  <button class="tab" data-view="explore" title="Pick an area on the globe, then build a scene from the missions there">Explore</button>
+  <button class="tab" data-view="lake" title="Local data cache — developer view">Data Lake</button>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
-  <button id="helpBtn" class="tab" hidden title="What is this? How it works">?</button>
+  <button id="helpBtn" class="tab" title="What is this? How it works">?</button>
   <button id="sourcesBtn" class="tab" title="Data sources and credits">ⓘ Sources</button>
   <button id="fullscreenBtn" class="tab" hidden title="fullscreen">⛶</button>
   <span class="small" id="adapterInfo"></span>
@@ -454,8 +462,8 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
   <h3 style="font-size:12.5px">How it works</h3>
   <ol>
     <li><b>Coverage</b> — the globe: which missions measured each hex, and when. Nothing is fetched to show it.</li>
-    <li><b>Change</b> — click a hex: every mission's measurements there, and each small cell coloured by how its surface changed. Click a cell for its 20-year record.</li>
-    <li><b>Study</b> — shift-click cells, then Study: ICESat-2 photons in 3-D and the height difference between missions (Δh).</li>
+    <li><b>Change</b> — click a hex: every mission's measurements there, and each small cell coloured by how its surface changed. Hover a cell for its record, click to hold it.</li>
+    <li><b>Explore</b> — pick any area (box, polygon or region), build a scene from the missions you choose, and co-register ICESat-1 ↔ ICESat-2 to read the height difference (Δh).</li>
   </ol>
   <div class="hp-gloss"><b>Co-registration</b> aligns two missions to a common frame and time before comparing. <b>Δh</b> is the
     height difference at the same spot. Hover the <b>?</b> next to any control for more.</div>
@@ -11061,12 +11069,13 @@ window.AICESAT = window.AICESAT || {};
            '</span><span class="comp-bar"><i style="width:' + Math.round((score || 0) * 100) + '%"></i></span></div>';
   }
 
-  function renderConf(el, c) {
+  // opts.detail adds the why-sentence (the classic view and #ts outside the demo profile)
+  function renderConf(el, c, opts = {}) {
     if (!el) return;
     if (!c) { el.innerHTML = ''; return; }
     const m = c.components, sc = m.scores;
     const pe = m.plane_err_max_m;
-    el.innerHTML = '<div class="tscomp"><div class="tscomp-body">' +
+    el.innerHTML = (opts.detail ? '<div class="conf-why">' + c.why + '</div>' : '') + '<div class="tscomp"><div class="tscomp-body">' +
       (pe != null ? compRow('slope-removal error', pe.toFixed(2) + ' m', Math.max(0, 1 - pe)) : '') +
       compRow('scatter in the cell', m.roughness_m + ' m', sc.roughness) +
       compRow('time windows', m.epochs, sc.epochs) +
@@ -11077,7 +11086,8 @@ window.AICESAT = window.AICESAT || {};
 
   // The chart: per-window median residual about the cell's reference plane, with the within-window MAD as the
   // error bar and the point coloured by the mission that produced it.
-  function drawChart(cv, c, colorOf, readoutEl, height) {
+  // opts.detail adds the H3 cell id and the missions in order (the classic view and #ts outside the demo profile)
+  function drawChart(cv, c, colorOf, readoutEl, height, opts = {}) {
     if (!cv) return;
     if (!c) { cv.hidden = true; if (readoutEl) readoutEl.textContent = ''; return; }
     cv.hidden = false;
@@ -11111,7 +11121,8 @@ window.AICESAT = window.AICESAT || {};
       const row = (k, v) => '<div class="ro-row"><span class="ro-k">' + k + '</span><span class="ro-v">' + v + '</span></div>';
       readoutEl.innerHTML = row('Centre', fmtLatLon(c.lat, c.lon, 4)) +
         row('Trend', '<b>' + (c.trend_cm_yr >= 0 ? '+' : '−') + Math.abs(c.trend_cm_yr / 100).toFixed(2) + ' m/yr</b>') +
-        row('Record', Math.floor(x0) + '–' + Math.floor(x1) + ' · ' + s.length + ' one-year windows') +
+        row('Record', Math.floor(x0) + '–' + Math.floor(x1) + ' · ' + s.length + ' windows') +
+        (opts.detail ? row('Missions', missions) + row('Cell', '<code>' + c.h3 + '</code>') : '') +
         row('Confidence', '<span class="conf-badge ' + c.level + '">' + c.level + '</span> <b>' + Number(c.confidence).toFixed(2) +
             '</b><span class="conf-scale" title="0 to 1"><i style="left:' + Math.round(Math.max(0, Math.min(1, c.confidence)) * 100) + '%"></i></span>');
     }
@@ -12433,6 +12444,10 @@ AICESAT.util.drawer(root, null);
 // Three sub-panels at the ladder levels: Controls (basemap, cell size, time window), Legend (trend, confidence, the
 // mission strip -- off the map here -- and the cell counts), Time series (the rest). Demo branch: the moves are
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
+// Where the TS controls live outside the ladder levels (the classic scene view): their original places in the panel.
+const TS_HOMES = [() => $('tsRes').closest('label'), () => $('tsDt').closest('label'), () => $('tsStatus')]
+  .map(f => { const el = f(); return {el, parent: el.parentNode, next: el.nextSibling}; });
+let placeTsControls = () => {};
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
   const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
   // Vertical scale 1x/2x/4x/8x: drives the classic panel's exaggeration slider (#zexag), so one code path applies it.
@@ -12443,8 +12458,12 @@ AICESAT.util.drawer(root, null);
   vs.querySelectorAll('button').forEach(b => b.onclick = () => {
     const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
   $('zexag').addEventListener('input', syncVs); syncVs();
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), vs, mh, $('timeline'));
-  leg.append($('chgLegend'), $('tsStatus'));
+  // Ladder levels: basemap, cell size, window, vertical scale and missions in Controls; legend and counts in Legend.
+  // Classic view: cell size, window and the find status go back where they were (they would be hidden otherwise).
+  placeTsControls = () => {
+    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline')); leg.append($('chgLegend'), TS_HOMES[2].el); }
+    else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
+  };
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
 $('stats').addEventListener('reopen', () => updateStats());
@@ -12559,9 +12578,10 @@ function renderDownload() {
   };
 }
 function hoverCand(i) { if (i < 0 || i === candHover) return; candHover = i; if (candSel < 0) showCell(); }
-function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
+const tsDetail = () => !LEVEL && AICESAT.profile !== 'demo';   // full readouts in the classic view, outside the demo
+function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c, {detail: tsDetail()}); }
 function drawChart() { const k = candSel >= 0 ? candSel : (LEVEL ? candHover : -1);
-  AICESAT.ts.drawChart($('tsChart'), k < 0 ? null : candidates[k], colorOf, $('tsReadout')); }
+  AICESAT.ts.drawChart($('tsChart'), k < 0 ? null : candidates[k], colorOf, $('tsReadout'), undefined, {detail: tsDetail()}); }
 function candidateLayers() {
   if (!candidates.length) return [];
   // Draped on the terrain like the H3 grid, so the two line up. They used to sit at the cell's reference-plane
@@ -12652,6 +12672,7 @@ this.open = async (id, query) => {
   STREAM_BUDGET = parseInt(params.get('budget') || '0', 10) || 0;
   LEVEL = params.get('level') || null;
   root.classList.toggle('level-region', LEVEL === 'region'); root.classList.toggle('level-study', LEVEL === 'study');
+  placeTsControls();
   ANA_TAB = 'ts'; STUDY.clear(); STUDY_VER++; imageryAuto = false; syncStudyBar(); syncTabs();
   if (id !== sceneId) {
     stopPoll(); stopStream(); clearLayerMemos();
@@ -12761,8 +12782,9 @@ AICESAT.TsView = class {
     const select = i => {
       sel = i;
       TS.renderCandList($('tsList'), candidates, sel, select);
-      TS.drawChart($('tsChart'), sel < 0 ? null : candidates[sel], colorOf, $('tsReadout'), 220);
-      TS.renderConf($('tsConf'), sel < 0 ? null : candidates[sel]);
+      const detail = {detail: AICESAT.profile !== 'demo'};   // the demo's #ts embed stays compact (no H3 ids)
+      TS.drawChart($('tsChart'), sel < 0 ? null : candidates[sel], colorOf, $('tsReadout'), 220, detail);
+      TS.renderConf($('tsConf'), sel < 0 ? null : candidates[sel], detail);
       drawCtx();
     };
 
@@ -12850,6 +12872,15 @@ AICESAT.showError = (msg) => {
   el.hidden = false;
   el.querySelector('.x').onclick = () => { el.hidden = true; };
 };
+// Profile: 'full' (default) or 'demo', the UWG demo's look (AltimetryDeck brand; no Explore / Data Lake / help tabs;
+// compact cell readouts without the H3 id). Set by the server (AICESAT_PROFILE=demo injects window.AICESAT_PROFILE)
+// or per page with ?profile=demo.
+AICESAT.profile = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('profile')) ||
+  (typeof window !== 'undefined' && window.AICESAT_PROFILE) || 'full';
+if (typeof document !== 'undefined' && document.documentElement) {   // tests eval this file under node, without a DOM
+  document.documentElement.classList.toggle('profile-demo', AICESAT.profile === 'demo');
+  if (AICESAT.profile === 'demo') document.title = 'AltimetryDeck';
+}
 AICESAT.clearError = () => { const el = document.getElementById('apperr'); if (el) el.hidden = true; };
 
 // The JSON payload of a tool result.

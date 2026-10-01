@@ -1110,6 +1110,10 @@ AICESAT.util.drawer(root, null);
 // Three sub-panels at the ladder levels: Controls (basemap, cell size, time window), Legend (trend, confidence, the
 // mission strip -- off the map here -- and the cell counts), Time series (the rest). Demo branch: the moves are
 // permanent, so the classic scene view keeps these controls only inside the ladder panels.
+// Where the TS controls live outside the ladder levels (the classic scene view): their original places in the panel.
+const TS_HOMES = [() => $('tsRes').closest('label'), () => $('tsDt').closest('label'), () => $('tsStatus')]
+  .map(f => { const el = f(); return {el, parent: el.parentNode, next: el.nextSibling}; });
+let placeTsControls = () => {};
 { const ctl = $('ladCtlBody'), leg = $('ladLegendBody');
   const mh = document.createElement('div'); mh.className = 'lg-head lad-mhead'; mh.textContent = 'Missions';
   // Vertical scale 1x/2x/4x/8x: drives the classic panel's exaggeration slider (#zexag), so one code path applies it.
@@ -1120,8 +1124,12 @@ AICESAT.util.drawer(root, null);
   vs.querySelectorAll('button').forEach(b => b.onclick = () => {
     const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
   $('zexag').addEventListener('input', syncVs); syncVs();
-  ctl.append($('baseSwitch'), $('tsRes').closest('label'), $('tsDt').closest('label'), vs, mh, $('timeline'));
-  leg.append($('chgLegend'), $('tsStatus'));
+  // Ladder levels: basemap, cell size, window, vertical scale and missions in Controls; legend and counts in Legend.
+  // Classic view: cell size, window and the find status go back where they were (they would be hidden otherwise).
+  placeTsControls = () => {
+    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline')); leg.append($('chgLegend'), TS_HOMES[2].el); }
+    else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
+  };
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
 $('stats').addEventListener('reopen', () => updateStats());
@@ -1236,9 +1244,10 @@ function renderDownload() {
   };
 }
 function hoverCand(i) { if (i < 0 || i === candHover) return; candHover = i; if (candSel < 0) showCell(); }
-function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c); }
+const tsDetail = () => !LEVEL && AICESAT.profile !== 'demo';   // full readouts in the classic view, outside the demo
+function renderConf(c) { AICESAT.ts.renderConf($('tsConf'), c, {detail: tsDetail()}); }
 function drawChart() { const k = candSel >= 0 ? candSel : (LEVEL ? candHover : -1);
-  AICESAT.ts.drawChart($('tsChart'), k < 0 ? null : candidates[k], colorOf, $('tsReadout')); }
+  AICESAT.ts.drawChart($('tsChart'), k < 0 ? null : candidates[k], colorOf, $('tsReadout'), undefined, {detail: tsDetail()}); }
 function candidateLayers() {
   if (!candidates.length) return [];
   // Draped on the terrain like the H3 grid, so the two line up. They used to sit at the cell's reference-plane
@@ -1329,6 +1338,7 @@ this.open = async (id, query) => {
   STREAM_BUDGET = parseInt(params.get('budget') || '0', 10) || 0;
   LEVEL = params.get('level') || null;
   root.classList.toggle('level-region', LEVEL === 'region'); root.classList.toggle('level-study', LEVEL === 'study');
+  placeTsControls();
   ANA_TAB = 'ts'; STUDY.clear(); STUDY_VER++; imageryAuto = false; syncStudyBar(); syncTabs();
   if (id !== sceneId) {
     stopPoll(); stopStream(); clearLayerMemos();

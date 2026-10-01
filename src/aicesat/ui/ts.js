@@ -76,8 +76,9 @@ AICESAT.TsView = class {
     const select = i => {
       sel = i;
       TS.renderCandList($('tsList'), candidates, sel, select);
-      TS.drawChart($('tsChart'), sel < 0 ? null : candidates[sel], colorOf, $('tsReadout'), 220);
-      TS.renderConf($('tsConf'), sel < 0 ? null : candidates[sel]);
+      const detail = {detail: AICESAT.profile !== 'demo'};   // the demo's #ts embed stays compact (no H3 ids)
+      TS.drawChart($('tsChart'), sel < 0 ? null : candidates[sel], colorOf, $('tsReadout'), 220, detail);
+      TS.renderConf($('tsConf'), sel < 0 ? null : candidates[sel], detail);
       drawCtx();
     };
 
