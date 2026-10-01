@@ -16,6 +16,7 @@ from aicesat import scene as scene_mod
 from aicesat import timeseries
 
 FRAME = scene_mod.local_frame((-45.5, 71.8, -44.5, 72.2))
+RES = 9   # the fixture's cells are sized for ~200 m cells; the default (res 8, ~530 m) would merge them below the limits
 
 
 @pytest.fixture
@@ -48,7 +49,7 @@ def scene(tmp_path, monkeypatch):
 
 
 def test_summary_drops_the_bulk_and_keeps_the_verdict(scene):
-    out = api.timeseries_candidates(scene, limit=5)
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=5)
     row = out["candidates"][0]
     assert not ({"series", "xy", "components", "center"} & set(row)), sorted(row)
     for k in ("rank", "h3", "lat", "lon", "level", "confidence", "n_bins", "span_years", "trend_cm_yr", "why"):
@@ -56,8 +57,8 @@ def test_summary_drops_the_bulk_and_keeps_the_verdict(scene):
 
 
 def test_truncation_reports_what_it_dropped(scene):
-    full = api.scene_candidates(scene)
-    out = api.timeseries_candidates(scene, limit=5)
+    full = api.scene_candidates(scene, h3_res=RES)
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=5)
     assert len(full["candidates"]) > 5, "fixture must produce more cells than the limit"
     assert out["n_candidates_total"] == len(full["candidates"])
     assert out["returned"] == len(out["candidates"]) == 5
@@ -65,30 +66,30 @@ def test_truncation_reports_what_it_dropped(scene):
 
 
 def test_summary_is_small_enough_for_a_context_window(scene):
-    out = api.timeseries_candidates(scene, limit=10)
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=10)
     assert len(json.dumps(out)) < 6000, len(json.dumps(out))
 
 
 def test_ranks_are_the_search_order_and_are_one_based(scene):
-    full = api.scene_candidates(scene)["candidates"]
-    out = api.timeseries_candidates(scene, limit=5)
+    full = api.scene_candidates(scene, h3_res=RES)["candidates"]
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=5)
     assert [c["rank"] for c in out["candidates"]] == [1, 2, 3, 4, 5]
     assert [c["h3"] for c in out["candidates"]] == [c["h3"] for c in full[:5]]
 
 
 def test_limit_none_returns_every_cell(scene):
-    out = api.timeseries_candidates(scene, limit=None)
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=None)
     assert out["returned"] == out["n_candidates_total"]
 
 
 def test_the_caveat_travels_with_the_answer(scene):
-    out = api.timeseries_candidates(scene, limit=3)
+    out = api.timeseries_candidates(scene, h3_res=RES, limit=3)
     assert "GIA" in out["params"]["notes"] and "bias" in out["params"]["notes"]
 
 
 def test_cell_lookup_returns_the_series_and_the_breakdown(scene):
-    top = api.timeseries_candidates(scene, limit=1)["candidates"][0]
-    cell = api.timeseries_cell(scene, top["h3"])
+    top = api.timeseries_candidates(scene, h3_res=RES, limit=1)["candidates"][0]
+    cell = api.timeseries_cell(scene, top["h3"], h3_res=RES)
     assert cell["h3"] == top["h3"] and cell["rank"] == 1
     assert cell["series"] and all({"year", "value_m", "mad_m", "n", "missions"} <= set(p) for p in cell["series"])
     assert "scores" in cell["components"]
@@ -136,11 +137,11 @@ def test_tools_route_the_app_to_the_timeseries_view(scene):
     whose point cloud cannot travel the MCP App transport at all."""
     from aicesat import server
 
-    d = server.find_timeseries_candidates(scene, limit=2)
+    d = server.find_timeseries_candidates(scene, h3_res=RES, limit=2)
     assert d["view"] == "ts" and d["url"].endswith("/#ts/" + scene)
 
     h3 = d["candidates"][0]["h3"]
     # show_timeseries defaults to the change level's search (res 8, ICESat-2 reference); a cell from another search
     # is looked up under the parameters that produced it, as its docstring says
-    c = server.show_timeseries(scene, h3, h3_res=9, ref_missions=d["params"]["ref_missions"])
+    c = server.show_timeseries(scene, h3, h3_res=RES, ref_missions=d["params"]["ref_missions"])
     assert c["view"] == "ts" and c["select"] == h3 and c["url"].endswith("?sel=" + h3)

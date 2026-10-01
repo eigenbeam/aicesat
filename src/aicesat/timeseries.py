@@ -1,10 +1,10 @@
 """Candidate coincident-observation cells and their elevation time series.
 
 For a built scene: bin every mission's points into H3 cells and fixed time windows, keep cells observed
-in >= min_bins distinct windows, fit ONE local reference plane per cell (from the reference mission(s):
-GLAS by default when the scene has it, see _reference_set) to remove surface slope, and report each window's
-median residual about that plane as a height anomaly -> a time series. Positions are first propagated to a
-common epoch (plate motion).
+in >= min_bins distinct windows, remove each cell's surface slope with a fixed-effects plane (one level per
+(window, mission) group, one shared slope from the spread WITHIN each group, so change never becomes slope), and
+report each window's median residual as a height anomaly -> a time series, zeroed at the reference mission's level
+(ATL06 by default, see _reference_set). Positions are first propagated to a common epoch (plate motion).
 
 Deliberately NOT applied (and surfaced to the user): inter-campaign / inter-sensor bias adjustment and
 GIA. The plane-fit is what keeps slope from masquerading as elevation change; a raw median-per-window
@@ -34,7 +34,7 @@ PLANE_ERR_GATE_M = 1.0         # slope-removal error (m) at a window's samples a
                                # 500-4000 m; count gates passed collinear 14-21-point planes.)
 _GATED_CONF = 0.34             # just under "medium", so a gated cell also ranks below every cell that passed
 _BLUNDER_MAD = 6.0            # drop points beyond this many (scaled) MADs from their OWN time window's median
-DEFAULT_REF_MISSION = "GLAS"  # earliest epoch + single sensor: an anchored zero, no inter-sensor bias in the plane's tilt
+DEFAULT_REF_MISSION = "ATL06"  # densest single sensor, today's surface: the zero, and where a cell qualifies (see below)
 # Parallelism for the per-cell reference-plane fit + robust stats (see candidates). Below this many cells the loop is
 # left serial; AICESAT_TS_WORKERS overrides the worker count.
 _CANDIDATE_MIN_CELLS = 64
@@ -42,11 +42,13 @@ _CANDIDATE_WORKER_CAP = 8
 
 
 def _reference_set(ref_missions, present) -> set:
-    """Missions whose points fit each cell's reference plane. Explicit choice wins when any of it is in the
-    scene; otherwise GLAS if present, else every mission. GLAS is the default because it is the earliest epoch
-    and one sensor: residuals then read as 'height relative to the ICESat-1-era surface'. Pooling all missions
-    would (a) absorb the mean of any real change into the plane and (b) let an inter-sensor offset tilt the
-    plane whenever the missions sample different parts of the cell."""
+    """The reference missions: their level reads zero, and a cell qualifies only with >= _MIN_REF_PTS of their
+    points. Explicit choice wins when any of it is in the scene; otherwise ATL06 if present, else every mission.
+    With the fixed-effects plane the reference no longer tilts the slope (every mission's within-window spread fits
+    it), so the choice sets the zero and which cells qualify. ATL06 by default: the densest single sensor and the
+    present-day surface, so residuals read as 'height relative to today's surface' and a cell qualifies wherever
+    ICESat-2 measured it -- the same choice as the change map and elevation_change (api.CHANGE_REF). Until
+    2026-10-01 the default was GLAS (when one plane was fitted to the reference points alone)."""
     present = set(present)
     chosen = (set(ref_missions) & present) if ref_missions else set()
     if chosen:
@@ -276,7 +278,7 @@ def _trend_cm_yr(series) -> float:
     return round(100.0 * float((dx * (y - y.mean())).sum()) / sxx, 2)
 
 
-def candidates(doc: dict, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
+def candidates(doc: dict, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None,
                min_bins: int = 3, common_epoch: float = 2005.0) -> dict:
     recs = _load_all(doc, common_epoch)
     present = [r["mission"] for r in recs]

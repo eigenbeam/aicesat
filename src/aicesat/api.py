@@ -819,7 +819,7 @@ def _cand_memo_put(key, val) -> None:
             _CAND_MEMO.pop(next(iter(_CAND_MEMO)))
 
 
-def scene_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
+def scene_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None, min_bins: int = 3) -> dict:
     """Candidate coincident-observation cells + their elevation time series for a built scene.
 
     The result is every qualifying cell, ranked -- never truncated (see tests/test_no_caps.py). Callers that need a
@@ -863,7 +863,7 @@ def _ranked(out: dict) -> list[dict]:
     return [dict(c, rank=i + 1) for i, c in enumerate(out["candidates"])]
 
 
-def timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
+def timeseries_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None,
                           min_bins: int = 3, limit: int | None = 10) -> dict:
     """Ranked candidate cells for a time series, summarised: one row per cell, no series and no geometry.
 
@@ -876,7 +876,7 @@ def timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, 
             "params": out["params"], "candidates": [{"rank": c["rank"], **{k: c[k] for k in _SUMMARY_FIELDS}} for c in rows]}
 
 
-def timeseries_cell(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions=None,
+def timeseries_cell(scene_id: str, h3: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None,
                     min_bins: int = 3) -> dict:
     """One cell's full record: the series, the confidence breakdown, the trend.
 
@@ -899,7 +899,7 @@ def timeseries_cell(scene_id: str, h3: str, h3_res: int = 9, delta_t: float = 1.
 # any plane fitted ACROSS years mistakes the change for slope -- one fitted to all missions jointly read 6.2 deg on
 # 8806f21187fffff against ~2 deg per mission, and 2026 as -57 m instead of -87 m. The reference missions now only set
 # which level reads 0; ICESat-2 is present in every demo cell, so the change level anchors on it.
-CHANGE_REF = ["ATL06"]
+CHANGE_REF = ["ATL06"]   # == timeseries.DEFAULT_REF_MISSION since 2026-10-01; explicit here for the change map
 REGION_FLAGS = {"with_glas": True, "with_icessn": True, "with_atl06": True, "with_atl03": False,
                 "with_gedi": False, "with_gpstruth": False, "with_coreg": False}
 _region_jobs: dict[str, dict] = {}

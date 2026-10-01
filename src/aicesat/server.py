@@ -488,7 +488,7 @@ def _anticipated(fn, *a, **kw):
 
 
 @_full(apps.tool(resource_uri=UI_URI, name="find_timeseries_candidates"))
-def find_timeseries_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0,
+def find_timeseries_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0,
                                ref_missions: list[str] | None = None, min_bins: int = 3, limit: int = 10) -> dict:
     """Find and rank the places in a built scene where an elevation TIME SERIES can actually be measured.
 
@@ -655,7 +655,7 @@ def ui_scene_delete(scene_id: str) -> dict:
 
 
 @apps.tool(name="ui_candidates", **_APP)
-def ui_candidates(scene_id: str, h3_res: int = 9, delta_t: float = 1.0, ref_missions: list[str] | None = None,
+def ui_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions: list[str] | None = None,
                   min_bins: int = 3, chunk: int = 0) -> dict:
     """The full candidate set as JSON text in MCP_CHUNK_BYTES slices: a demo hex's is ~470 KB and an MCP host drops
     tool results past ~150k characters. The search is memoised, so each chunk is a slice of the same answer."""

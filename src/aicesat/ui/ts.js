@@ -13,7 +13,7 @@ AICESAT.TsView = class {
       '    <h2>Elevation time series</h2>\n' +
       '    <div class="small tsintro">Cells observed across time. Height is plotted as a residual about a local reference plane, so surface slope is removed rather than mistaken for change.</div>\n' +
       '    <div class="tscontrols">\n' +
-      '      <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="9" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n' +
+      '      <label class="ctl-row"><span class="ctl-lbl">Cell size</span><input id="tsRes" type="range" min="7" max="11" step="1" value="8" class="ctl-range"><b id="tsResLbl" class="ctl-val"></b></label>\n' +
       '      <label class="ctl-row"><span class="ctl-lbl">Time window</span><input id="tsDt" type="range" min="0.25" max="3" step="0.25" value="1" class="ctl-range"><b id="tsDtLbl" class="ctl-val"></b></label>\n' +
       '      <div class="ctl-row tsrefrow"><span class="ctl-lbl">Reference</span><span id="tsRef" class="tsref"></span></div>\n' +
       '      <div class="row"><button id="tsFind">Find candidates</button><span id="tsStatus" class="small"></span></div>\n' +
