@@ -1,6 +1,6 @@
 """The UWG demo's MCP surface, over stdio exactly as Claude Desktop sees it: which tools the MODEL can see, then the
 three-level question at Jakobshavn.
-usage: AICESAT_PORT=8793 AICESAT_DATA_DIR=/abs/path/data-uwg uv run scripts/e2e_demo.py [lat lon]
+usage: AICESAT_PROFILE=demo AICESAT_PORT=8793 AICESAT_DATA_DIR=/abs/path/data-uwg uv run scripts/e2e_demo.py [lat lon]
 """
 import asyncio, json, os, sys
 
