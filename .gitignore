@@ -11,3 +11,5 @@ Screenshot*.png
 # browser-automation scratch (snapshots, console logs)
 .playwright-mcp/
 /data-uwg/
+/data-golden/
+/data-uwg-wide/

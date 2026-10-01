@@ -38,3 +38,5 @@ packages = ["src/aicesat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["golden: numbers from the UWG demo store; run with AICESAT_DATA_DIR=.../data-uwg -m golden"]
+addopts = "-m 'not golden'"

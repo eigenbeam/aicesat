@@ -1,0 +1,165 @@
+{
+ "area_summary": {
+  "ATL06": {
+   "days": 681,
+   "hexes": 50,
+   "n_years": 9,
+   "passes": 800,
+   "year_max": 2026,
+   "year_min": 2018
+  },
+  "GLAS": {
+   "days": 143,
+   "hexes": 50,
+   "n_years": 7,
+   "passes": 143,
+   "year_max": 2009,
+   "year_min": 2003
+  },
+  "ICESSN": {
+   "days": 65,
+   "hexes": 50,
+   "n_years": 11,
+   "passes": 1728,
+   "year_max": 2019,
+   "year_min": 2009
+  }
+ },
+ "candidates": {
+  "1b9136681a": {
+   "n": 231,
+   "n_low": 38,
+   "sha": "2bb6f4ce6ee2e1ff"
+  },
+  "63b9c8c660": {
+   "n": 213,
+   "n_low": 39,
+   "sha": "728baf69fba8a890"
+  },
+  "69606ee845": {
+   "n": 213,
+   "n_low": 31,
+   "sha": "8fd21345d1787119"
+  },
+  "804df356f6": {
+   "n": 223,
+   "n_low": 20,
+   "sha": "fcd90f7774db0aaa"
+  },
+  "ab8ba0e4c3": {
+   "n": 238,
+   "n_low": 3,
+   "sha": "23012be034172a1d"
+  },
+  "cabf237539": {
+   "n": 245,
+   "n_low": 13,
+   "sha": "28b19cb81b818b6d"
+  },
+  "d570962c26": {
+   "n": 213,
+   "n_low": 10,
+   "sha": "46ec8b0b6e09fe99"
+  },
+  "e9f22ff4c2": {
+   "n": 209,
+   "n_low": 70,
+   "sha": "282cafba65a8b719"
+  },
+  "f66beabec8": {
+   "n": 233,
+   "n_low": 29,
+   "sha": "4d9155753fff2673"
+  },
+  "f671a3d024": {
+   "n": 246,
+   "n_low": 6,
+   "sha": "4736787e8baaab0e"
+  },
+  "fb51f2a278": {
+   "n": 263,
+   "n_low": 76,
+   "sha": "743e929120b74c98"
+  },
+  "fe2b66237c": {
+   "n": 205,
+   "n_low": 0,
+   "sha": "94b3ba32b57d0fe1"
+  }
+ },
+ "coreg_sha": "108f8079d5f0dd3b",
+ "coverage_hexes_res5": {
+  "n": 158,
+  "sha": "fac90365178fa6f0"
+ },
+ "index_status": {
+  "ATL03": {
+   "cells_sha": "255015cc70eb461d",
+   "granules": 521,
+   "indexed": true,
+   "n_cells": 273,
+   "pct": 100,
+   "res": 6,
+   "span_max": 7.8,
+   "target": 274
+  },
+  "ATL06": {
+   "cells_sha": "84616b54dad36ffa",
+   "granules": 1448,
+   "indexed": true,
+   "n_cells": 158,
+   "pct": 100,
+   "res": 5,
+   "span_max": 7.8,
+   "target": 1102
+  },
+  "GEDI": {
+   "cells_sha": "68dd0f9bf25bb7b3",
+   "granules": 53,
+   "indexed": true,
+   "n_cells": 3,
+   "pct": 100,
+   "res": 5,
+   "span_max": 6.2,
+   "target": 53
+  },
+  "GLAS": {
+   "cells_sha": "c74a9b0cb276129d",
+   "granules": 276,
+   "indexed": true,
+   "n_cells": 138,
+   "pct": 100,
+   "res": 5,
+   "span_max": 6.7,
+   "target": 235
+  },
+  "GPSTRUTH": {
+   "cells_sha": "c9c3789143152419",
+   "granules": 271,
+   "indexed": true,
+   "n_cells": 1,
+   "pct": 100,
+   "res": 5,
+   "span_max": 18.7,
+   "target": 271
+  },
+  "ICESSN": {
+   "cells_sha": "dbe2ad1879c1ffaa",
+   "granules": 2302,
+   "indexed": true,
+   "n_cells": 102,
+   "pct": 100,
+   "res": 5,
+   "span_max": 10.4,
+   "target": 2302
+  }
+ },
+ "sample_geometry_sha": "58d2b97766b5f184",
+ "story_cell": {
+  "confidence": 0.45,
+  "level": "medium",
+  "plane_err_max_m": 0.391,
+  "trend_cm_yr": -416.63,
+  "windows": 19
+ }
+}
