@@ -66,9 +66,10 @@ or add `"AICESAT_EDL_FILE": "/path/to/your/token"` to `env`. Restart Claude Desk
 A `~/.netrc` with your Earthdata username/password also works, but a token in `env` is the most reliable and is what
 we recommend for sharing the server with a colleague.
 
-Tools: `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),
-`add_glas`, `coregister`, `find_timeseries_candidates`, `show_timeseries`, `lake_status`, `lake_load_cells`,
-`job_status`.
+Tools: `survey_coverage`, `elevation_change` and `show_timeseries` (the place-first ladder: coverage, change, one
+cell's record), `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),
+`add_glas`, `coregister`, `find_timeseries_candidates`, `lake_status`, `lake_load_cells`, `job_status`.
+`AICESAT_PROFILE=demo` exposes only the three ladder tools and the demo UI (how the UWG demo was recorded).
 
 ### Asking for a time series
 
