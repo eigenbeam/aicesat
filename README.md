@@ -69,7 +69,8 @@ we recommend for sharing the server with a colleague.
 Tools: `survey_coverage`, `elevation_change` and `show_timeseries` (the place-first ladder: coverage, change, one
 cell's record), `open_ui`, `list_regions`, `list_scenes`, `check_coverage`, `show_photons` (region, bbox, or polygon),
 `add_glas`, `coregister`, `find_timeseries_candidates`, `lake_status`, `lake_load_cells`, `job_status`.
-`AICESAT_PROFILE=demo` exposes only the three ladder tools and the demo UI (how the UWG demo was recorded).
+By default (the `demo` profile) only the three ladder tools are exposed, with the demo UI (how the UWG demo was
+recorded). `AICESAT_PROFILE=full` exposes every tool above and the full UI.
 
 ### Asking for a time series
 

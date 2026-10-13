@@ -398,10 +398,10 @@ def start_http() -> ThreadingHTTPServer:
 UI_URI = "ui://aicesat/app.html"
 apps = Apps()
 
-# Model-tool surface. "full" (the default) registers every tool. "demo" registers only the three ladder tools the UWG
-# demo was recorded with (survey_coverage, elevation_change, show_timeseries): AICESAT_PROFILE=demo reproduces it.
-# The app-only ui_* tools are registered in both, since the app needs them either way.
-PROFILE = os.environ.get("AICESAT_PROFILE", "full").strip().lower()
+# Model-tool surface. "demo" (the default) registers only the three ladder tools the UWG demo was recorded with
+# (survey_coverage, elevation_change, show_timeseries) and gives the page the demo look. AICESAT_PROFILE=full registers
+# every tool and the full UI. The app-only ui_* tools are registered in both, since the app needs them either way.
+PROFILE = os.environ.get("AICESAT_PROFILE", "demo").strip().lower()
 
 
 def _with_profile(html: str) -> str:
