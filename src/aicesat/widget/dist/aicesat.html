@@ -89,7 +89,7 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .exag .phead { border-bottom-color:rgba(224,160,48,.3); } .exag .phead .ptitle, .exag .pcaret, .exag .phead .close { color:var(--amber); }
 
 /* ---- unified drawer: one collapsible, scrollable column that holds every panel ---- */
-:root { --drawer-w: 344px; }
+:root { --drawer-w: 361px; }
 .view.has-drawer .map, .view.has-drawer .deck { right: var(--drawer-w); transition: right .2s ease; }
 .view.has-drawer.drawer-collapsed .map, .view.has-drawer.drawer-collapsed .deck { right: 0; }
 .drawer { position:absolute; top:0; right:0; bottom:0; width:var(--drawer-w); background:var(--panel); border-left:1px solid var(--hair); backdrop-filter:blur(6px); z-index:16; display:flex; flex-direction:column; transition:transform .2s ease; }
@@ -11303,7 +11303,7 @@ window.AICESAT = window.AICESAT || {};
   const n0 = n => n.toLocaleString('en-US'), m1 = v => v.toFixed(1);
   const flight = ms => [...ms].sort((a, b) => (SPANS[a] || [T1])[0] - (SPANS[b] || [T1])[0] || a.localeCompare(b));
   const cellRows = stats => flight(Object.keys(stats || {})).map(m => ({m, name: SHORT[m] || m, ...stats[m]}));
-  // Short row labels: a date needs ~70 px at this size, and the drawer leaves ~290 px for the label and three missions.
+  // Short row labels: a date needs ~70 px at this size, and the drawer leaves ~310 px for the label and three missions.
   const CELL_STATS = [['Count', r => n0(r.n)], ['First', r => r.first], ['Last', r => r.last], ['Days', r => n0(r.days)],
                       ['Median h', r => m1(r.h_med)], ['Min h', r => m1(r.h_min)], ['Max h', r => m1(r.h_max)]];
   function cellCard(id, res, edgeM, stats, missions, mode) {

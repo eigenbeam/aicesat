@@ -119,7 +119,7 @@ window.AICESAT = window.AICESAT || {};
   const n0 = n => n.toLocaleString('en-US'), m1 = v => v.toFixed(1);
   const flight = ms => [...ms].sort((a, b) => (SPANS[a] || [T1])[0] - (SPANS[b] || [T1])[0] || a.localeCompare(b));
   const cellRows = stats => flight(Object.keys(stats || {})).map(m => ({m, name: SHORT[m] || m, ...stats[m]}));
-  // Short row labels: a date needs ~70 px at this size, and the drawer leaves ~290 px for the label and three missions.
+  // Short row labels: a date needs ~70 px at this size, and the drawer leaves ~310 px for the label and three missions.
   const CELL_STATS = [['Count', r => n0(r.n)], ['First', r => r.first], ['Last', r => r.last], ['Days', r => n0(r.days)],
                       ['Median h', r => m1(r.h_med)], ['Min h', r => m1(r.h_min)], ['Max h', r => m1(r.h_max)]];
   function cellCard(id, res, edgeM, stats, missions, mode) {
