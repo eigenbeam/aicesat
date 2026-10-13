@@ -1117,9 +1117,10 @@ AICESAT.util.drawer(root, null);
 // Ladder levels: the basemap switch and the change / confidence legends live at the top of the panel, and the drawer
 // sits on the left. The Delta-h tab is gone: it pairs shots within 35 m and drops pairs > 50 m apart, which on
 // fast-thinning ice leaves almost nothing.
-// Two sub-panels at the ladder levels: Controls (basemap, cell size, time window, the mission strip -- off the map
-// here) and Analysis (the trend and confidence key and the cell counts on top, then the rest). The key lives with the
-// analysis because the cells it explains show only while that panel is open. Demo branch: the moves are permanent, so
+// Two sub-panels at the ladder levels: Controls (basemap, cell size, the mission strip -- off the map here) and
+// Analysis (time window, then the trend and confidence key and the cell counts, then the rest). The time window and
+// the key live with the analysis: the window feeds only it, and the colours the key explains show only while that
+// panel is open. Cell size stays in Controls: it also sizes the grid and the Cell panel, both shown with Analysis shut. Demo branch: the moves are permanent, so
 // the classic scene view keeps these controls only inside the ladder panels.
 // Where the TS controls live outside the ladder levels (the classic scene view): their original places in the panel.
 const TS_HOMES = [() => $('tsRes').closest('label'), () => $('tsDt').closest('label'), () => $('tsStatus')]
@@ -1150,10 +1151,10 @@ let placeTsControls = () => {};
     } catch (e) { AICESAT.showError(e); }
     rstBtn.disabled = false; rstBtn.textContent = 'Reset this hex';
   };
-  // Ladder levels: basemap, cell size, window, vertical scale and missions in Controls; key and counts in Analysis.
+  // Ladder levels: basemap, cell size, vertical scale and missions in Controls; window, key and counts in Analysis.
   // Classic view: cell size, window and the find status go back where they were (they would be hidden otherwise).
   placeTsControls = () => {
-    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline'), rst); key.append($('chgLegend'), TS_HOMES[2].el); }
+    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, vs, mh, $('timeline'), rst); key.before(TS_HOMES[1].el); key.append($('chgLegend'), TS_HOMES[2].el); }
     else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
     rst.hidden = LEVEL !== 'region';
   };
