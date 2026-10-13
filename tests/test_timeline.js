@@ -57,6 +57,13 @@ const st = T.stack('region'), cl = T.stack(null);
 assert.ok(st.indexOf('clouds') > st.indexOf('candidates') && st.indexOf('clouds') > st.indexOf('surface'));
 assert.ok(cl.indexOf('clouds') < cl.indexOf('candidates'), 'classic view keeps its picking order');
 assert.deepStrictEqual([...st].sort(), [...cl].sort(), 'same layers, different order');
+// The coloured cells show only while the Analysis panel is open: closed, the stack drops them and nothing else.
+for (const lv of ['region', 'study', null]) {
+  const shut = T.stack(lv, false), open = T.stack(lv, true);
+  assert.ok(!shut.includes('candidates'), `${lv}: no cells while Analysis is closed`);
+  assert.deepStrictEqual(open, T.stack(lv), `${lv}: open is the default stack`);
+  assert.deepStrictEqual(shut, open.filter(k => k !== 'candidates'), `${lv}: every other layer stays, in order`);
+}
 // Mission colours must not borrow the change map's meaning: ATL06 used to be the ramp's blue ("rose") and IceBridge its
 // red ("fell"), so a track read as change the data did not show. Each demo mission sits >= 35 deg of hue from both ramp
 // ends and from each other.

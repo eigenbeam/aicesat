@@ -90,9 +90,11 @@ window.AICESAT = window.AICESAT || {};
   // under the DEM, 93% under the fills), and depth testing hid them - worse the closer the camera, as the depth buffer
   // resolved the gap. Not pickable there, or a point drawn on top would steal the click meant for its hex.
   const cloudProps = level => level ? {parameters: {depthTest: false}, pickable: false} : {pickable: true};
-  const stack = level => level
+  // The candidate cells (the change map's coloured hexes) belong to the Analysis panel: `cells` false while it is
+  // collapsed or closed drops them from the stack.
+  const stack = (level, cells = true) => (level
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
-    : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
+    : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names']).filter(k => cells || k !== 'candidates');
 
   // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
   // api.region_question names it) - the model's elevation_change opens the change map without the parameter.
