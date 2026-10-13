@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,20 @@ def save(k: str, arrays: dict[str, np.ndarray], meta: dict) -> None:
             zf.writestr(name + ".npy", buf.getvalue())
     tmp.replace(CACHE_DIR / f"{k}.npz")     # atomic: a reader never sees a half-written cache entry
     (CACHE_DIR / f"{k}.json").write_text(json.dumps(meta, indent=1, default=str))
+
+
+def drop(k: str) -> int:
+    """Remove one extract (its .npz and .json); returns the bytes freed, 0 when it was not cached."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", k or ""):     # keys are sha1 hex; refuse anything that could leave CACHE_DIR
+        raise ValueError(f"invalid cache key {k!r}")
+    freed = 0
+    for p in (CACHE_DIR / f"{k}.npz", CACHE_DIR / f"{k}.json"):
+        try:
+            freed += p.stat().st_size
+            p.unlink()
+        except FileNotFoundError:
+            pass
+    return freed
 
 
 def scene_path(scene_id: str) -> Path:

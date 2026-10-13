@@ -395,6 +395,9 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lad-ctl .ctl-row { width:100%; }
 .lad-ctl .ctl-row .ctl-lbl { flex:0 0 92px; }
 .lad-ctl .ctl-val { flex:0 0 96px; text-align:right; }
+.lad-reset { flex-wrap:wrap; gap:6px; margin-top:4px; }
+.lad-reset .ctl-note { font-size:11px; opacity:.75; }
+.lad-reset[hidden] { display:none; }   /* .ctl-row sets display, which beats [hidden] */
 #ladCtl .base-switch { position:static; display:inline-flex; margin:0; }
 /* Legend sub-panel: trend, confidence, the mission strip (off the map here), counts */
 .lad-legend .chg-legend { position:static; transform:none; display:block; padding:0; background:none; margin:0; font-size:11.5px; }
@@ -9776,6 +9779,7 @@ window.AICESAT = window.AICESAT || {};
     imageryUrl: (id, v) => `/api/scene/${id}/imagery.jpg` + (v ? `?v=${v}` : ''),   // v busts the texture cache after a re-fetch
     sceneImagery: (id, source) => post(`/api/scene/${id}/imagery`, {source}),       // re-fetch imagery with a new source
     deleteScene: id => post(`/api/scene/${id}/delete`, {}),                          // remove a scene (registry + doc); never touches the lake/cache
+    resetRegion: hx => post(`/api/region/${hx}/reset`, {}),                         // a hex back to index-only: its scenes, extracts, lake cells
     coverage: a => j('/api/coverage?' + (a.bbox ? `bbox=${encodeURIComponent(JSON.stringify(a.bbox))}` : `polygon=${encodeURIComponent(JSON.stringify(a.polygon))}`)),
     extract: body => post('/api/extract', body),
     job: id => j(`/api/job/${id}`),
@@ -10059,6 +10063,7 @@ window.AICESAT = window.AICESAT || {};
         return meta;
       },
       deleteScene: async id => { const r = await call('ui_scene_delete', {scene_id: id}); imagery.delete(id); return r; },
+      resetRegion: async hx => { const r = await call('ui_region_reset', {hex: hx}); (r.scenes_deleted || []).forEach(id => imagery.delete(id)); return r; },
       coverage: a => call('ui_coverage', a),
       extract: body => call('ui_extract', body),
       job: id => call('ui_job', {job_id: id}),
@@ -11228,7 +11233,14 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
+  // api.region_question names it) - the model's elevation_change opens the change map without the parameter.
+  const regionHex = (question, hexParam) => {
+    const hx = hexParam || (/^H3 ([0-9a-f]{15})$/.exec(question || '') || [])[1];
+    return hx && h3.isValidCell(hx) ? hx : null;
+  };
+
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, regionHex, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.
@@ -12458,11 +12470,34 @@ let placeTsControls = () => {};
   vs.querySelectorAll('button').forEach(b => b.onclick = () => {
     const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
   $('zexag').addEventListener('input', syncVs); syncVs();
+  // Reset this hex (change map only): back to index-only via api.reset_region, so the next click fetches from NASA.
+  // The second click confirms; no browser dialog. Lands on the globe over the hex.
+  const rst = document.createElement('div'); rst.className = 'ctl-row lad-reset';
+  rst.innerHTML = '<button>Reset this hex</button><span class="ctl-note"></span>';
+  const rstBtn = rst.querySelector('button'), rstNote = rst.querySelector('span');
+  let rstArmed = null;
+  const rstDisarm = () => { clearTimeout(rstArmed); rstArmed = null; rstBtn.textContent = 'Reset this hex'; rstNote.textContent = ''; };
+  rstBtn.onclick = async () => {
+    const hx = AICESAT.timeline.regionHex(scene && scene.question, params.get('hex'));
+    if (!hx) { AICESAT.showError('This scene is not a change map over one hex.'); return; }
+    if (!rstArmed) {
+      rstBtn.textContent = 'Click again to reset'; rstNote.textContent = 'deletes its scenes, extracts and lake cells; the index stays';
+      rstArmed = setTimeout(rstDisarm, 5000); return;
+    }
+    rstDisarm(); rstBtn.disabled = true; rstBtn.textContent = 'Resetting…'; AICESAT.clearError();
+    try {
+      await api.resetRegion(hx);
+      const b = h3.cellToBoundary(hx), la = b.map(p => p[0]), lo = b.map(p => p[1]);
+      location.hash = '#survey/' + [Math.min(...lo), Math.min(...la), Math.max(...lo), Math.max(...la)].join(',');
+    } catch (e) { AICESAT.showError(e); }
+    rstBtn.disabled = false; rstBtn.textContent = 'Reset this hex';
+  };
   // Ladder levels: basemap, cell size, window, vertical scale and missions in Controls; legend and counts in Legend.
   // Classic view: cell size, window and the find status go back where they were (they would be hidden otherwise).
   placeTsControls = () => {
-    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline')); leg.append($('chgLegend'), TS_HOMES[2].el); }
+    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline'), rst); leg.append($('chgLegend'), TS_HOMES[2].el); }
     else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
+    rstDisarm(); rst.hidden = LEVEL !== 'region';
   };
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }

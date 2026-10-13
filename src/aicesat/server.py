@@ -312,6 +312,17 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, api.delete_scene(sid))
             except Exception as e:
                 return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/region/") and self.path.split("?")[0].endswith("/reset"):
+            hx = self.path.split("/")[3].split("?")[0]
+            try:
+                return self._json(200, api.reset_region(hx))
+            except api.Busy as e:
+                return self._json(409, {"error": str(e)})
+            except ValueError as e:
+                return self._json(400, {"error": f"{type(e).__name__}: {e}"})
+            except Exception as e:
+                log.exception("hex reset failed")
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if self.path.startswith("/api/scene/") and self.path.split("?")[0].endswith("/imagery"):
             sid = self.path.split("/")[3].split("?")[0]
             try:
@@ -652,6 +663,15 @@ def ui_scene_imagery(scene_id: str, source: str = "s2") -> dict:
 @apps.tool(name="ui_scene_delete", **_APP)
 def ui_scene_delete(scene_id: str) -> dict:
     return api.delete_scene(scene_id)
+
+
+@apps.tool(name="ui_region_reset", **_APP)
+def ui_region_reset(hex: str) -> dict:
+    """The change map's reset: app-only, never offered to the model, since it deletes fetched data."""
+    try:
+        return api.reset_region(hex)
+    except (api.Busy, ValueError) as e:
+        raise ToolError(str(e)) from e
 
 
 @apps.tool(name="ui_candidates", **_APP)

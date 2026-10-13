@@ -111,6 +111,10 @@ def delete_scene(scene_id: str) -> dict:
     if d.is_dir():
         shutil.rmtree(d, ignore_errors=True)
         existed = True
+    # 4) region_scene's memo of the job that built it: left behind, the hex's next request is handed this deleted
+    #    scene as "ready" (its job finished) instead of starting a build.
+    for hx in [h for h, m in list(_region_jobs.items()) if m.get("scene_id") == scene_id]:
+        _region_jobs.pop(hx, None)
     return {"scene_id": scene_id, "deleted": True, "existed": existed}
 
 
@@ -937,6 +941,79 @@ def region_scene(hx: str) -> dict:
         jb = start_job({"polygon": hex_polygon(hx), "question": q, **REGION_FLAGS})
         _region_jobs[hx] = {"scene_id": jb["scene_id"], "job_id": jb["id"]}
         return {**_region_jobs[hx], "status": "loading"}
+
+
+class Busy(RuntimeError):
+    """Refused because a build is running (the HTTP layer answers 409)."""
+
+
+def _hex_scenes(hx: str) -> list[str]:
+    """The scenes clicks on `hx` produced: its change map, and every study started from one. scene.js names a study
+    "study: N cells of <parent's question>", or of the parent's id when it has no question."""
+    q = region_question(hx)
+    rows = scenes()
+    region = [r["scene_id"] for r in rows if r.get("question") == q]
+    parents = (q, *region)
+    study = [r["scene_id"] for r in rows if str(r.get("question") or "").startswith("study: ")
+             and any(str(r["question"]).endswith(f" of {p}") for p in parents)]
+    return region + study
+
+
+def _hex_lake_cells(hx: str, res: int) -> tuple[set[int], set[int]]:
+    """The lake cells at `res` holding ground inside `hx`, as (wholly inside, straddling its edge).
+
+    The lake files each point under its own cell at the mission's res, so at the hex's own res that is the hex alone.
+    h3's "overlap" cover would add all six neighbours there: shared edges count as overlap."""
+    import h3
+    if res == h3.get_resolution(hx):
+        return {h3.str_to_int(hx)}, set()
+    poly = h3.LatLngPoly(h3.cell_to_boundary(hx))
+    over = {h3.str_to_int(c) for c in h3.h3shape_to_cells_experimental(poly, res, contain="overlap")}
+    full = {h3.str_to_int(c) for c in h3.h3shape_to_cells_experimental(poly, res, contain="full")}
+    return full, over - full
+
+
+def reset_region(hx: str) -> dict:
+    """Return hex `hx` to its state before anyone clicked it: only the index built.
+
+    Removes the hex's change-map scene and the studies started from it, the extracts those scenes point at, and in
+    every lake mission the cells holding ground inside the hex (files and ingest rows), so the next click fetches from
+    NASA again. Keeps the index and coverage manifests, imagery and the DEM, and other hexes' scenes and res-5 lake
+    cells. A finer cell straddling the hex edge (ATL03's res 6) is forgotten whole, its neighbour side too; the result
+    lists those under "straddling". Refused while any build runs: one could write the hex's cells back mid-reset."""
+    import h3
+    from . import lake
+
+    if not (isinstance(hx, str) and h3.is_valid_cell(hx)):
+        raise ValueError(f"invalid H3 cell {hx!r}")
+    with _region_lock:
+        running = sorted(j["id"] for j in _jobs.values() if j.get("status") == "running")
+        if running:
+            raise Busy(f"a build is running (job {', '.join(running)}); reset the hex once it finishes")
+        if not lake.drain_writes():
+            raise Busy("background lake writes are still settling; try again shortly")
+        sids = _hex_scenes(hx)
+        keys = {s["cache_key"] for sid in sids for s in ((cache.load_scene(sid) or {}).get("series") or {}).values()
+                if s.get("cache_key")}
+        freed = [cache.drop(k) for k in sorted(keys)]
+        for sid in sids:
+            delete_scene(sid)
+        _region_jobs.pop(hx, None)
+        forgotten, straddling = {}, {}
+        for m in lake.held_missions():
+            held = lake.held_cells(m)
+            inside, edge = set(), set()
+            for r in {h3.get_resolution(h3.int_to_str(c)) for c in held}:
+                i, e = _hex_lake_cells(hx, r)
+                inside |= i & held; edge |= e & held
+            if inside or edge:
+                out = lake.forget_cells(m, inside | edge, reason=f"reset hex {hx}")
+                forgotten[m] = {**out, "cells": sorted(h3.int_to_str(c) for c in out["cells"])}
+            if edge:
+                straddling[m] = sorted(h3.int_to_str(c) for c in edge)
+    return {"hex": hx, "scenes_deleted": sids, "extracts_deleted": sum(1 for b in freed if b),
+            "extract_bytes": sum(freed), "lake": forgotten, "straddling": straddling,
+            "kept": ["index", "imagery", "DEM"]}
 
 
 def cell_geometry(scene_id: str, h3: str, h3_res: int = 8, delta_t: float = 1.0, ref_missions=None) -> dict:

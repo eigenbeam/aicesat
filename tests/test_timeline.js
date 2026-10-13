@@ -70,4 +70,9 @@ for (const m of DEMO) for (const [end, c] of [['fell', fell], ['rose', rose]])
   assert.ok(apart(PAL[m], c) >= 35, `${m} is ${apart(PAL[m], c).toFixed(0)} deg from the ramp's "${end}" colour`);
 for (const a of DEMO) for (const b of DEMO) if (a < b)
   assert.ok(apart(PAL[a], PAL[b]) >= 35, `${a} and ${b} are ${apart(PAL[a], PAL[b]).toFixed(0)} deg apart`);
+// the change map's hex: the globe passes ?hex=, the model's elevation_change opens it with only the scene's question
+assert.strictEqual(T.regionHex('H3 8506f257fffffff', '8506f2cffffffff'), '8506f2cffffffff', 'the URL wins');
+assert.strictEqual(T.regionHex('H3 8506f257fffffff', null), '8506f257fffffff', 'else the question names it');
+assert.strictEqual(T.regionHex('study: 2 cells of H3 8506f257fffffff', null), null, 'a study is not a change map');
+assert.strictEqual(T.regionHex('my drawn box', 'zzz'), null, 'nothing that is not a cell');
 console.log('timeline ok');

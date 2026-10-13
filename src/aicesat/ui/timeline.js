@@ -94,7 +94,14 @@ window.AICESAT = window.AICESAT || {};
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, SPANS, T0, T1};
+  // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
+  // api.region_question names it) - the model's elevation_change opens the change map without the parameter.
+  const regionHex = (question, hexParam) => {
+    const hx = hexParam || (/^H3 ([0-9a-f]{15})$/.exec(question || '') || [])[1];
+    return hx && h3.isValidCell(hx) ? hx : null;
+  };
+
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, regionHex, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

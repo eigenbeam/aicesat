@@ -1124,11 +1124,34 @@ let placeTsControls = () => {};
   vs.querySelectorAll('button').forEach(b => b.onclick = () => {
     const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
   $('zexag').addEventListener('input', syncVs); syncVs();
+  // Reset this hex (change map only): back to index-only via api.reset_region, so the next click fetches from NASA.
+  // The second click confirms; no browser dialog. Lands on the globe over the hex.
+  const rst = document.createElement('div'); rst.className = 'ctl-row lad-reset';
+  rst.innerHTML = '<button>Reset this hex</button><span class="ctl-note"></span>';
+  const rstBtn = rst.querySelector('button'), rstNote = rst.querySelector('span');
+  let rstArmed = null;
+  const rstDisarm = () => { clearTimeout(rstArmed); rstArmed = null; rstBtn.textContent = 'Reset this hex'; rstNote.textContent = ''; };
+  rstBtn.onclick = async () => {
+    const hx = AICESAT.timeline.regionHex(scene && scene.question, params.get('hex'));
+    if (!hx) { AICESAT.showError('This scene is not a change map over one hex.'); return; }
+    if (!rstArmed) {
+      rstBtn.textContent = 'Click again to reset'; rstNote.textContent = 'deletes its scenes, extracts and lake cells; the index stays';
+      rstArmed = setTimeout(rstDisarm, 5000); return;
+    }
+    rstDisarm(); rstBtn.disabled = true; rstBtn.textContent = 'Resetting…'; AICESAT.clearError();
+    try {
+      await api.resetRegion(hx);
+      const b = h3.cellToBoundary(hx), la = b.map(p => p[0]), lo = b.map(p => p[1]);
+      location.hash = '#survey/' + [Math.min(...lo), Math.min(...la), Math.max(...lo), Math.max(...la)].join(',');
+    } catch (e) { AICESAT.showError(e); }
+    rstBtn.disabled = false; rstBtn.textContent = 'Reset this hex';
+  };
   // Ladder levels: basemap, cell size, window, vertical scale and missions in Controls; legend and counts in Legend.
   // Classic view: cell size, window and the find status go back where they were (they would be hidden otherwise).
   placeTsControls = () => {
-    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline')); leg.append($('chgLegend'), TS_HOMES[2].el); }
+    if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline'), rst); leg.append($('chgLegend'), TS_HOMES[2].el); }
     else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
+    rstDisarm(); rst.hidden = LEVEL !== 'region';
   };
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }

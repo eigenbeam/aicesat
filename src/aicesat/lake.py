@@ -827,6 +827,54 @@ def evict_cells(cells, mission: str = "ICESAT2", reason: str = "manual", stats: 
     return evicted
 
 
+def held_missions() -> list[str]:
+    """Missions the lake holds anything for: a mission directory, or ingest rows."""
+    ms = set(_lake_missions())
+    if META_DB.exists():
+        with meta_db() as con:
+            ms |= {m for (m,) in con.execute("SELECT DISTINCT mission FROM coverage_cells").fetchall()}
+    return sorted(ms)
+
+
+def held_cells(mission: str) -> set[int]:
+    """Cells the lake holds anything for in `mission`: a Parquet directory, or an ingest row. index_atl06 marks every
+    wanted cell of a fetched chunk, so an all-fill cell has rows and no directory."""
+    d = LAKE_DIR / f"mission={mission}"
+    cells = {int(p.name.split("=", 1)[1]) for p in d.glob("h3_cell=*")} if d.exists() else set()
+    if META_DB.exists():
+        with meta_db() as con:
+            cells |= {int(c) for (c,) in con.execute(
+                "SELECT DISTINCT h3_cell FROM coverage_cells WHERE mission = ?", [mission]).fetchall()}
+    return cells
+
+
+def forget_cells(mission: str, cells, reason: str) -> dict:
+    """Return cells to never-fetched: their Parquet files AND every ingest row, so the next request fetches them again.
+
+    evict_cells is the size limit's tool and frees only what holds bytes: a cell with rows but no file keeps its rows,
+    and the planner skips any chunk whose wanted cells all have rows. Stats are read for these cells alone, not by
+    walking the whole mission (evict_cells' default when it is not handed them)."""
+    import shutil
+
+    cells = sorted({int(c) for c in cells})
+    if not cells:
+        return {"cells": [], "bytes": 0, "rows": 0}
+    if not drain_writes(mission, cells):
+        raise RuntimeError(f"background lake writes over {mission} did not settle; nothing was forgotten")
+    rows = 0
+    if META_DB.exists():
+        ph = ",".join("?" * len(cells))
+        with meta_db() as con:
+            rows = con.execute(f"SELECT count(*) FROM coverage_cells WHERE mission = ? AND h3_cell IN ({ph})",
+                               [mission, *cells]).fetchone()[0]
+            con.execute(f"DELETE FROM coverage_cells WHERE mission = ? AND h3_cell IN ({ph})", [mission, *cells])
+    stats = {c: s for c in cells if (s := _scan_cell(cell_dir(mission, c), c, with_rows=False))}
+    evicted = evict_cells(list(stats), mission=mission, reason=reason, stats=stats) if stats else []
+    for c in cells:                          # a directory with no Parquet in it (emptied, half-written) has no stats
+        shutil.rmtree(cell_dir(mission, c), ignore_errors=True)
+    return {"cells": cells, "bytes": sum(e["bytes"] for e in evicted), "rows": int(rows)}
+
+
 def enforce_limit(protect=(), mission: str = "ICESAT2") -> list[dict]:
     """Evict least-recently-ingested cells until the lake is under max_bytes; never touches `protect` cells."""
     limit = int(get_settings()["max_bytes"])
