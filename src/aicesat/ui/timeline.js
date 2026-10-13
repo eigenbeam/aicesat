@@ -100,8 +100,12 @@ window.AICESAT = window.AICESAT || {};
     const hx = hexParam || (/^H3 ([0-9a-f]{15})$/.exec(question || '') || [])[1];
     return hx && h3.isValidCell(hx) ? hx : null;
   };
+  // Where the globe lands after a hex is reset: a 2-degree box on its centre. MapView.flyTo makes that zoom ~6, where
+  // the grid is res 5 and the hex can be clicked to rebuild; the hex's own extent zooms in to res 6, where no
+  // coverage hex exists to click. Fixed in degrees, not hex widths: a hex's width in degrees varies with latitude.
+  const globeBox = hx => { const [la, lo] = h3.cellToLatLng(hx); return [lo - 1, la - 1, lo + 1, la + 1]; };
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, regionHex, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, regionHex, globeBox, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

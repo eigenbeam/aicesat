@@ -1141,8 +1141,7 @@ let placeTsControls = () => {};
     rstDisarm(); rstBtn.disabled = true; rstBtn.textContent = 'Resetting…'; AICESAT.clearError();
     try {
       await api.resetRegion(hx);
-      const b = h3.cellToBoundary(hx), la = b.map(p => p[0]), lo = b.map(p => p[1]);
-      location.hash = '#survey/' + [Math.min(...lo), Math.min(...la), Math.max(...lo), Math.max(...la)].join(',');
+      location.hash = '#survey/' + AICESAT.timeline.globeBox(hx).join(',');
     } catch (e) { AICESAT.showError(e); }
     rstBtn.disabled = false; rstBtn.textContent = 'Reset this hex';
   };

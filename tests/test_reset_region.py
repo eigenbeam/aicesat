@@ -265,9 +265,10 @@ def test_the_app_can_reset_a_hex_and_the_model_cannot():
 
 
 @pytest.mark.skipif(__import__("shutil").which("node") is None, reason="node not available")
-def test_both_adapters_send_the_reset_to_the_server():
+@pytest.mark.parametrize("js", ["test_adapter_reset.js", "test_reset_landing.js"])
+def test_the_page_side_of_the_reset(js):
+    """Both adapters send the reset to the server; the globe lands where the hex can be clicked again."""
     import subprocess
     from pathlib import Path
-    r = subprocess.run(["node", str(Path(__file__).with_name("test_adapter_reset.js"))], capture_output=True, text=True,
-                       timeout=60)
-    assert r.returncode == 0, f"adapter reset checks failed:\n{r.stdout}\n{r.stderr}"
+    r = subprocess.run(["node", str(Path(__file__).with_name(js))], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"{js} failed:\n{r.stdout}\n{r.stderr}"
