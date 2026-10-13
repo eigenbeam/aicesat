@@ -25,6 +25,7 @@ window.AICESAT = window.AICESAT || {};
     jobs: () => j('/api/jobs'),
     coregister: id => post(`/api/coregister/${id}`, {}),
     candidates: (id, opts) => post(`/api/candidates/${id}`, opts || {}),
+    cells: (id, opts) => post(`/api/cells/${id}`, opts || {}),                        // per-cell, per-mission counts, dates, heights
     collections: () => j('/api/collections'),
     claims: () => j('/api/claims'),
     coverageHexes: (res, bbox) => j('/api/coverage_hexes?res=' + res + (bbox ? '&bbox=' + encodeURIComponent(JSON.stringify(bbox)) : '')),
@@ -311,6 +312,11 @@ window.AICESAT = window.AICESAT || {};
       candidates: async (id, opts) => {   // chunked: a hex's full candidate set is several host-sized tool results
         let text = '', n = 1;
         for (let c = 0; c < n; c++) { const d = await call('ui_candidates', {scene_id: id, ...(opts || {}), chunk: c}); n = d.n_chunks; text += d.text; }
+        return JSON.parse(text);
+      },
+      cells: async (id, opts) => {        // chunked like candidates: at the finest cell size a hex's stats are megabytes
+        let text = '', n = 1;
+        for (let c = 0; c < n; c++) { const d = await call('ui_cells', {scene_id: id, ...(opts || {}), chunk: c}); n = d.n_chunks; text += d.text; }
         return JSON.parse(text);
       },
       collections: () => call('ui_collections'),

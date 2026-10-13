@@ -356,6 +356,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 log.exception("candidates failed")
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if self.path.startswith("/api/cells/"):
+            sid = self.path.split("/")[3].split("?")[0]
+            try:
+                return self._json(200, api.scene_cells(sid, h3_res=int(self._body().get("h3_res", 8))))
+            except KeyError:
+                return self._json(404, {"error": "no such scene"})
+            except Exception as e:
+                log.exception("cells failed")
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         self.send_error(404)
 
 
@@ -685,6 +694,15 @@ def ui_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0, ref_miss
     tool results past ~150k characters. The search is memoised, so each chunk is a slice of the same answer."""
     out = api.scene_candidates(scene_id, h3_res=h3_res, delta_t=delta_t, ref_missions=ref_missions, min_bins=min_bins)
     text = json.dumps(out, default=cache._json_default)
+    n, c = max(1, -(-len(text) // api.MCP_CHUNK_BYTES)), int(chunk)
+    return {"n_chunks": n, "chunk": c, "text": text[c * api.MCP_CHUNK_BYTES:(c + 1) * api.MCP_CHUNK_BYTES]}
+
+
+@apps.tool(name="ui_cells", **_APP)
+def ui_cells(scene_id: str, h3_res: int = 8, chunk: int = 0) -> dict:
+    """What each H3 cell of a scene holds (api.scene_cells), as JSON text in MCP_CHUNK_BYTES slices like
+    ui_candidates: at the finest cell size a demo hex's answer is ~3.8 MB. Memoised, so each chunk slices one answer."""
+    text = json.dumps(api.scene_cells(scene_id, h3_res=h3_res), default=cache._json_default)
     n, c = max(1, -(-len(text) // api.MCP_CHUNK_BYTES)), int(chunk)
     return {"n_chunks": n, "chunk": c, "text": text[c * api.MCP_CHUNK_BYTES:(c + 1) * api.MCP_CHUNK_BYTES]}
 

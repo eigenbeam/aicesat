@@ -65,6 +65,44 @@ const plain = T.cellPaint(thin, false, 370);
 for (const c of [thick, low]) assert.deepStrictEqual(T.cellPaint(c, false, 370), plain, 'shut: one look for every cell');
 assert.ok(plain.fill[3] > 0 && plain.line[3] > 0 && plain.width > 0, 'shut: the cell persists');
 assert.notDeepStrictEqual(plain.fill, T.cellPaint(thin, true, 370).fill, 'open: the trend colour, not the plain fill');
+// A cell the analysis did not pick looks plain open or shut; an empty cell is fainter still, but there to hover.
+assert.deepStrictEqual(T.cellPaint(null, true, 370), plain, 'not a candidate: plain even with Analysis open');
+const empty = T.cellPaint(null, false, 370, true);
+assert.ok(empty.line[3] < plain.line[3] && empty.fill[3] <= plain.fill[3] && empty.fill[3] > 0, 'empty: fainter, still pickable');
+assert.deepStrictEqual(T.cellPaint(null, true, 370, true), empty);
+
+// Which cells the change map draws: the whole area tiled, empty cells included, down to res 9; finer, only the cells
+// holding data. Edge cells with data (centre outside the area) are drawn too.
+const AHX = '8506f257fffffff', aring = h3.cellToBoundary(AHX, true);   // [lon, lat], as a scene's polygon is
+const kids8 = new Set(h3.cellToChildren(AHX, 8));
+const outside = h3.gridRing(h3.cellToCenterChild(AHX, 8), 13).find(c => !kids8.has(c) && h3.cellToParent(c, 5) !== AHX);
+const t8 = new Set(T.areaCells(aring, 8, [outside]));
+assert.ok(t8.size > 300 && t8.size < 400, 'res 8 tiles the res-5 hex: ' + t8.size);
+assert.ok(outside && t8.has(outside), 'an edge cell holding data is drawn');
+assert.ok([...t8].every(c => h3.getResolution(c) === 8));
+assert.strictEqual(T.TILE_MAX_RES, 9);
+assert.ok(T.areaCells(aring, 9, []).length > 2000, 'res 9 still tiles');
+const data10 = h3.cellToChildren(h3.cellToCenterChild(AHX, 9), 10).slice(0, 3);
+assert.deepStrictEqual(T.areaCells(aring, 10, data10).sort(), [...data10].sort(), 'res 10: only the cells holding data');
+assert.deepStrictEqual(T.areaCells(null, 8, ['a']), ['a'], 'no area: the data cells');
+
+// What a cell holds, as the hover and the Cell panel say it: missions in flight order, counts, dates, heights.
+const ST = {ATL06: {n: 1234, first: '2019-03-02', last: '2026-01-15', days: 31, h_med: 242.04, h_min: 238.1, h_max: 245.9},
+            GLAS: {n: 1, first: '2003-10-08', last: '2003-10-08', days: 1, h_med: 250.0, h_min: 250.0, h_max: 250.0}};
+assert.deepStrictEqual(T.cellRows(ST).map(r => r.m), ['GLAS', 'ATL06'], 'flight order');
+const tip = T.cellTip('8806f257e1fffff', 8, 531, ST);
+assert.ok(tip.startsWith('H3 8806f257e1fffff · res 8 · ~531 m edge\n'), tip);
+assert.ok(tip.indexOf('ICESat ') < tip.indexOf('ICESat-2 · land ice'), tip);
+for (const s of ['1,234 measurements', '2019-03-02 → 2026-01-15', '31 days', 'median 242.0 m', '238.1 – 245.9',
+                 '1 measurement\n  2003-10-08 (1 day)', '250.0 m'])
+  assert.ok(tip.includes(s), `tooltip lacks "${s}":\n${tip}`);
+assert.ok(!tip.includes('2003-10-08 →'), 'one day reads as one date');
+assert.ok(T.cellTip('x', 8, 531, {}).endsWith('\nno measurements'));
+assert.ok(T.cellTip('x', 8, 531, undefined).endsWith('\nno measurements'));
+const card = T.cellCard('8806f257e1fffff', 8, 531, ST);
+for (const s of ['8806f257e1fffff', 'ICESat-2 · land ice', '1,234', '2019-03-02 → 2026-01-15', '31 days', 'median 242.0 m'])
+  assert.ok(card.includes(s), `card lacks "${s}"`);
+assert.ok(T.cellCard('x', 8, 531, {}).includes('No measurements'));
 // Mission colours must not borrow the change map's meaning: ATL06 used to be the ramp's blue ("rose") and IceBridge its
 // red ("fell"), so a track read as change the data did not show. Each demo mission sits >= 35 deg of hue from both ramp
 // ends and from each other.

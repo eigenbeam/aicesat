@@ -416,3 +416,38 @@ def candidates(doc: dict, h3_res: int = 8, delta_t: float = 1.0, ref_missions=No
 
     out.sort(key=lambda c: (c["confidence"], c["n_bins"], c["span_years"]), reverse=True)
     return {"params": params, "candidates": out}          # every qualifying cell; ranking is the UI's to truncate
+
+
+def _day_of(yr) -> np.ndarray:
+    """The calendar day (datetime64[D]) of each decimal year: coreg.decimal_year's inverse, exact to the millisecond."""
+    yr = np.asarray(yr, "f8")
+    y = np.floor(yr).astype("i8")
+    y0 = (y - 1970).astype("datetime64[Y]").astype("datetime64[ms]")
+    y1 = (y - 1969).astype("datetime64[Y]").astype("datetime64[ms]")
+    ms = np.round((yr - y) * (y1 - y0).astype("f8")).astype("i8").astype("timedelta64[ms]")
+    return (y0 + ms).astype("datetime64[D]")
+
+
+def cell_stats(doc: dict, h3_res: int = 8, common_epoch: float = 2005.0) -> dict:
+    """What each H3 cell at h3_res holds, per mission: how many measurements, over which dates (first, last, and the
+    distinct days -- roughly the passes), and their heights (median, min, max; ellipsoidal metres, as the analysis
+    uses them). Binned exactly as candidates() bins -- the same _load_all positions, the same _cells_of -- so a
+    cell's counts are the counts its analysis used. Every point counts. Only cells holding data appear."""
+    recs = _load_all(doc, common_epoch)
+    cells: dict = {}
+    for r in recs:
+        if not r["h"].size:
+            continue
+        ids = _cells_of(r["lat"], r["lon"], h3_res)
+        order = np.argsort(ids, kind="mergesort")
+        uniq, starts = np.unique(ids[order], return_index=True)
+        ends = np.append(starts[1:], order.size)
+        h, day = r["h"][order], _day_of(r["yr"])[order]
+        for u, a, b in zip(uniq, starts, ends):
+            hh, dd = h[a:b], day[a:b]
+            cells.setdefault(h3.int_to_str(int(u)), {})[r["mission"]] = {
+                "n": int(b - a), "first": str(dd.min()), "last": str(dd.max()), "days": int(np.unique(dd).size),
+                "h_med": round(float(np.median(hh)), 2), "h_min": round(float(hh.min()), 2),
+                "h_max": round(float(hh.max()), 2)}
+    return {"params": {"h3_res": int(h3_res), "common_epoch": common_epoch,
+                       "missions_present": [r["mission"] for r in recs]}, "cells": cells}

@@ -397,6 +397,13 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lad-legend .timeline { position:static; transform:none; width:auto; background:none; border:none; border-radius:0; padding:2px 6px 0; backdrop-filter:none; }
 .lad-legend #tsStatus { display:block; margin-top:6px; color:var(--muted); }
 #tsKey { margin-bottom:8px; }
+/* Cell sub-panel: what the clicked cell holds, per mission */
+.cell-body { font-size:11.5px; }
+.cell-id { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:var(--muted); margin-bottom:6px; }
+.cell-m { margin:0 0 6px; }
+.cell-mh { display:flex; justify-content:space-between; gap:8px; }
+.cell-ml { color:var(--muted); }
+.cell-note { color:var(--muted); font-size:10.5px; margin-top:4px; opacity:.8; }
 .lg-note { text-transform:none; letter-spacing:0; font-weight:400; opacity:.8; }
 .ts-mode { margin:0 0 4px; color:var(--muted); min-height:1em; }
 .dl-body { display:flex; flex-direction:column; gap:6px; }

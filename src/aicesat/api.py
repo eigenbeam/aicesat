@@ -849,6 +849,34 @@ def scene_candidates(scene_id: str, h3_res: int = 8, delta_t: float = 1.0, ref_m
     return out
 
 
+_CELLS_MEMO: dict = {}
+
+
+def scene_cells(scene_id: str, h3_res: int = 8) -> dict:
+    """timeseries.cell_stats for a built scene: what each H3 cell at h3_res holds, per mission. The change map asks
+    for it beside the candidates on every cell-size change, so it is memoised the same way (key and invalidation from
+    _cand_key), in its own memo so the two do not evict each other."""
+    from . import timeseries
+    try:
+        key = _cand_key(scene_id, h3_res, 0.0, None, 0)
+    except OSError:
+        raise KeyError(scene_id) from None
+    with _CAND_MEMO_LOCK:
+        hit = _CELLS_MEMO.get(key)
+    if hit is not None:
+        return hit
+    doc = cache.load_scene(scene_id)
+    if doc is None:
+        raise KeyError(scene_id)
+    with _lock:
+        out = timeseries.cell_stats(doc, h3_res=int(h3_res))
+    with _CAND_MEMO_LOCK:
+        _CELLS_MEMO[key] = out
+        while len(_CELLS_MEMO) > _CAND_MEMO_MAX:
+            _CELLS_MEMO.pop(next(iter(_CELLS_MEMO)))
+    return out
+
+
 # --- model-facing projection of the search -------------------------------------------------------------------
 # A caller with a context window cannot take the full result: it carries every cell's time series plus the hex
 # boundary in scene-local metres (42 KB / 36 cells on one real scene, 159 KB / 133 on another). The viewer wants all

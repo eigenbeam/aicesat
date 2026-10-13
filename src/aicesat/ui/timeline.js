@@ -93,12 +93,48 @@ window.AICESAT = window.AICESAT || {};
   const stack = level => level
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
     : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
-  // A change-map cell's paint (unselected, not picked for a study). The trend colour belongs to the Analysis panel,
-  // which holds its key: with the panel shut (`coloured` false) every cell is the same plain outline, still there to
-  // hover and click. The plain fill stays faintly non-zero, like the classic view's.
-  const cellPaint = (c, coloured, lim) => coloured
+  // A change-map cell's paint (unselected). The trend colour belongs to the Analysis panel, which holds its key: only
+  // a candidate `c`, and only with the panel open (`coloured`), is coloured. Every other cell is a plain outline, an
+  // empty one fainter; all stay there to hover and click, so no fill drops to zero (as the classic view's never does).
+  const cellPaint = (c, coloured, lim, empty) => c && coloured
     ? {fill: trendColor(c.trend_cm_yr, c.level, lim), line: [20, 20, 26, 110], width: 0.7}
-    : {fill: [200, 214, 245, 18], line: [225, 232, 245, 170], width: 1};
+    : empty ? {fill: [200, 214, 245, 8], line: [225, 232, 245, 70], width: 0.7}
+            : {fill: [200, 214, 245, 18], line: [225, 232, 245, 170], width: 1};
+
+  // The cells a change map draws: every cell over the scene's area (`ring`, [lon, lat]) down to TILE_MAX_RES, empty
+  // ones too so a gap in coverage shows as an empty cell, plus each cell holding data (an edge cell can hold data with
+  // its centre outside the area). Finer than that, only the cells holding data: a res-5 hex is 16,807 cells at res 10
+  // and 117,649 at res 11.
+  const TILE_MAX_RES = 9;
+  function areaCells(ring, res, withData) {
+    const ids = new Set(withData);
+    if (res <= TILE_MAX_RES && ring && ring.length >= 3) for (const c of h3.polygonToCells([ring], res, true)) ids.add(c);
+    return [...ids];
+  }
+
+  // What a cell holds (api.scene_cells), as the hover and the Cell panel say it: missions in flight order, each with
+  // its count, dates and heights (metres above the WGS84 ellipsoid, as measured).
+  const n0 = n => n.toLocaleString('en-US'), m1 = v => v.toFixed(1);
+  const cellRows = stats => Object.keys(stats || {})
+    .sort((a, b) => (SPANS[a] || [T1])[0] - (SPANS[b] || [T1])[0] || a.localeCompare(b))
+    .map(m => ({m, name: SHORT[m] || m, ...stats[m]}));
+  const count = r => `${n0(r.n)} measurement${r.n === 1 ? '' : 's'}`;
+  const when = r => (r.first === r.last ? r.first : `${r.first} → ${r.last}`) + ` (${r.days} day${r.days === 1 ? '' : 's'})`;
+  const height = r => r.h_min === r.h_max ? `${m1(r.h_med)} m` : `median ${m1(r.h_med)} m, ${m1(r.h_min)} – ${m1(r.h_max)}`;
+  const cellHead = (id, res, edgeM) => `H3 ${id} · res ${res}` + (edgeM ? ` · ~${n0(edgeM)} m edge` : '');
+  function cellTip(id, res, edgeM, stats) {
+    const rows = cellRows(stats);
+    return cellHead(id, res, edgeM) + '\n' + (rows.length
+      ? rows.map(r => `${r.name}: ${count(r)}\n  ${when(r)}\n  ${height(r)}`).join('\n') : 'no measurements');   // narrow: it sits by the cursor
+  }
+  function cellCard(id, res, edgeM, stats) {
+    const rows = cellRows(stats), M = AICESAT.missions;
+    const block = r => `<div class="cell-m"><div class="cell-mh"><b style="color:rgb(${(M ? M.colorOf(r.m, null) : [200, 200, 210]).join(',')})">${r.name}</b>` +
+      `<span>${count(r)}</span></div><div class="cell-ml">${when(r)}</div><div class="cell-ml">${height(r)}</div></div>`;
+    return `<div class="cell-id">${cellHead(id, res, edgeM)}</div>` +
+      (rows.length ? rows.map(block).join('') + '<div class="cell-note">Heights in metres above the WGS84 ellipsoid.</div>'
+                   : '<div class="cell-ml">No measurements in this cell.</div>');
+  }
 
   // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
   // api.region_question names it) - the model's elevation_change opens the change map without the parameter.
@@ -111,7 +147,7 @@ window.AICESAT = window.AICESAT || {};
   // coverage hex exists to click. Fixed in degrees, not hex widths: a hex's width in degrees varies with latitude.
   const globeBox = hx => { const [la, lo] = h3.cellToLatLng(hx); return [lo - 1, la - 1, lo + 1, la + 1]; };
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, cellPaint, regionHex, globeBox, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, cellPaint, TILE_MAX_RES, areaCells, cellRows, cellTip, cellCard, regionHex, globeBox, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.
