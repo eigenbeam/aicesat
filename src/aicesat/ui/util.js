@@ -37,11 +37,14 @@ window.AICESAT = window.AICESAT || {};
   U.el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); } if (html) e.innerHTML = html; return e; };
   U.bboxOfPolygon = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
   U.areaRing = a => a.bbox ? [[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[1]], [a.bbox[2], a.bbox[3]], [a.bbox[0], a.bbox[3]]] : a.polygon;
+  // Does a panel start collapsed? The reader's remembered choice ('1' / '0') wins; with none, the panel's own
+  // data-collapsed="1" default, else open.
+  U.startCollapsed = (remembered, dataset) => remembered != null ? remembered === '1' : dataset.collapsed === '1';
   // panel manager: each panel gets a header with a collapse caret + close; collapsed state is remembered.
   U.panels = (root, menu) => {
     const panels = [...root.querySelectorAll('.panel, .exag')];
     const store = (id, v) => { try { localStorage.setItem('aicesat.panel.' + id + '.c', v ? '1' : '0'); } catch (e) {} };
-    const stored = id => { try { return localStorage.getItem('aicesat.panel.' + id + '.c') === '1'; } catch (e) { return false; } };
+    const stored = id => { try { return localStorage.getItem('aicesat.panel.' + id + '.c'); } catch (e) { return null; } };
     for (const p of panels) {
       if (p.querySelector(':scope > .phead')) continue;             // idempotent
       const heading = p.querySelector(':scope > h1, :scope > h2');
@@ -60,7 +63,7 @@ window.AICESAT = window.AICESAT || {};
       caret.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
       label.onclick = () => setCollapsed(!p.classList.contains('collapsed'));
       close.onclick = () => { p.hidden = true; refresh(); };
-      if (stored(p.id)) setCollapsed(true, false);
+      if (U.startCollapsed(stored(p.id), p.dataset)) setCollapsed(true, false);
     }
     const refresh = () => { if (!menu) return; menu.innerHTML = '<option value="">panels…</option>' + panels.filter(p => p.hidden).map(p => `<option value="${p.id}">show ${p.dataset.title || p.id}</option>`).join(''); };
     if (menu) menu.onchange = e => { const p = root.querySelector('#' + CSS.escape(e.target.value)); if (p) { p.hidden = false; p.dispatchEvent(new Event('reopen')); } e.target.value = ''; refresh(); };
