@@ -21,10 +21,28 @@ GPS_EPOCH_MS = np.datetime64(datetime(1980, 1, 6) - timedelta(seconds=18), "ms")
 LAND_ICE_COL = 3
 
 
+EDGE_SHRINK_DEG = 2e-6   # ~0.2 m: past api.hex_polygon's 1e-6 rounding, far inside any real overlap
+
+
+def _shrunk_ring(ring: list) -> list:
+    """`ring` ([lon, lat] vertices) moved inward by EDGE_SHRINK_DEG, or unchanged when the area is too small to shrink.
+
+    h3 'overlap' counts a cell that only SHARES the area's edge: a change map's selection is an H3 cell, so its six
+    neighbours came along and every mission fetched them for the scene clip to throw away (measured on EC2: 2.3x the
+    ATL06 fetch time, 2.9x the bytes). Shrinking by a hair drops zero-area touches and keeps every real overlap."""
+    from shapely.geometry import Polygon
+    g = Polygon(ring).buffer(-EDGE_SHRINK_DEG, join_style="mitre")
+    if g.is_empty or g.geom_type != "Polygon":
+        return ring
+    return [list(p) for p in g.exterior.coords[:-1]]
+
+
 def cells_for_bbox(bbox, res: int = index.H3_RES, dilate: int = 1, polygon=None) -> list[int]:
-    """Every cell that overlaps the area (h3 'overlap' containment when available, else centre-containment + k-ring)."""
+    """Every cell that overlaps the area (h3 'overlap' containment when available, else centre-containment + k-ring).
+    Cells that only share the area's edge do not count (_shrunk_ring)."""
     w, s, e, n = bbox
-    poly = h3.LatLngPoly([(la, lo) for lo, la in polygon]) if polygon else h3.LatLngPoly([(s, w), (s, e), (n, e), (n, w)])
+    ring = _shrunk_ring(polygon if polygon else [[w, s], [e, s], [e, n], [w, n]])
+    poly = h3.LatLngPoly([(la, lo) for lo, la in ring])
     try:
         cells = set(h3.h3shape_to_cells_experimental(poly, res, contain="overlap"))
     except Exception:
