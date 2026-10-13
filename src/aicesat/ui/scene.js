@@ -615,11 +615,6 @@ function sceneTooltip(info) {
     text = lineTip(info.object.kind, info.object.value);
   } else if (id === 'hexgrid' && info.object) {
     text = gridTip(info.object.cell, info.object.res, info.object.edge_m, info.object.counts);
-  } else if (id === 'cells' && info.object) {
-    const d = info.object, c = d.ci >= 0 ? candidates[d.ci] : null;
-    text = AICESAT.timeline.cellTip(d.g.id, CELLS.res, AICESAT.ts.cellEdgeM(CELLS.res), d.g.stats) +
-           (c && analysisShown() ? `\ntrend ${c.trend_cm_yr >= 0 ? '+' : '−'}${Math.abs(c.trend_cm_yr / 100).toFixed(2)} m/yr · ${c.level} confidence` : '') +
-           (d.g.id === CELL_HELD ? '\nclick to release' : '\nclick to pin');
   } else if (id === 'cands' && info.object && info.object.c && !LEVEL) {
     const c = info.object.c;
     text = `H3 ${c.h3}\n${(c.trend_cm_yr / 100).toFixed(2)} m/yr over ${Math.round(c.span_years)} yr · ${c.level} confidence` +
@@ -1178,9 +1173,11 @@ function analysisShown() { const p = $('tspanel'); return !p.hidden && !p.classL
 { const nh = $('navhint'); if (nh) { $('deck').addEventListener('pointerdown', () => nh.classList.add('hide'), {once: true}); setTimeout(() => nh.classList.add('hide'), 6000); } }
 // ---------------------------------------------------------------- time series over coincident cells
 let candidates = [], candSel = -1, candHover = -1;
-// The change map's cells (ladder levels): what each holds at CELLS.res (api.scene_cells) and the one clicked.
-// CELL_HELD is any cell's id; when that cell is a candidate, candSel points at it too.
-let CELLS = {res: null, stats: null}, CELL_HELD = null, cellGridMemo = null, cellPolyMemo = null, candIndex = null;
+// The change map's cells (ladder levels): what each holds at CELLS.res (api.scene_cells), the one clicked (pinned) and
+// the last one the mouse crossed. CELL_HELD is any cell's id; when that cell is a candidate, candSel points at it too.
+// The Cell panel shows the pinned cell, else the last one hovered -- kept when the mouse leaves the cells, so it can
+// be read from the panel.
+let CELLS = {res: null, stats: null, missions: []}, CELL_HELD = null, CELL_HOVER = null, cellGridMemo = null, cellPolyMemo = null, candIndex = null;
 const candAt = id => {        // a cell id's index in candidates, or -1
   if (!candIndex || candIndex.src !== candidates) candIndex = {src: candidates, map: new Map(candidates.map((c, i) => [c.h3, i]))};
   const i = candIndex.map.get(id); return i == null ? -1 : i;
@@ -1220,12 +1217,12 @@ async function findCandidates() {
 // What each cell holds, for the change map: fetched beside the candidates on every cell-size change. A reply for a
 // scene or a size no longer on screen is dropped.
 async function loadCells(res) {
-  if (CELLS.res !== res) { CELLS = {res, stats: null}; renderCellPanel(); render(); }
+  if (CELLS.res !== res) { CELLS = {res, stats: null, missions: []}; CELL_HOVER = null; renderCellPanel(); render(); }
   const sid = sceneId;
   try {
     const d = await api.cells(sid, {h3_res: res});
     if (sid !== sceneId || res !== +$('tsRes').value) return;
-    CELLS = {res, stats: d.cells || {}}; renderCellPanel(); render();
+    CELLS = {res, stats: d.cells || {}, missions: (d.params || {}).missions_present || []}; renderCellPanel(); render();
   } catch (e) { AICESAT.showError(e); }
 }
 function renderCellPanel() {
@@ -1233,8 +1230,9 @@ function renderCellPanel() {
   const TL = AICESAT.timeline, res = CELLS.res;
   const fine = res > TL.TILE_MAX_RES ? '<div class="cell-note">At this cell size only the cells holding data are drawn.</div>' : '';
   if (!CELLS.stats) { el.innerHTML = res ? '<div class="small">Loading cells…</div>' : ''; return; }
-  el.innerHTML = CELL_HELD ? TL.cellCard(CELL_HELD, res, AICESAT.ts.cellEdgeM(res), CELLS.stats[CELL_HELD]) + fine
-                           : '<div class="small">Hover a cell to see what it holds; click it to pin it here.</div>' + fine;
+  const id = CELL_HELD || CELL_HOVER;
+  el.innerHTML = (id ? TL.cellCard(id, res, AICESAT.ts.cellEdgeM(res), CELLS.stats[id], CELLS.missions, CELL_HELD ? 'pinned' : 'hover')
+                     : '<div class="small">Move the mouse over a cell to see what it holds; click a cell to pin it.</div>') + fine;
 }
 function renderChgLegend() {
   const el = $('chgLegend'); el.hidden = !LEVEL || !candidates.length; if (el.hidden) return;
@@ -1361,7 +1359,11 @@ function cellLayers() {
     getFillColor: d => paint(d).fill, getLineColor: d => paint(d).line, getLineWidth: d => paint(d).width,
     lineWidthUnits: 'pixels', lineWidthMinPixels: 0.5,
     onClick: info => { const d = info && info.object; if (d) holdCell(d.g.id === CELL_HELD ? null : d.g.id); },
-    onHover: info => { const d = info && info.object; if (d && d.ci >= 0) hoverCand(d.ci); },
+    onHover: info => {
+      const d = info && info.object; if (!d) return;
+      if (d.g.id !== CELL_HOVER) { CELL_HOVER = d.g.id; if (!CELL_HELD) renderCellPanel(); }
+      if (d.ci >= 0) hoverCand(d.ci);
+    },
     autoHighlight: true, highlightColor: [255, 255, 255, 60],
     updateTriggers: {getFillColor: [coloured, CHANGE_LIM], getLineColor: coloured, getLineWidth: coloured}})];
   // the held cell: a dark outline over a white halo, drawn over everything so it reads on any fill
@@ -1477,7 +1479,7 @@ this.open = async (id, query) => {
     // scene.series so it cannot run until the doc lands — which left the PREVIOUS scene's cells painted over the
     // new one for the whole load. Cleared here, before the wait, not after it. Their key and counts go with them.
     candidates = []; candSel = -1; renderChgLegend(); $('tsStatus').textContent = '';
-    CELLS = {res: null, stats: null}; CELL_HELD = null; renderCellPanel();
+    CELLS = {res: null, stats: null, missions: []}; CELL_HELD = null; CELL_HOVER = null; renderCellPanel();
     sceneReady = false; didFit = false; lastSeriesSig = ''; schemaRefreshed = false; progressDismissed = false;
     buildStart = 0; lastLog = [];                 // progress overlay state is per-scene
     progRowEls.clear();                           // rows belong to the scene that created them

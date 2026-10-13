@@ -86,23 +86,32 @@ const data10 = h3.cellToChildren(h3.cellToCenterChild(AHX, 9), 10).slice(0, 3);
 assert.deepStrictEqual(T.areaCells(aring, 10, data10).sort(), [...data10].sort(), 'res 10: only the cells holding data');
 assert.deepStrictEqual(T.areaCells(null, 8, ['a']), ['a'], 'no area: the data cells');
 
-// What a cell holds, as the hover and the Cell panel say it: missions in flight order, counts, dates, heights.
+// What a cell holds, as the Cell panel says it: a table with one column per mission of the SCENE (flight order),
+// whether or not this cell has any, so the layout holds still as the panel follows the mouse; "—" where it has none.
 const ST = {ATL06: {n: 1234, first: '2019-03-02', last: '2026-01-15', days: 31, h_med: 242.04, h_min: 238.1, h_max: 245.9},
             GLAS: {n: 1, first: '2003-10-08', last: '2003-10-08', days: 1, h_med: 250.0, h_min: 250.0, h_max: 250.0}};
+const SCENE_M = ['ATL06', 'ICESSN', 'GLAS'];
 assert.deepStrictEqual(T.cellRows(ST).map(r => r.m), ['GLAS', 'ATL06'], 'flight order');
-const tip = T.cellTip('8806f257e1fffff', 8, 531, ST);
-assert.ok(tip.startsWith('H3 8806f257e1fffff · res 8 · ~531 m edge\n'), tip);
-assert.ok(tip.indexOf('ICESat ') < tip.indexOf('ICESat-2 · land ice'), tip);
-for (const s of ['1,234 measurements', '2019-03-02 → 2026-01-15', '31 days', 'median 242.0 m', '238.1 – 245.9',
-                 '1 measurement\n  2003-10-08 (1 day)', '250.0 m'])
-  assert.ok(tip.includes(s), `tooltip lacks "${s}":\n${tip}`);
-assert.ok(!tip.includes('2003-10-08 →'), 'one day reads as one date');
-assert.ok(T.cellTip('x', 8, 531, {}).endsWith('\nno measurements'));
-assert.ok(T.cellTip('x', 8, 531, undefined).endsWith('\nno measurements'));
-const card = T.cellCard('8806f257e1fffff', 8, 531, ST);
-for (const s of ['8806f257e1fffff', 'ICESat-2 · land ice', '1,234', '2019-03-02 → 2026-01-15', '31 days', 'median 242.0 m'])
-  assert.ok(card.includes(s), `card lacks "${s}"`);
-assert.ok(T.cellCard('x', 8, 531, {}).includes('No measurements'));
+const card = T.cellCard('8806f257e1fffff', 8, 531, ST, SCENE_M, 'pinned');
+const heads = [...card.matchAll(/<th class="m"[^>]*>(.*?)<\/th>/g)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+assert.deepStrictEqual(heads, ['ICESat', 'IceBridge', 'ICESat-2 land ice'], 'every scene mission, in flight order: ' + heads);
+const trs = [...card.matchAll(/<tr[^>]*><td class="k">(.*?)<\/td>(.*?)<\/tr>/g)].map(m => [m[1], [...m[2].matchAll(/<td>(.*?)<\/td>/g)].map(c => c[1])]);
+assert.deepStrictEqual(trs.map(r => r[0]), ['Count', 'First', 'Last', 'Days', 'Median h', 'Min h', 'Max h']);
+const col = k => Object.fromEntries(trs.map(r => [r[0], r[1][k]]));
+assert.deepStrictEqual(col(0), {Count: '1', First: '2003-10-08', Last: '2003-10-08', Days: '1', 'Median h': '250.0',
+                                'Min h': '250.0', 'Max h': '250.0'});
+assert.ok(trs.every(r => r[1][1] === '—'), 'IceBridge has nothing here: a dash in every row');
+assert.deepStrictEqual(col(2), {Count: '1,234', First: '2019-03-02', Last: '2026-01-15', Days: '31', 'Median h': '242.0',
+                                'Min h': '238.1', 'Max h': '245.9'});
+assert.ok(card.includes('H3 8806f257e1fffff · res 8 · ~531 m'), 'the cell, its size');
+assert.ok(card.includes('Pinned') && !card.includes('Under the cursor'));
+assert.ok(T.cellCard('x', 8, 531, ST, SCENE_M, 'hover').includes('Under the cursor'));
+assert.ok(card.includes('WGS84 ellipsoid'));
+const none = T.cellCard('x', 8, 531, undefined, SCENE_M, 'hover');
+assert.strictEqual((none.match(/<td>—<\/td>/g) || []).length, 21, 'an empty cell keeps the table: all dashes');
+assert.ok(none.includes('No measurements in this cell.'));
+assert.ok(!card.includes('cell-tbl dense') && T.cellCard('x', 8, 531, ST, ['GLAS', 'ICESSN', 'ATL06', 'ICESAT2'], 'hover').includes('cell-tbl dense'),
+          'four missions: the denser table');
 // Mission colours must not borrow the change map's meaning: ATL06 used to be the ramp's blue ("rose") and IceBridge its
 // red ("fell"), so a track read as change the data did not show. Each demo mission sits >= 35 deg of hue from both ramp
 // ends and from each other.

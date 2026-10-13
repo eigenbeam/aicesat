@@ -112,28 +112,29 @@ window.AICESAT = window.AICESAT || {};
     return [...ids];
   }
 
-  // What a cell holds (api.scene_cells), as the hover and the Cell panel say it: missions in flight order, each with
-  // its count, dates and heights (metres above the WGS84 ellipsoid, as measured).
+  // What a cell holds (api.scene_cells), as the Cell panel says it: a table with one column per mission of the scene
+  // (`missions`, put in flight order), whether or not this cell has any -- "—" where it has none -- so the layout holds
+  // still while the panel follows the mouse. `mode` 'pinned' or 'hover' heads it. Heights: metres above the WGS84
+  // ellipsoid, as measured.
   const n0 = n => n.toLocaleString('en-US'), m1 = v => v.toFixed(1);
-  const cellRows = stats => Object.keys(stats || {})
-    .sort((a, b) => (SPANS[a] || [T1])[0] - (SPANS[b] || [T1])[0] || a.localeCompare(b))
-    .map(m => ({m, name: SHORT[m] || m, ...stats[m]}));
-  const count = r => `${n0(r.n)} measurement${r.n === 1 ? '' : 's'}`;
-  const when = r => (r.first === r.last ? r.first : `${r.first} → ${r.last}`) + ` (${r.days} day${r.days === 1 ? '' : 's'})`;
-  const height = r => r.h_min === r.h_max ? `${m1(r.h_med)} m` : `median ${m1(r.h_med)} m, ${m1(r.h_min)} – ${m1(r.h_max)}`;
-  const cellHead = (id, res, edgeM) => `H3 ${id} · res ${res}` + (edgeM ? ` · ~${n0(edgeM)} m edge` : '');
-  function cellTip(id, res, edgeM, stats) {
-    const rows = cellRows(stats);
-    return cellHead(id, res, edgeM) + '\n' + (rows.length
-      ? rows.map(r => `${r.name}: ${count(r)}\n  ${when(r)}\n  ${height(r)}`).join('\n') : 'no measurements');   // narrow: it sits by the cursor
-  }
-  function cellCard(id, res, edgeM, stats) {
-    const rows = cellRows(stats), M = AICESAT.missions;
-    const block = r => `<div class="cell-m"><div class="cell-mh"><b style="color:rgb(${(M ? M.colorOf(r.m, null) : [200, 200, 210]).join(',')})">${r.name}</b>` +
-      `<span>${count(r)}</span></div><div class="cell-ml">${when(r)}</div><div class="cell-ml">${height(r)}</div></div>`;
-    return `<div class="cell-id">${cellHead(id, res, edgeM)}</div>` +
-      (rows.length ? rows.map(block).join('') + '<div class="cell-note">Heights in metres above the WGS84 ellipsoid.</div>'
-                   : '<div class="cell-ml">No measurements in this cell.</div>');
+  const flight = ms => [...ms].sort((a, b) => (SPANS[a] || [T1])[0] - (SPANS[b] || [T1])[0] || a.localeCompare(b));
+  const cellRows = stats => flight(Object.keys(stats || {})).map(m => ({m, name: SHORT[m] || m, ...stats[m]}));
+  // Short row labels: a date needs ~70 px at this size, and the drawer leaves ~290 px for the label and three missions.
+  const CELL_STATS = [['Count', r => n0(r.n)], ['First', r => r.first], ['Last', r => r.last], ['Days', r => n0(r.days)],
+                      ['Median h', r => m1(r.h_med)], ['Min h', r => m1(r.h_min)], ['Max h', r => m1(r.h_max)]];
+  function cellCard(id, res, edgeM, stats, missions, mode) {
+    const ms = flight(new Set([...(missions || []), ...Object.keys(stats || {})])), M = AICESAT.missions;
+    const head = m => { const [a, b] = (SHORT[m] || m).split(' · '), c = (M ? M.colorOf(m, null) : [200, 200, 210]).join(',');
+      return `<th class="m" style="color:rgb(${c})">${a}${b ? `<small>${b}</small>` : ''}</th>`; };
+    const row = ([k, f], i) => `<tr${i === 4 ? ' class="sep"' : ''}><td class="k">${k}</td>` +
+      ms.map(m => `<td>${stats && stats[m] ? f(stats[m]) : '—'}</td>`).join('') + '</tr>';
+    const any = ms.some(m => stats && stats[m]);
+    return `<div class="cell-id">H3 ${id} · res ${res}${edgeM ? ` · ~${n0(edgeM)} m` : ''}</div>` +
+      `<div class="cell-mode">${mode === 'pinned' ? '<b>Pinned</b> · click it again to release' : '<b>Under the cursor</b> · click to pin'}</div>` +
+      `<table class="cell-tbl${ms.length > 3 ? ' dense' : ''}"><colgroup><col class="k">${ms.map(() => '<col>').join('')}</colgroup>` +
+      `<thead><tr><th class="k"></th>${ms.map(head).join('')}</tr></thead><tbody>${CELL_STATS.map(row).join('')}</tbody></table>` +
+      `<div class="cell-note">${any ? 'Count: measurements in the cell. Days: distinct days observed. h: height in metres above the WGS84 ellipsoid.'
+                                    : 'No measurements in this cell.'}</div>`;
   }
 
   // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
@@ -147,7 +148,7 @@ window.AICESAT = window.AICESAT || {};
   // coverage hex exists to click. Fixed in degrees, not hex widths: a hex's width in degrees varies with latitude.
   const globeBox = hx => { const [la, lo] = h3.cellToLatLng(hx); return [lo - 1, la - 1, lo + 1, la + 1]; };
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, cellPaint, TILE_MAX_RES, areaCells, cellRows, cellTip, cellCard, regionHex, globeBox, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, cellPaint, TILE_MAX_RES, areaCells, cellRows, cellCard, regionHex, globeBox, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

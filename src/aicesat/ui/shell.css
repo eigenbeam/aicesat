@@ -397,13 +397,24 @@ canvas.hist { width:100%; height:110px; display:block; background:#1b1b22; borde
 .lad-legend .timeline { position:static; transform:none; width:auto; background:none; border:none; border-radius:0; padding:2px 6px 0; backdrop-filter:none; }
 .lad-legend #tsStatus { display:block; margin-top:6px; color:var(--muted); }
 #tsKey { margin-bottom:8px; }
-/* Cell sub-panel: what the clicked cell holds, per mission */
+/* Cell sub-panel: what the cell under the cursor (or the pinned one) holds -- a fixed table, one column per mission */
 .cell-body { font-size:11.5px; }
-.cell-id { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:var(--muted); margin-bottom:6px; }
-.cell-m { margin:0 0 6px; }
-.cell-mh { display:flex; justify-content:space-between; gap:8px; }
-.cell-ml { color:var(--muted); }
-.cell-note { color:var(--muted); font-size:10.5px; margin-top:4px; opacity:.8; }
+.cell-id { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:var(--muted); }
+.cell-mode { font-size:11px; color:var(--muted); margin:2px 0 6px; }
+.cell-mode b { color:var(--ink); font-weight:600; }
+.cell-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11px; font-variant-numeric:tabular-nums; }
+.cell-tbl col.k { width:58px; }
+.cell-tbl th { text-align:right; font-weight:600; padding:0 0 4px 4px; line-height:1.15; vertical-align:bottom; overflow:hidden; text-overflow:ellipsis; }
+.cell-tbl th small { display:block; font-weight:400; font-size:10px; opacity:.85; }
+.cell-tbl td { text-align:right; padding:2px 0 2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cell-tbl td.k { text-align:left; color:var(--muted); padding-left:0; }
+.cell-tbl tbody tr:nth-child(odd) td { background:rgba(255,255,255,.025); }
+.cell-tbl tr.sep td { border-top:1px solid var(--hair); }
+.cell-tbl.dense { font-size:9.5px; }          /* four missions: a date still fits its column */
+.cell-tbl.dense col.k { width:46px; }
+.cell-tbl.dense td, .cell-tbl.dense th { padding-left:2px; }
+.cell-tbl.dense td.k { padding-left:0; }
+.cell-note { color:var(--muted); font-size:10.5px; margin-top:6px; opacity:.8; }
 .lg-note { text-transform:none; letter-spacing:0; font-weight:400; opacity:.8; }
 .ts-mode { margin:0 0 4px; color:var(--muted); min-height:1em; }
 .dl-body { display:flex; flex-direction:column; gap:6px; }
