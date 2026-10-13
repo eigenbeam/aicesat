@@ -66,5 +66,23 @@ window.AICESAT = window.AICESAT || {};
     return (h == null || !isFinite(h) ? fallback : h) + (lift || 0);
   }
 
-  AICESAT.geo = {frameProj, frameCentre, mPerDegLon, M_PER_DEG_LAT, localToLonLat, lonLatToLocal, drapedZ};
+  // The scene-metre extent of the area a scene was built over: its polygon, else its lon/lat bbox with the edges
+  // sampled (a parallel is curved in a polar projection, so the corners alone undershoot). Both are in the doc's shell,
+  // saved before any data arrives. null when the doc has neither.
+  function areaExtent(fr, polygon, bbox) {
+    let ring = polygon && polygon.length >= 3 ? polygon : null;
+    if (!ring && bbox && bbox.length === 4) {
+      const [w, s, e, n] = bbox; ring = [];
+      for (let k = 0; k <= 8; k++) { const t = k / 8; ring.push([w + (e - w) * t, s], [w + (e - w) * t, n], [w, s + (n - s) * t], [e, s + (n - s) * t]); }
+    }
+    if (!fr || !ring) return null;
+    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+    for (const [lon, lat] of ring) {
+      const [x, y] = lonLatToLocal(fr, lon, lat);
+      minx = Math.min(minx, x); maxx = Math.max(maxx, x); miny = Math.min(miny, y); maxy = Math.max(maxy, y);
+    }
+    return [minx, maxx, miny, maxy].every(Number.isFinite) && maxx > minx && maxy > miny ? {minx, maxx, miny, maxy} : null;
+  }
+
+  AICESAT.geo = {frameProj, frameCentre, mPerDegLon, M_PER_DEG_LAT, localToLonLat, lonLatToLocal, drapedZ, areaExtent};
 })();

@@ -733,6 +733,10 @@ function render() {
 }
 
 function fitView() {
+  // Frame the AREA the scene was built over (its polygon or bbox, in the doc's shell before any data), not the data
+  // present at the first doc. That made the frame depend on arrival order: on a cold build the first doc can hold one
+  // GLAS shot - a span of 0, so a 1 m frame - and minZoom (zoom - 6) then capped zooming out at ~80 m. The data, when
+  // any has arrived, still sets the height the camera aims at; before that it aims at the datum (z0, the DEM's level).
   // Scan each mission's buffer in place — positions are Float32Arrays (incremental transport), and flat-mapping them
   // into one JS array would copy millions of floats per call.
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, minz = 1e9, maxz = -1e9, n = 0;
@@ -741,11 +745,14 @@ function fitView() {
     n += p.length;
     for (let i = 0; i < p.length; i += 3) { minx = Math.min(minx, p[i]); maxx = Math.max(maxx, p[i]); miny = Math.min(miny, p[i + 1]); maxy = Math.max(maxy, p[i + 1]); minz = Math.min(minz, p[i + 2]); maxz = Math.max(maxz, p[i + 2]); }
   }
-  if (!n) return false;
   // Check the BOUNDS, not just the derived zoom. `span || 1` launders a NaN into a plausible 1 (NaN is falsy), so a
   // finite zoom proves nothing — the NaN then rides in on `target` and deck.gl reports only
   // "@math.gl/web-mercator: assertion failed", pointing nowhere near the cause.
-  if (![minx, maxx, miny, maxy, minz, maxz].every(Number.isFinite)) return false;
+  const data = n && [minx, maxx, miny, maxy, minz, maxz].every(Number.isFinite);
+  const area = AICESAT.geo.areaExtent(scene.frame, scene.polygon, scene.bbox);
+  if (!area && !data) return false;
+  if (area) ({minx, maxx, miny, maxy} = area);
+  if (!data) { minz = 0; maxz = 0; }
   bounds = {minx, maxx, miny, maxy, minz, maxz};
   const span = Math.max(maxx - minx, maxy - miny) || 1;
   const px = Math.min(root.clientWidth, root.clientHeight);
@@ -912,7 +919,9 @@ function applyDoc(doc) {
   $('hexOn').checked = HEX_ON; $('hexRes').value = HEX_RES; $('hexRes').disabled = !HEX_ON; hexResLabel();
   $('imagery').checked = SHOW_IMAGERY;
   const hasPositions = Object.values(scene.series).some(s => s.positions && s.positions.length);
-  if (!didFit && (hasPositions ? fitView() : (!api.sceneStreamRun && fitSurface()))) didFit = true;   // frame once: points, or the DEM when no points can arrive
+  // Frame once: the scene's area (fitView), else the points, else the DEM when no points can arrive (MCP App).
+  const hasArea = !!AICESAT.geo.areaExtent(scene.frame, scene.polygon, scene.bbox);
+  if (!didFit && (hasArea || hasPositions ? fitView() : (!api.sceneStreamRun && fitSurface()))) didFit = true;
   render(); updateLabels(); updateStats();
   const sig = keys.slice().sort().join(',');
   if (sig !== lastSeriesSig) { lastSeriesSig = sig; if (keys.length) initTimeSeries(); }   // reset TS UI only when the mission set changes
@@ -1125,20 +1134,14 @@ let placeTsControls = () => {};
     const z = $('zexag'); z.value = b.dataset.v; z.dispatchEvent(new Event('input')); syncVs(); });
   $('zexag').addEventListener('input', syncVs); syncVs();
   // Reset this hex (change map only): back to index-only via api.reset_region, so the next click fetches from NASA.
-  // The second click confirms; no browser dialog. Lands on the globe over the hex.
+  // One click, no confirm: everything it removes is re-fetchable. Lands on the globe over the hex.
   const rst = document.createElement('div'); rst.className = 'ctl-row lad-reset';
-  rst.innerHTML = '<button>Reset this hex</button><span class="ctl-note"></span>';
-  const rstBtn = rst.querySelector('button'), rstNote = rst.querySelector('span');
-  let rstArmed = null;
-  const rstDisarm = () => { clearTimeout(rstArmed); rstArmed = null; rstBtn.textContent = 'Reset this hex'; rstNote.textContent = ''; };
+  rst.innerHTML = '<button>Reset this hex</button>';
+  const rstBtn = rst.querySelector('button');
   rstBtn.onclick = async () => {
     const hx = AICESAT.timeline.regionHex(scene && scene.question, params.get('hex'));
     if (!hx) { AICESAT.showError('This scene is not a change map over one hex.'); return; }
-    if (!rstArmed) {
-      rstBtn.textContent = 'Click again to reset'; rstNote.textContent = 'deletes its scenes, extracts and lake cells; the index stays';
-      rstArmed = setTimeout(rstDisarm, 5000); return;
-    }
-    rstDisarm(); rstBtn.disabled = true; rstBtn.textContent = 'Resetting…'; AICESAT.clearError();
+    rstBtn.disabled = true; rstBtn.textContent = 'Resetting…'; AICESAT.clearError();
     try {
       await api.resetRegion(hx);
       location.hash = '#survey/' + AICESAT.timeline.globeBox(hx).join(',');
@@ -1150,7 +1153,7 @@ let placeTsControls = () => {};
   placeTsControls = () => {
     if (LEVEL) { ctl.append($('baseSwitch'), TS_HOMES[0].el, TS_HOMES[1].el, vs, mh, $('timeline'), rst); leg.append($('chgLegend'), TS_HOMES[2].el); }
     else TS_HOMES.forEach(h => h.parent.insertBefore(h.el, h.next));
-    rstDisarm(); rst.hidden = LEVEL !== 'region';
+    rst.hidden = LEVEL !== 'region';
   };
   root.classList.add('left-drawer');
   $('anaTabs').querySelector('button[data-t="dh"]').remove(); $('anaTabs').querySelector('button[data-t="ts"]').hidden = true; }
