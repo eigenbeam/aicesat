@@ -124,7 +124,11 @@ class Handler(SimpleHTTPRequestHandler):
         the end passes every unit test and silently reverts the transport to a slow poll.
         See test_frames_reach_the_client_before_the_build_finishes, which reads frames off a live socket.
         """
-        if cache.load_scene(sid) is None and sid not in api._registry():
+        # A running job's scene is real before its thread has saved the shell: start_job returns the id first, and the
+        # globe opens the scene at once. stream.frames waits for the doc, so let it; refusing left the page with no
+        # stream, so no points and no terrain, for the whole cold build.
+        building = any(j.get("scene_id") == sid and j.get("status") == "running" for j in api._jobs.values())
+        if not building and cache.load_scene(sid) is None and sid not in api._registry():
             return self._json(404, {"error": "no such scene"})
         cur = stream.parse_cursors(qs.get("from", [None])[0])
         lim = stream.parse_limit(qs.get("limit", [None])[0])

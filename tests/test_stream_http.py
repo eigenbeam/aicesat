@@ -116,6 +116,25 @@ def test_resume_over_http_sends_only_the_tail(live):
     conn.close()
 
 
+def test_a_scene_whose_build_has_not_written_it_yet_still_streams(live):
+    """start_job hands back the scene id before its thread has saved the scene's shell, and the globe opens the scene
+    at once. That stream used to be refused as "no such scene" and the page never retried, so a cold build from the
+    globe could finish with no points and no terrain on screen."""
+    host, port = live
+    api._jobs["j1"] = {"id": "j1", "status": "running", "scene_id": "s4", "started": 0}   # no doc, no registry row
+
+    conn = HTTPConnection(host, port, timeout=20)
+    conn.request("GET", "/api/scene/s4/stream")
+    resp = conn.getresponse()
+    assert resp.status == 200
+
+    _scene("s4")                                              # the build saves its shell, then its first points
+    cache.scene_array_append("s4", "ATL06", "positions", np.arange(6, dtype=cache.ARRAY_DTYPE))
+    got = _read_frames(resp, want_bulk=1)
+    assert stream.KIND_POSITIONS in [k for k, _m, _p in got], "the points written after the stream opened never came"
+    conn.close()
+
+
 def test_unknown_scene_is_404(live):
     host, port = live
     conn = HTTPConnection(host, port, timeout=10)
