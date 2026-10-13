@@ -57,13 +57,14 @@ const st = T.stack('region'), cl = T.stack(null);
 assert.ok(st.indexOf('clouds') > st.indexOf('candidates') && st.indexOf('clouds') > st.indexOf('surface'));
 assert.ok(cl.indexOf('clouds') < cl.indexOf('candidates'), 'classic view keeps its picking order');
 assert.deepStrictEqual([...st].sort(), [...cl].sort(), 'same layers, different order');
-// The coloured cells show only while the Analysis panel is open: closed, the stack drops them and nothing else.
-for (const lv of ['region', 'study', null]) {
-  const shut = T.stack(lv, false), open = T.stack(lv, true);
-  assert.ok(!shut.includes('candidates'), `${lv}: no cells while Analysis is closed`);
-  assert.deepStrictEqual(open, T.stack(lv), `${lv}: open is the default stack`);
-  assert.deepStrictEqual(shut, open.filter(k => k !== 'candidates'), `${lv}: every other layer stays, in order`);
-}
+// The trend colour shows only while the Analysis panel is open. Shut, every cell looks the same -- thinning,
+// thickening, low confidence alike -- and is still drawn: a visible outline and a fill it can be picked by.
+const thin = {trend_cm_yr: -300, level: 'high'}, thick = {trend_cm_yr: 300, level: 'medium'}, low = {trend_cm_yr: -300, level: 'low'};
+for (const c of [thin, thick, low]) assert.deepStrictEqual(T.cellPaint(c, true, 370).fill, T.trendColor(c.trend_cm_yr, c.level, 370));
+const plain = T.cellPaint(thin, false, 370);
+for (const c of [thick, low]) assert.deepStrictEqual(T.cellPaint(c, false, 370), plain, 'shut: one look for every cell');
+assert.ok(plain.fill[3] > 0 && plain.line[3] > 0 && plain.width > 0, 'shut: the cell persists');
+assert.notDeepStrictEqual(plain.fill, T.cellPaint(thin, true, 370).fill, 'open: the trend colour, not the plain fill');
 // Mission colours must not borrow the change map's meaning: ATL06 used to be the ramp's blue ("rose") and IceBridge its
 // red ("fell"), so a track read as change the data did not show. Each demo mission sits >= 35 deg of hue from both ramp
 // ends and from each other.

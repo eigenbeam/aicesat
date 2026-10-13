@@ -90,11 +90,15 @@ window.AICESAT = window.AICESAT || {};
   // under the DEM, 93% under the fills), and depth testing hid them - worse the closer the camera, as the depth buffer
   // resolved the gap. Not pickable there, or a point drawn on top would steal the click meant for its hex.
   const cloudProps = level => level ? {parameters: {depthTest: false}, pickable: false} : {pickable: true};
-  // The candidate cells (the change map's coloured hexes) belong to the Analysis panel: `cells` false while it is
-  // collapsed or closed drops them from the stack.
-  const stack = (level, cells = true) => (level
+  const stack = level => level
     ? ['surface', 'hexgrid', 'graticule', 'candidates', 'clouds', 'axes', 'markers', 'names']
-    : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names']).filter(k => cells || k !== 'candidates');
+    : ['surface', 'hexgrid', 'graticule', 'clouds', 'candidates', 'axes', 'markers', 'names'];
+  // A change-map cell's paint (unselected, not picked for a study). The trend colour belongs to the Analysis panel,
+  // which holds its key: with the panel shut (`coloured` false) every cell is the same plain outline, still there to
+  // hover and click. The plain fill stays faintly non-zero, like the classic view's.
+  const cellPaint = (c, coloured, lim) => coloured
+    ? {fill: trendColor(c.trend_cm_yr, c.level, lim), line: [20, 20, 26, 110], width: 0.7}
+    : {fill: [200, 214, 245, 18], line: [225, 232, 245, 170], width: 1};
 
   // The hex a change map was built over: ?hex= when the globe opened it, else the scene's question ("H3 <hex>", as
   // api.region_question names it) - the model's elevation_change opens the change map without the parameter.
@@ -107,7 +111,7 @@ window.AICESAT = window.AICESAT || {};
   // coverage hex exists to click. Fixed in degrees, not hex widths: a hex's width in degrees varies with latitude.
   const globeBox = hx => { const [la, lo] = h3.cellToLatLng(hx); return [lo - 1, la - 1, lo + 1, la + 1]; };
 
-  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, regionHex, globeBox, SPANS, T0, T1};
+  AICESAT.timeline = {mount, mountList, place, nameRows, trendColor, trendLimit, hullOfCells, basemap, cloudProps, stack, cellPaint, regionHex, globeBox, SPANS, T0, T1};
 
   // Physical place-name labels, shared by the globe and the scene views. Rows are geonames_data.js's
   // [name, lat, lon, code, rank, id]. Cartographic convention: water and ice in cool blue, land features in warm tan.

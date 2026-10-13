@@ -205,7 +205,7 @@ function cloudLayers() {
   const out = [];
   const rank = m => { const i = DRAW_ORDER.indexOf(m); return i < 0 ? -1 : i; };
   const entries = Object.entries(scene.series).sort((a, b) => rank(a[0]) - rank(b[0]));
-  const cellsUnder = LEVEL === 'region' && candidates.length > 0 && analysisShown();   // fade only over cells on screen
+  const cellsUnder = LEVEL === 'region' && candidates.length > 0 && analysisShown();   // fade only over coloured cells
   for (const [m, s] of entries) {
     if (visible[m] === false) continue;   // per-mission show/hide (legend toggles)
     const src = s.positions;   // measured photons/shots as delivered; corrections are sub-pixel here (see Δh panel)
@@ -730,7 +730,7 @@ function render() {
   // At the change and study levels the measurements move after the change hexes (AICESAT.timeline.stack).
   const build = {surface: surfaceLayers, hexgrid: hexGridLayers, graticule: graticuleLayers, clouds: cloudLayers,
                  candidates: candidateLayers, axes: axesLayers, markers: markerLayers, names: namesLayers};
-  deckgl.setProps({layers: AICESAT.timeline.stack(LEVEL, analysisShown()).flatMap(k => build[k]())});
+  deckgl.setProps({layers: AICESAT.timeline.stack(LEVEL).flatMap(k => build[k]())});
 }
 
 function fitView() {
@@ -1162,8 +1162,9 @@ let placeTsControls = () => {};
 $('stats').addEventListener('reopen', () => updateStats());
 // The chart draws to its canvas's size, which is 0 while the panel is collapsed: redraw it when the panel opens.
 $('tspanel').addEventListener('reopen', () => { if (scene && candidates.length) showCell(); });
-// The candidate cells show only while the Analysis panel is open (not collapsed, not closed): they are its map. Every
-// path that opens or shuts it -- caret, title, close, the panels menu, syncTabs -- lands on its class or hidden.
+// The cells' trend colours show only while the Analysis panel is open (not collapsed, not closed); the cells stay
+// either way (AICESAT.timeline.cellPaint). Every path that opens or shuts the panel -- caret, title, close, the
+// panels menu, syncTabs -- lands on its class or hidden.
 function analysisShown() { const p = $('tspanel'); return !p.hidden && !p.classList.contains('collapsed'); }
 { let was = analysisShown();
   new MutationObserver(() => { const now = analysisShown(); if (now !== was) { was = now; render(); } })
@@ -1290,12 +1291,15 @@ function candidateLayers() {
   // enlarged them against the grid. The plane height stays the fallback over a DEM hole.
   const onGround = (x, y, c) => drapedZ(surfaceHeightAt, x, y, c.center[2], GRAT_LIFT_M) * Z_EXAG;
   const TL = AICESAT.timeline;
-  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], onGround(xy[0], xy[1], c)]), sel: i === candSel, study: STUDY.has(c.h3), c}));
-  // Classic view: faint fills, emphasis by outline. Ladder levels: the fill IS the change map (trend colour, grey = low).
+  const coloured = analysisShown();
+  const rings = candidates.map((c, i) => ({poly: c.xy.map(xy => [xy[0], xy[1], onGround(xy[0], xy[1], c)]), sel: i === candSel, study: STUDY.has(c.h3),
+                                          c, paint: TL.cellPaint(c, coloured, CHANGE_LIM)}));
+  // Classic view: faint fills, emphasis by outline. Ladder levels: the fill IS the change map (trend colour, grey =
+  // low) while the Analysis panel is open, a plain outline while it is shut.
   const layers = [new deck.PolygonLayer({id: 'cands', data: rings, getPolygon: d => d.poly, filled: true, stroked: true, pickable: true,
-    getFillColor: d => LEVEL ? TL.trendColor(d.c.trend_cm_yr, d.c.level, CHANGE_LIM) : (d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24]),
-    getLineColor: d => d.sel && !LEVEL ? [150, 235, 255, 255] : d.study ? [255, 255, 255, 255] : LEVEL ? [20, 20, 26, 110] : [200, 214, 245, 180],
-    lineWidthUnits: 'pixels', getLineWidth: d => d.sel ? (LEVEL ? 4 : 3) : d.study ? 3 : LEVEL ? 0.7 : 1.8, lineWidthMinPixels: 0.5,
+    getFillColor: d => LEVEL ? d.paint.fill : (d.sel ? [120, 225, 255, 20] : [200, 214, 245, 24]),
+    getLineColor: d => d.sel && !LEVEL ? [150, 235, 255, 255] : d.study ? [255, 255, 255, 255] : LEVEL ? d.paint.line : [200, 214, 245, 180],
+    lineWidthUnits: 'pixels', getLineWidth: d => d.sel ? (LEVEL ? 4 : 3) : d.study ? 3 : LEVEL ? d.paint.width : 1.8, lineWidthMinPixels: 0.5,
     onClick: (info, ev) => {
       if (!info || info.index == null || info.index < 0) return;
       if (LEVEL && info.index === candSel) { candHover = info.index; selectCand(-1); }   // click again: release
@@ -1303,7 +1307,7 @@ function candidateLayers() {
     },
     onHover: info => { if (LEVEL && info && info.index != null) hoverCand(info.index); },
     autoHighlight: !!LEVEL, highlightColor: [255, 255, 255, 60],
-    updateTriggers: {getFillColor: [candSel, CHANGE_LIM, LEVEL], getLineColor: [candSel, STUDY_VER, LEVEL], getLineWidth: [candSel, STUDY_VER, LEVEL], getPolygon: Z_EXAG}})];
+    updateTriggers: {getFillColor: [candSel, CHANGE_LIM, LEVEL, coloured], getLineColor: [candSel, STUDY_VER, LEVEL, coloured], getLineWidth: [candSel, STUDY_VER, LEVEL, coloured], getPolygon: Z_EXAG}})];
   // selected cell: a vertical marker rising from the surface + a floating label, so the current time-series cell is
   // unmistakable in the 3-D scene.
   const c = candidates[candSel];
