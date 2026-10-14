@@ -178,7 +178,8 @@ def frames(scene_id: str, cursors: dict[str, int] | None = None, *, limit: int |
                 if inodes.get(key, ino) != ino:
                     # The file was replaced under us (finalize swapping in the authoritative series). Everything the
                     # client holds for this array is stale — say so and start it over.
-                    yield control({"t": "reset", "mission": mission, "kind": kind})
+                    # n_values: how big the replacement is, so the reader can keep drawing the preview until it is whole
+                    yield control({"t": "reset", "mission": mission, "kind": kind, "n_values": int(total)})
                     cursors[key] = 0
                     sent = True
                 inodes[key] = ino

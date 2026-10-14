@@ -121,6 +121,16 @@ def test_a_replaced_sidecar_is_reported_as_a_reset_and_resent():
     assert len(after) >= 2
 
 
+def test_a_reset_says_how_big_the_replacement_is():
+    """The page keeps drawing the preview until the replacement has fully arrived (no blank, then redraw), so the
+    reset frame must say when that is: the replacement's length in values."""
+    _scene()
+    cache.scene_array_append("s1", "ATL06", "positions", _pts(20, 1.0))
+    steps = [lambda: cache.scene_array_write("s1", "ATL06", "positions", _pts(8, 7.0))]
+    resets = [c for c in _controls(_drive("s1", steps)) if c["t"] == "reset"]
+    assert resets[0]["n_values"] == 24
+
+
 def test_a_larger_replacement_is_still_caught():
     """The ABA case: the file is replaced by a BIGGER array, so the cursor is still < total and a size-only check
     would happily stream the new file's tail onto the old file's head."""

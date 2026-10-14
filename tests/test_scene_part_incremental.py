@@ -46,6 +46,15 @@ def test_meta_marks_missions_without_slopes(tmp_path, monkeypatch):
     assert meta["series"]["ICESSN"]["has_slopes"] is False
 
 
+def test_meta_carries_the_build_progress(tmp_path, monkeypatch):
+    """The page labels each mission's row from scene.progress (phase fetching / done / unavailable). The build writes it
+    but meta left it out, so every row read "queued" while its points were already streaming in."""
+    doc = _mk_scene(tmp_path, monkeypatch)
+    doc["progress"] = {"ICESSN": {"phase": "fetching", "done": 3, "total": 9}, "ATL06": {"phase": "done"}}
+    cache.save_scene("s1", doc)
+    assert api.scene_part("s1", "meta")["progress"] == doc["progress"]
+
+
 def test_http_chunks_are_far_larger_than_mcp_chunks():
     """Rendering a scene issued 38 sequential requests because the browser used the MCP-sized chunks."""
     assert api.HTTP_CHUNK_BYTES >= 10 * api.MCP_CHUNK_BYTES

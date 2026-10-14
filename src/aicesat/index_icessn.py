@@ -263,7 +263,7 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
     default) the path is byte-for-byte the pre-existing behaviour."""
     from . import lake
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
-                         pool_size)
+                         map_as_completed, pool_size)
 
     want_cells, rows = _index_rows(bbox, window, res, polygon=polygon)
     if not rows:
@@ -326,15 +326,10 @@ def fetch_bbox(bbox, window=None, res: int = ICESSN_RES, force: bool = False, cl
         urls = list(by_url)
         nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
                        cpu_bound=False)
-        if nw == 1:
-            parts = [_ingest_granule(u) for u in urls]
-        else:
-            with ThreadPoolExecutor(nw) as ex:
-                parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        for pr in parts:
-            fresh_parts.append(pr)
-            if on_granule is not None:
-                on_granule({k: pr[k] for k in ("granule", "lon", "lat", "h", "t", "sn_slope", "we_slope")})
+        def _emit(pr):       # each granule streams as it lands, not after the slowest (access.map_as_completed)
+            on_granule({k: pr[k] for k in ("granule", "lon", "lat", "h", "t", "sn_slope", "we_slope")})
+        parts = map_as_completed(_ingest_granule, urls, nw, _emit if on_granule is not None else None)
+        fresh_parts.extend(parts)   # urls order: the returned arrays do not depend on which GET won
         if not lake.async_writes_enabled():
             lake.drain_writes(MISSION, want_cells)   # kill switch: one batched mark on this thread (see index_atl06)
 

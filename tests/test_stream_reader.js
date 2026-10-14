@@ -114,6 +114,31 @@ const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
   ok(last.positions[0] === 5, 'replacement values, not the discarded preview');
   ok(last.slopes && last.slopes.length === 2, 'slopes arrived on their own kind');
 
+  // ------------------------------------------------------------- 4b. a sized reset never paints a gap
+  // Finalize replaces a mission's preview. The page used to empty it on `reset` and paint whatever had re-arrived by
+  // the next tick -- the cloud drew, vanished, and drew again. With the replacement's size on the reset, the preview
+  // stays on screen until the replacement is whole, then swaps in one paint.
+  {
+    // The preview and the reset land in ONE read, so the paint the preview scheduled fires after the reset: the old
+    // reader emptied the mission first and painted a gap there.
+    const pieces = [
+      Buffer.concat([control({t: 'init', scene_id: 's2'}), control({t: 'mission', id: 1, name: 'ATL06', color: [1, 2, 3]}),
+                     f32([1, 1, 1, 2, 2, 2]), control({t: 'reset', mission: 'ATL06', kind: 'positions', n_values: 6})]),
+      f32([7, 7, 7]),                                         // half the replacement
+      f32([8, 8, 8]),                                         // the rest
+      control({t: 'done'}),
+    ];
+    global.fetch = async () => ({ok: true, body: {getReader() {
+      let i = 0;   // one piece per read, with a tick between, so the reader paints between pieces as it would live
+      return {read: async () => { await new Promise(r => setTimeout(r, 5)); return i >= pieces.length ? {done: true} : {done: false, value: new Uint8Array(pieces[i++])}; }};
+    }}});
+    const seen = [];
+    await fetchApi.sceneStreamRun('s2', state => seen.push(Array.from(state.series.ATL06.positions)), {paintMs: 0}).done;
+    ok(seen.length >= 2, `painted the preview and the replacement (${seen.length} paints)`);
+    ok(seen.every(p => p.length === 6), `never a gap or a half replacement: ${JSON.stringify(seen.map(p => p.length))}`);
+    ok(seen[0][0] === 1 && seen[seen.length - 1][0] === 7 && seen[seen.length - 1][3] === 8, 'preview first, replacement last');
+  }
+
   // ------------------------------------------------------------- 5. the DEM surface rides the same stream
   {
     const grid = {t: 'surface', x0: 0, y0: 0, cell: 100, nx: 3, ny: 2, source: 'ArcticDEM', n_values: 6};

@@ -143,6 +143,7 @@ def scene_part(scene_id: str, part: str = "meta", chunk: int = 0, chunk_bytes: i
         return {"scene_id": scene_id, "question": doc.get("question"), "frame": doc["frame"], "bbox": doc["bbox"], "polygon": doc.get("polygon"),
                 "z0": doc["z0"], "labels": doc.get("labels"), "markers": doc.get("markers"),
                 "imagery_status": doc.get("imagery_status"),
+                "progress": doc.get("progress"),   # per-mission build phase: the page's progress rows read it
                 "imagery": ({k: v for k, v in doc["imagery"].items() if k != "path"} if doc.get("imagery") else None),
                 "series": {m: _series_meta(s) for m, s in doc["series"].items()},
                 "has_coreg": bool(doc.get("coreg")), "surface": ({k: v for k, v in doc["surface"].items() if k != "z"} if doc.get("surface") else None)}

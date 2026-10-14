@@ -271,7 +271,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     `todo` (cache-miss) granules. When None (the default) the path is byte-for-byte the pre-existing behaviour."""
     from . import index_atl06, lake, planner
     from .access import (FETCH_MIN_GRANULES, FETCH_WORKER_CAP, FETCH_WORKER_ENV, AccessStats, RangeReader, access_url,
-                         pool_size)
+                         map_as_completed, pool_size)
 
     want_cells, rows = _index_rows(bbox, window, res, polygon=polygon)
     if not rows:
@@ -353,16 +353,13 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
         urls = list(by_url)
         nw = pool_size(len(urls), cap=FETCH_WORKER_CAP, min_items=FETCH_MIN_GRANULES, env=FETCH_WORKER_ENV,
                        cpu_bound=False)
-        if nw == 1:
-            parts = [_ingest_granule(u) for u in urls]
-        else:
-            with ThreadPoolExecutor(nw) as ex:
-                parts = list(ex.map(_ingest_granule, urls))   # ex.map preserves urls order
-        for loc in parts:
+        def _emit(loc):      # each granule streams as it lands, not after the slowest (access.map_as_completed)
+            for g, dd in loc.items():
+                on_granule({"granule": g, **{kk: dd[kk] for kk in ("lon", "lat", "h", "t")}})
+        parts = map_as_completed(_ingest_granule, urls, nw, _emit if on_granule is not None else None)
+        for loc in parts:    # urls order: the returned arrays do not depend on which GET won
             for g, dd in loc.items():
                 fresh_parts.append(dd)
-                if on_granule is not None:
-                    on_granule({"granule": g, **{kk: dd[kk] for kk in ("lon", "lat", "h", "t")}})
         if not lake.async_writes_enabled():
             lake.drain_writes(MISSION, want_cells)   # kill switch: one batched mark on this thread (see index_atl06)
 

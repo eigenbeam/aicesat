@@ -9939,11 +9939,12 @@ window.AICESAT = window.AICESAT || {};
     const totalPoints = () => { let n = 0; for (const m of missions.values()) n += m.pos.len / 3; return n; };
     let lastPainted = 0, lastPaintAt = 0;
     const GROWTH = 1.25, MAX_QUIET_MS = 2000;
-    const touch = () => {
+    const touch = (force = false) => {
       dirty = true;
-      if (timer != null) return;
+      if (timer != null && !force) return;
+      if (timer != null) clearTimeout(timer);
       const n = totalPoints();
-      const due = n >= lastPainted * GROWTH || performance.now() - lastPaintAt >= MAX_QUIET_MS;
+      const due = force || n >= lastPainted * GROWTH || performance.now() - lastPaintAt >= MAX_QUIET_MS;
       timer = setTimeout(emit, due ? (opts.paintMs != null ? opts.paintMs : 100) : MAX_QUIET_MS);
     };
 
@@ -9955,16 +9956,35 @@ window.AICESAT = window.AICESAT || {};
         if (msg.t === 'mission') missions.set(msg.id, {name: msg.name, color: msg.color, pos: growable(), slopes: growable(1 << 10)});
         else if (msg.t === 'surface') { surfaceMeta = msg; surfaceZ.reset(); touch(); }
         else if (msg.t === 'reset') {
+          // Finalize replaced this array. With its size known, fill the replacement off screen and keep drawing the
+          // preview until it is whole, then swap in one paint: emptying first painted the cloud, a gap, then the
+          // cloud again. An unsized reset (older server) still empties at once.
           stats.resets++;
-          for (const m of missions.values()) if (m.name === msg.mission) (msg.kind === 'slopes' ? m.slopes : m.pos).reset();
+          const k = msg.kind === 'slopes' ? 'slopes' : 'pos';
+          for (const m of missions.values()) if (m.name === msg.mission) {
+            m.next = m.next || {};
+            if (msg.n_values > 0) m.next[k] = {buf: growable(k === 'slopes' ? 1 << 10 : undefined), n: msg.n_values};
+            else { delete m.next[k]; m[k].reset(); }
+          }
           touch();
-        } else if (msg.t === 'done') { stats.tDone = performance.now() - stats.t0; stats.cursors = msg.cursors; }
+        } else if (msg.t === 'done') {
+          stats.tDone = performance.now() - stats.t0; stats.cursors = msg.cursors;
+          for (const m of missions.values()) for (const k of Object.keys(m.next || {})) { m[k] = m.next[k].buf; delete m.next[k]; m.len = -1; }
+        }
         return;
       }
       if (kind === K_SURFACE) { surfaceZ.push(new Float32Array(payload.buffer)); touch(); return; }
       const m = missions.get(mid);
       if (!m) return;                                               // frame for a mission we never saw announced
-      (kind === K_SLOPES ? m.slopes : m.pos).push(new Float32Array(payload.buffer));
+      const k = kind === K_SLOPES ? 'slopes' : 'pos', nx = m.next && m.next[k];
+      if (nx) {                                                     // a replacement in progress: off screen until whole
+        nx.buf.push(new Float32Array(payload.buffer));
+        // m.len = -1: emit reuses a mission's view while its length is unchanged, and a replacement can be exactly as
+        // long as the preview it replaces
+        if (nx.buf.len >= nx.n) { m[k] = nx.buf; delete m.next[k]; m.len = -1; touch(true); }
+        return;
+      }
+      m[k].push(new Float32Array(payload.buffer));
       touch();
     };
 

@@ -130,6 +130,31 @@ def chunk_bounds(n: int, k: int) -> list[tuple[int, int]]:
     return out
 
 
+def map_as_completed(fn, items: list, workers: int, on_each=None) -> list:
+    """`fn` over `items` on `workers` threads; returns the results in `items` order. `on_each(result)`, when given, is
+    called on the CALLER's thread as each item finishes, in completion order -- so a build streams each granule as it
+    lands instead of every granule after the slowest. (fetch_bbox used `list(ex.map(...))` and then looped: ICESat-2
+    reached the page in one burst at the end of its fetch.) A failure propagates, as ex.map's did."""
+    if workers <= 1:
+        out = []
+        for it in items:
+            r = fn(it)
+            out.append(r)
+            if on_each is not None:
+                on_each(r)
+        return out
+    from concurrent.futures import as_completed
+    out = [None] * len(items)
+    with ThreadPoolExecutor(workers) as ex:
+        futs = {ex.submit(fn, it): i for i, it in enumerate(items)}
+        for f in as_completed(futs):
+            r = f.result()
+            out[futs[f]] = r
+            if on_each is not None:
+                on_each(r)
+    return out
+
+
 # Per-granule fetch fan-out (fetch_bbox across granules, in index_{atl06,glas,icessn}). Each granule's own fetch
 # already uses RangeReader's internal thread pool, so the OUTER pool is kept small: outer x inner concurrency then
 # stays within the HTTPS connection pool (pool_maxsize=32). Env AICESAT_FETCH_WORKERS overrides the outer width.
