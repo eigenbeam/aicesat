@@ -18,9 +18,10 @@ class _Done:
 class _FakePool:
     """Runs submissions inline and records what was submitted."""
     submitted = []
+    contexts = []
 
-    def __init__(self, max_workers=None):
-        pass
+    def __init__(self, max_workers=None, mp_context=None):
+        _FakePool.contexts.append(mp_context)
 
     def submit(self, fn, *args):
         _FakePool.submitted.append(fn)
@@ -44,3 +45,17 @@ def test_the_pool_returns_a_count_not_the_table(monkeypatch):
     assert out["built"] == ["G1", "G2"] and out["failed"] == []
     assert _FakePool.submitted and all(fn is index._index_granule_job for fn in _FakePool.submitted)
     assert index._index_granule_job({"meta": {"native-id": "G3"}}, 6, None) == 42
+
+
+def test_workers_are_spawned_not_forked(monkeypatch):
+    """Forked workers start as copies of the parent, which holds the build's whole CMR result (~3 GB for all of
+    Greenland). Reference counting touches those pages, copy-on-write un-shares them, and used memory climbs towards
+    (workers + 1) x 3 GB: measured 12 -> 13.5 GB in five minutes on a 15 GB box. Spawned workers receive only their
+    task. (macOS spawns by default, which is why a laptop build never showed it; Linux forks.)"""
+    import concurrent.futures as cf
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", _FakePool)
+    monkeypatch.setattr(index, "indexed_granules", lambda: set())
+    monkeypatch.setattr(index, "build_granule_index", lambda g, res, cells: _Table())
+    _FakePool.contexts.clear()
+    index.ensure_index([{"meta": {"native-id": "G1"}}], workers=1)
+    assert _FakePool.contexts and _FakePool.contexts[0].get_start_method() == "spawn"

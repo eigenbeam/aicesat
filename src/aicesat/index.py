@@ -276,6 +276,7 @@ def _index_granule_job(granule, res: int, cells) -> int:
 
 
 def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
 
     have = indexed_granules()
@@ -285,7 +286,10 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
         if not todo:
             break
         failed = []
-        ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)))
+        # SPAWN, not Linux's default fork: a forked worker starts as a copy of this process, which holds the whole CMR
+        # result (~3 GB for all of Greenland); reference counting un-shares those pages and used memory climbs towards
+        # (workers + 1) x 3 GB. Spawned workers get only their task. (macOS already spawns.)
+        ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)), mp_context=multiprocessing.get_context("spawn"))
         futs = {ex.submit(_index_granule_job, g, H3_RES, cells): g for g in todo}
         # MONOTONIC, not wall clock. A laptop that sleeps mid-build advances time.time() by the whole nap, so every
         # remaining future would blow its deadline the moment the machine woke and a healthy build would report

@@ -195,7 +195,7 @@ class _FakeExecutor:
     outcomes: dict = {}
     submitted: list = []
 
-    def __init__(self, max_workers=None):
+    def __init__(self, max_workers=None, **_kw):   # mp_context etc.: the pool runs inline
         pass
 
     def __enter__(self):
