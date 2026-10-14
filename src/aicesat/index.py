@@ -267,6 +267,14 @@ INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out an
 INDEX_WORKERS = 8      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
 
 
+def _index_granule_job(granule, res: int, cells) -> int:
+    """The pool's job: index one granule (the worker writes its file) and hand back only the row count. Returning the
+    table itself sent every granule's rows back to the parent, where the finished futures kept them all until the
+    build ended -- ~1 MB a granule, which on the all-Greenland ATL03 build (48,838 granules) was set to run a 15 GiB
+    box out of memory about an hour in. Nothing in the parent read them."""
+    return build_granule_index(granule, res, cells).num_rows
+
+
 def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
 
@@ -278,7 +286,7 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
             break
         failed = []
         ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)))
-        futs = {ex.submit(build_granule_index, g, H3_RES, cells): g for g in todo}
+        futs = {ex.submit(_index_granule_job, g, H3_RES, cells): g for g in todo}
         # MONOTONIC, not wall clock. A laptop that sleeps mid-build advances time.time() by the whole nap, so every
         # remaining future would blow its deadline the moment the machine woke and a healthy build would report
         # itself failed. On macOS time.monotonic() is mach_absolute_time and stops during sleep; on Linux
