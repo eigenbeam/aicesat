@@ -10284,12 +10284,19 @@ AICESAT.MapView = class {
     const key = res + '|' + this._covKey + '|' + anchor + '|' + k + '|' + this.gridOn + '|' + this.shadeOn;
     if (this._covMemo && this._covMemo.key === key) return this._covMemo.layers;
     const {byRes, visible} = this.coverage, on = Object.keys(visible).filter(k => visible[k] !== false);
-    const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
-    // One neutral ramp: the shown missions' granules over the hex (the tooltip's numbers), linear up to the 95th
-    // percentile of the hexes at this resolution. Which missions, and how many each, is the tooltip's job.
-    const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
-    const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
-    const fill = h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))];
+    // The shaded hexes, kept as ONE array per (resolution, coverage, shown missions): the layer is rebuilt several times
+    // while the page settles (setCoverage), and a new array each time made deck recompute every hexagon (24k at res 5
+    // over Greenland). Same array, no recompute.
+    const dkey = res + '|' + this._covKey + '|' + on.join(',');
+    if (!this._covData || this._covData.key !== dkey) {
+      const data = (byRes[res] || []).map(h => ({...h, seen: on.filter(k => h.missions[k])})).filter(h => h.seen.length);
+      // One neutral ramp: the shown missions' granules over the hex (the tooltip's numbers), linear up to the 95th
+      // percentile of the hexes at this resolution. Which missions, and how many each, is the tooltip's job.
+      const grans = h => h.seen.reduce((a, k) => a + h.missions[k].passes, 0);
+      const v = data.map(grans).sort((a, b) => a - b), hi = Math.max(1, v[Math.floor(0.95 * (v.length - 1))] || 1);
+      this._covData = {key: dkey, data, fill: h => [214, 230, 250, Math.round(20 + 120 * Math.min(1, grans(h) / hi))]};
+    }
+    const {data, fill} = this._covData;
     let cells = [];
     if (this.gridOn === false) cells = [];
     else if (res === 3) cells = this._earthGrid = this._earthGrid || h3.getRes0Cells().flatMap(c => h3.cellToChildren(c, 3));
@@ -11409,9 +11416,12 @@ AICESAT.SurveyView = class {
     this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible);
   }
   async load() {
-    try { for (const r of [3, 4, 5]) this.byRes[r] = (await this.api.coverageHexes(r)).hexes; }
-    catch (e) { AICESAT.showError(e); return; }
-    this.paint();
+    // The three resolutions in parallel, each painted as it lands: the globe opens at res 3, so it no longer waits for
+    // res 5 (7 MB over all of Greenland). One after the other, nothing showed until the slowest had come back.
+    await Promise.all([3, 4, 5].map(async r => {
+      try { this.byRes[r] = (await this.api.coverageHexes(r)).hexes; this.paint(); }
+      catch (e) { AICESAT.showError(e); }
+    }));
   }
   paint() { this.map.setCoverage(this.byRes, this.visible); this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible); }
   async openHex(hx) {

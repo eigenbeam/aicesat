@@ -312,11 +312,23 @@ def build_manifest(collection: str) -> dict:
             "manifest": str(_manifest_paths(d)[1])}
 
 
-def _ensure_manifest(d, ym: str):
+def _ensure_manifest(d, ym: str, max_stale_s: float = 0):
     """Fresh coverage manifest path for index dir `d`, or None if the index has no granules. Normally a single stat:
-    the builder calls build_manifest() when it finishes, so the rebuild below is a repair path, not the usual one."""
+    the builder calls build_manifest() when it finishes, so the rebuild below is a repair path, not the usual one.
+
+    `max_stale_s` (opt-in, display readers only): accept a manifest up to that old even though the index changed since.
+    While a builder runs, files land every second, so every strict read rebuilt the manifest from the whole index --
+    6.6 s for ATL06 mid-build on the deployed box, on every globe request. The builder rolls up when it finishes."""
     if _manifest_fresh(d):
         return _manifest_paths(d)[1]
+    if max_stale_s:
+        import time
+        m = _manifest_paths(d)[1]
+        try:
+            if time.time() - m.stat().st_mtime < max_stale_s:
+                return m
+        except OSError:
+            pass
     srcs = _source_parquets(d)
     if not srcs:
         return None

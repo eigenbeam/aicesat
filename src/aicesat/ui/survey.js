@@ -39,9 +39,12 @@ AICESAT.SurveyView = class {
     this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible);
   }
   async load() {
-    try { for (const r of [3, 4, 5]) this.byRes[r] = (await this.api.coverageHexes(r)).hexes; }
-    catch (e) { AICESAT.showError(e); return; }
-    this.paint();
+    // The three resolutions in parallel, each painted as it lands: the globe opens at res 3, so it no longer waits for
+    // res 5 (7 MB over all of Greenland). One after the other, nothing showed until the slowest had come back.
+    await Promise.all([3, 4, 5].map(async r => {
+      try { this.byRes[r] = (await this.api.coverageHexes(r)).hexes; this.paint(); }
+      catch (e) { AICESAT.showError(e); }
+    }));
   }
   paint() { this.map.setCoverage(this.byRes, this.visible); this.strip.update(['GLAS', 'ICESSN', 'ATL06'], this.visible); }
   async openHex(hx) {
