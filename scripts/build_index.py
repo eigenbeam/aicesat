@@ -27,7 +27,11 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     # ADDRESSING cells for the row filter (rows are keyed at index.H3_RES); the CLAIM stays at `fine` below.
     # Passing `fine` here matched nothing whenever the claim resolution differed from H3_RES, i.e. on any
     # bbox small enough to claim finer than res 6 — every granule indexed 0 rows and reported success.
-    out = index.ensure_index(granules, workers=a.workers, cells=cells)
+    # Which ground is genuinely NEW? Rows are filtered to `cells`, so a granule indexed for a smaller area holds nothing
+    # outside it; `needed` makes ensure_index rebuild exactly the granules that cannot prove they cover the added ring,
+    # and nothing on a same-area re-run (build_atl06 does the same).
+    needed = index.unclaimed_cells(index.ATL03_INDEX_DIR, fine)
+    out = index.ensure_index(granules, workers=a.workers, cells=cells, needed=needed)
     # Roll the index down to its coverage manifest NOW, as build_atl06 does: the query path names the granule files it
     # needs through the manifest, and without this the first request after a build pays the whole-directory rebuild.
     rollup = coverage.build_manifest("ATL03")
@@ -37,7 +41,7 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
         cov = {"cells": index.manifest_cells(index.ATL03_INDEX_DIR)}
     else:
         cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=fine)
-    print(json.dumps({"bbox": list(bbox), "claim_cells_compacted": len(cov["cells"]), "search_vertices": len(ring), "window": list(window), "granules": len(granules), **out,
+    print(json.dumps({"bbox": list(bbox), "claim_cells_compacted": len(cov["cells"]), "search_vertices": len(ring), "window": list(window), "granules": len(granules), "new_ground_cells": len(needed), **out,
                       "manifest": rollup, "wall_seconds": round(time.time() - t0, 1)}, indent=1))
     if out["failed"]:
         print(f"\n{len(out['failed'])} granule(s) did not index; re-run this command to retry just those.", file=sys.stderr)

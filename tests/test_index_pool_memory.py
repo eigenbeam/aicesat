@@ -59,3 +59,31 @@ def test_workers_are_spawned_not_forked(monkeypatch):
     _FakePool.contexts.clear()
     index.ensure_index([{"meta": {"native-id": "G1"}}], workers=1)
     assert _FakePool.contexts and _FakePool.contexts[0].get_start_method() == "spawn"
+
+
+def test_needed_ground_rebuilds_only_granules_that_cannot_prove_it(monkeypatch, tmp_path):
+    """ATL03 skipped by name alone. With `needed` (the cells an enlarging build adds), a file built for a smaller
+    area is rebuilt and a file that recorded the ground is left alone; with nothing needed, both are skipped."""
+    import concurrent.futures as cf
+    import h3
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", _FakePool)
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path)
+    small = [h3.latlng_to_cell(69.00, -50.00, 6)]
+    extra = [h3.latlng_to_cell(72.50, -38.50, 9)]
+    wide = small + [h3.cell_to_parent(extra[0], 6)]
+    for name, cells in (("OLD", small), ("WIDE", wide), ("LEGACY", None)):
+        meta = {"aicesat_index_version": index.INDEX_SCHEMA_VERSION, **index.cells_metadata(cells, tmp_path)}
+        pq.write_table(pa.table({"granule": [name]}).replace_schema_metadata(meta), tmp_path / f"{name}.parquet")
+    built = []
+    monkeypatch.setattr(index, "build_granule_index", lambda g, res, cells: built.append(g["meta"]["native-id"]) or _Table())
+    gs = [{"meta": {"native-id": n}} for n in ("OLD", "WIDE", "LEGACY", "NEW")]
+
+    out = index.ensure_index(gs, workers=1, needed=extra)
+    assert sorted(out["built"]) == ["LEGACY", "NEW", "OLD"], out
+    assert sorted(built) == ["LEGACY", "NEW", "OLD"]
+
+    built.clear()
+    out = index.ensure_index(gs, workers=1, needed=[])
+    assert out["built"] == ["NEW"], "a same-area re-run must rebuild nothing that is on disk"

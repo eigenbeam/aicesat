@@ -225,9 +225,13 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
                     rows[f"{d}_filters"].append(fl); rows[f"{d}_dtype"].append(dt); rows[f"{d}_ncols"].append(nc)
                     rows[f"{d}_mask"].append(int(ci.filter_mask))
     tbl = typed_table(rows)
-    tbl = tbl.replace_schema_metadata({"aicesat_index_version": INDEX_SCHEMA_VERSION, "h3_res": str(res),
-                                       "built_at": datetime.now(timezone.utc).isoformat()})
     ATL03_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    # Record the cells the rows were filtered to (a sha1; the set itself lives once in _cellsets/), so a later, larger
+    # build can tell whether this file already covers the added ground. The other builders have done this since the
+    # enlarge bug; ATL03 did not, so every enlarging build either skipped files that lacked the ground or rebuilt all.
+    tbl = tbl.replace_schema_metadata({"aicesat_index_version": INDEX_SCHEMA_VERSION, "h3_res": str(res),
+                                       "built_at": datetime.now(timezone.utc).isoformat(),
+                                       **cells_metadata(cells, ATL03_INDEX_DIR)})
     # tmp-then-rename, like the other three builders. A direct write leaves a TRUNCATED parquet if the build is
     # killed mid-write, and indexed_granules reads every file's schema — so the next run would die on the corpse of
     # the last one instead of resuming.
@@ -275,12 +279,20 @@ def _index_granule_job(granule, res: int, cells) -> int:
     return build_granule_index(granule, res, cells).num_rows
 
 
-def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
+def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None, needed=None) -> dict:
+    """Index every granule in `granules` that is not already on disk with a current schema -- and, when `needed`
+    (the cells this build adds to the claim, from unclaimed_cells) is non-empty, also every granule whose file cannot
+    PROVE it was built for that ground (see granule_proves). A same-area re-run has `needed` empty and rebuilds nothing.
+
+    Granules are keyed by coverage.granule_name, which is also what names the file on disk. Keying the skip by the
+    CMR native-id re-indexed every granule whose native-id is a concept-id ('SC:ATL03.007:NNN') on every run."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
+    from .coverage import granule_name
 
     have = indexed_granules()
-    todo = [g for g in granules if g["meta"]["native-id"] not in have]
+    todo = [g for g in granules
+            if granule_name(g) not in have or not granule_proves(ATL03_INDEX_DIR / f"{granule_name(g)}.parquet", needed)]
     built, t0 = [], time.time()
     for attempt in (1, 2):
         if not todo:
@@ -297,7 +309,7 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
         # CLOCK_MONOTONIC likewise excludes suspend. (This is what a 95-minute "hang" turned out to be: the lid.)
         deadline = time.monotonic() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
         for f, g in futs.items():
-            name = g["meta"]["native-id"]
+            name = granule_name(g)
             try:
                 f.result(timeout=max(1.0, deadline - time.monotonic()))
                 built.append(name)
@@ -315,7 +327,7 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None) -> dict:
         ex.shutdown(wait=False, cancel_futures=True)
         todo = failed
     out = {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1),
-           "failed": [g["meta"]["native-id"] for g in todo]}
+           "failed": [granule_name(g) for g in todo]}
     if todo:
         # Not raised: the granules that DID index are on disk and the caller still needs to stamp the coverage
         # manifest for them. The caller reports the failures and exits non-zero; a re-run picks up only these.
