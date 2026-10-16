@@ -149,10 +149,10 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
         base["itrf_year"].append(int(itrf_year))
 
     tbl = index_mod.typed_table(base)
-    tbl = tbl.replace_schema_metadata({"aicesat_icessn_index_version": ICESSN_INDEX_VERSION, "h3_res": str(res),
-                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells)})
     d = _index_dir(res)
     d.mkdir(parents=True, exist_ok=True)
+    tbl = tbl.replace_schema_metadata({"aicesat_icessn_index_version": ICESSN_INDEX_VERSION, "h3_res": str(res),
+                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells, d)})
     tmp = d / f".{name}.parquet.tmp"
     pq.write_table(tbl, tmp)
     tmp.replace(d / f"{name}.parquet")

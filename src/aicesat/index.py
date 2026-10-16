@@ -489,37 +489,120 @@ def unclaimed_cells(d, cells) -> list:
 # Per-granule provenance. A granule's rows are FILTERED to the cells the build asked for, but the file recorded only
 # a schema version — so a later, larger build skipped it by name and never wrote its rows for the added ground, while
 # the claim was extended over that ground anyway. Silent short scenes. Recording the filter set fixes the skip test.
-CELLS_KEY = "aicesat_index_cells"
+#
+# The record is a HASH, not the list. The compacted cell list of a whole-region build is ~49 KB of JSON, and stamping it
+# into every granule's footer made it 77% of an ATL06 index file (92% of ICESSN, 89% of GPS): 3.3 GiB of the deployed
+# 7.05 GiB index store was copies of one string, and every query that opened footers read it again. Each distinct set
+# is now written ONCE, content-addressed by its sha1, to `{index_dir}/_cellsets/{sha1}.json`; the footer carries the
+# sha1. Write-once by construction (exists check, then uuid tmp + os.replace), so the process-pool builders need no
+# lock. `_cellsets/` is a sibling of `_coverage/`, not inside it: `_coverage/` is disposable (rm -rf forces a manifest
+# rebuild) and the cell sets must not be. A non-`*.parquet` subdir is invisible to the builders' globs and writing
+# into it does not move the index dir's mtime, so manifest freshness is untouched.
+# Legacy files with the inline list (CELLS_KEY) still prove from it; `scripts/migrate_index_footers.py` rewrites them.
+CELLS_KEY = "aicesat_index_cells"               # legacy: the compacted list inline (read-only from here on)
+CELLSET_KEY = "aicesat_index_cellset_sha1"      # current: sha1 of the canonical list text; the list is in _cellsets/
+CELLSETS_DIR = "_cellsets"
 
 
-def cells_metadata(cells) -> dict:
-    """The metadata entry recording which cells a granule's rows were filtered to. Compacted, so a whole-region
-    build stores a handful of ids rather than millions."""
+def compacted_cellset(cells) -> list[str]:
+    """The compacted, sorted cell-id list a granule's rows were filtered to; [] for None/empty. Compacted, so a
+    whole-region build stores a handful of ids rather than millions."""
     # len(), not truthiness: `cells` arrives as a numpy array from the index builders, and `not array` raises
     # ValueError on anything but a scalar. A caught-by-test detail, not a hypothetical.
     if cells is None or len(cells) == 0:
-        return {}
+        return []
     ss = sorted({_as_str(c) for c in cells})
     by_res: dict[int, set] = {}
     for c in ss:
         by_res.setdefault(h3.get_resolution(c), set()).add(c)
-    packed = sorted(c for _r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
-    return {CELLS_KEY: json.dumps(packed)}
+    return sorted(c for _r, cs in by_res.items() for c in h3.compact_cells(sorted(cs)))
 
 
-def granule_cells(path) -> set[str] | None:
-    """The cell set a granule file was built for, or None if it predates this record (unknown provenance)."""
+def cellset_text(packed: list[str]) -> str:
+    """The single canonical serialisation of a cell set (what is hashed and what the sidecar holds)."""
+    return json.dumps(packed)
+
+
+def cellset_sha1(text: str) -> str:
+    import hashlib
+    return hashlib.sha1(text.encode()).hexdigest()
+
+
+def _cellset_path(d, sha: str) -> pathlib.Path:
+    return pathlib.Path(d) / CELLSETS_DIR / f"{sha}.json"
+
+
+def record_cellset(d, text: str) -> str:
+    """Store a cell set's canonical text once under its sha1; return the sha1. Safe from concurrent builder
+    processes: the content IS the name, so two writers of the same set produce the same bytes and os.replace keeps
+    whichever lands last."""
+    import os
+    import uuid
+    sha = cellset_sha1(text)
+    path = _cellset_path(d, sha)
+    if path.exists():
+        return sha
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{sha}.{uuid.uuid4().hex}.tmp"
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return sha
+
+
+def cells_metadata(cells, d) -> dict:
+    """The footer entry recording which cells a granule's rows were filtered to: {} when unfiltered, else the sha1 of
+    the compacted set, whose text is written once to `{d}/_cellsets/`."""
+    packed = compacted_cellset(cells)
+    if not packed:
+        return {}
+    return {CELLSET_KEY: record_cellset(d, cellset_text(packed))}
+
+
+_CELLSET_CACHE: dict[tuple[str, str], set[str]] = {}
+
+
+def load_cellset(d, sha: str) -> set[str] | None:
+    """The cell set behind a sha1, or None if its sidecar is missing/unreadable. Hits are cached per process (every
+    file of one build shares a sha); misses are not, because a sidecar can appear later."""
+    key = (str(d), sha)
+    got = _CELLSET_CACHE.get(key)
+    if got is not None:
+        return got
+    try:
+        got = set(json.loads(_cellset_path(d, sha).read_text()))
+    except Exception:
+        return None
+    _CELLSET_CACHE[key] = got
+    return got
+
+
+def _granule_record(path) -> tuple[str | None, set[str] | None]:
+    """(sha1, cell set) recorded in a granule file's footer. sha1 is None for a legacy inline record; the set is None
+    when the file predates the record or its sidecar is missing (unknown provenance either way)."""
     try:
         meta = pq.read_schema(path).metadata or {}
     except Exception:
-        return None
-    raw = meta.get(CELLS_KEY.encode())
+        return None, None
+    sha = meta.get(CELLSET_KEY.encode())
+    if sha:
+        sha = sha.decode()
+        return sha, load_cellset(pathlib.Path(path).parent, sha)
+    raw = meta.get(CELLS_KEY.encode())                 # legacy inline list
     if not raw:
-        return None
+        return None, None
     try:
-        return set(json.loads(raw))
+        return None, set(json.loads(raw))
     except Exception:
-        return None
+        return None, None
+
+
+def granule_cells(path) -> set[str] | None:
+    """The cell set a granule file was built for, or None if it predates this record or its sidecar is missing
+    (unknown provenance either way)."""
+    return _granule_record(path)[1]
+
+
+_PROVES_CACHE: dict[tuple[str, int], tuple[object, bool]] = {}
 
 
 def granule_proves(path, needed) -> bool:
@@ -527,8 +610,42 @@ def granule_proves(path, needed) -> bool:
     cannot prove its coverage must be rebuilt rather than trusted, which is the whole point."""
     if needed is None or len(needed) == 0:
         return True                    # nothing new is being asked of it
-    rec = granule_cells(path)
-    return rec is not None and cells_within(rec, needed)
+    sha, rec = _granule_record(path)
+    if rec is None:
+        return False
+    if sha is None:
+        return cells_within(rec, needed)
+    # Every file of one build shares a set, and a build asks this of tens of thousands of files with the same
+    # `needed`: memoise the ancestor walk per (set, needed). The entry keeps a reference to `needed` so its id cannot
+    # be recycled by another list while the answer is cached.
+    k = (sha, id(needed))
+    got = _PROVES_CACHE.get(k)
+    if got is None or got[0] is not needed:
+        got = _PROVES_CACHE[k] = (needed, cells_within(rec, needed))
+    return got[1]
+
+
+def migrate_footer(path) -> bool:
+    """Rewrite one legacy index file: move its inline cell list to the content-addressed sidecar and leave the sha1 in
+    its place. Every other footer key is preserved verbatim. Returns True if the file was rewritten, False if it already
+    carries the new record or has no record at all. Atomic (tmp + os.replace); the sidecar is written first so a
+    crash between the two never leaves a file whose sha1 has no set."""
+    import os
+    import uuid
+    path = pathlib.Path(path)
+    meta = pq.read_schema(path).metadata or {}
+    raw = meta.get(CELLS_KEY.encode())
+    if not raw or meta.get(CELLSET_KEY.encode()):
+        return False
+    text = raw.decode()                 # produced by the same json.dumps: hashing it as-is matches cellset_text
+    sha = record_cellset(path.parent, text)
+    new_meta = {k: v for k, v in meta.items() if k != CELLS_KEY.encode()}
+    new_meta[CELLSET_KEY.encode()] = sha.encode()
+    tbl = pq.read_table(path).replace_schema_metadata(new_meta)
+    tmp = path.parent / f".{path.stem}.{uuid.uuid4().hex}.tmp"
+    pq.write_table(tbl, tmp)
+    os.replace(tmp, path)
+    return True
 
 
 def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False,

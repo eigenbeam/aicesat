@@ -185,10 +185,10 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     # invalidated the claim, so a region containing even one empty granule could never stay claimed. See ICESSN,
     # which never had the branch.
     tbl = index_mod.typed_table(rows)
-    tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
-                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells)})
     d = _index_dir(res)
     d.mkdir(parents=True, exist_ok=True)
+    tbl = tbl.replace_schema_metadata({"aicesat_glas_index_version": GLAS_INDEX_VERSION, "h3_res": str(res),
+                                       "built_at": datetime.now(timezone.utc).isoformat(), **index_mod.cells_metadata(cells, d)})
     tmp = d / f".{name}.parquet.tmp"
     pq.write_table(tbl, tmp)
     tmp.replace(d / f"{name}.parquet")

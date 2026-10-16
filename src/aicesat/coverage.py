@@ -228,7 +228,8 @@ def _index_for(key: str):
 # The manifest lives in a `_coverage/` SUBDIR, never as a top-level `{d}/*.parquet`: the index modules fetch byte
 # spans with `read_parquet('{d}/*.parquet')` (non-recursive) and their empty-parquet ref pickers grab the first
 # `*.parquet` — a schema-mismatched manifest sitting alongside the granule files would break both. A subdir is invisible
-# to those non-recursive globs.
+# to those non-recursive globs. `_coverage/` is disposable (rm -rf it to force a rebuild); its sibling `_cellsets/`
+# (index.CELLSETS_DIR, the per-granule provenance sets the footers point at) is NOT.
 _MANIFEST_DIR = "_coverage"
 
 

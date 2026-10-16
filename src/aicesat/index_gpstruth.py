@@ -153,12 +153,12 @@ def build_gpstruth_index(granule, geometry: tuple[float, float, bool, str], meta
         base["track_depth_known"].append(bool(depth_known))
 
     tbl = index_mod.typed_table(base)
+    d = _index_dir(res)
+    d.mkdir(parents=True, exist_ok=True)
     tbl = tbl.replace_schema_metadata({"aicesat_gpstruth_index_version": GPSTRUTH_INDEX_VERSION, "h3_res": str(res),
                                        METADATA_KEY: metadata_sha1,
                                        "built_at": datetime.now(timezone.utc).isoformat(),
-                                       **index_mod.cells_metadata(cells)})
-    d = _index_dir(res)
-    d.mkdir(parents=True, exist_ok=True)
+                                       **index_mod.cells_metadata(cells, d)})
     tmp = d / f".{name}.parquet.tmp"
     pq.write_table(tbl, tmp)
     tmp.replace(d / f"{name}.parquet")

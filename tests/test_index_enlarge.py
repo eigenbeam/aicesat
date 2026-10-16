@@ -37,7 +37,7 @@ def _granule(dirpath, name, cells):
     dirpath.mkdir(parents=True, exist_ok=True)
     tbl = pa.table({"granule": [name]})
     meta = {"aicesat_atl06_index_version": "v9", "h3_res": "5"}
-    meta.update(index.cells_metadata(cells) if cells else {})
+    meta.update(index.cells_metadata(cells, dirpath) if cells else {})
     pq.write_table(tbl.replace_schema_metadata(meta), dirpath / f"{name}.parquet")
     return dirpath / f"{name}.parquet"
 
@@ -96,9 +96,99 @@ def test_the_recorded_set_is_compacted(d):
     """A whole-region build must store a handful of ids, not millions: the metadata rides in every granule file."""
     parent = h3.cell_to_parent(SMALL[0], 5)
     children = h3.cell_to_children(parent, 9)
-    rec = json.loads(index.cells_metadata(children)[index.CELLS_KEY])
+    rec = index.compacted_cellset(children)
     assert len(rec) < len(children), f"{len(children)} cells stored as {len(rec)}"
     assert index.cells_within(set(rec), children[:20])
+
+
+# --- the record is a hash; the set lives once, beside the files --------------------------------------------------
+def _legacy_granule(dirpath, name, cells):
+    """A file written before the sidecar: the compacted list inline under CELLS_KEY."""
+    dirpath.mkdir(parents=True, exist_ok=True)
+    meta = {"aicesat_atl06_index_version": "v9", "h3_res": "5", "built_at": "2026-01-01T00:00:00+00:00",
+            index.CELLS_KEY: index.cellset_text(index.compacted_cellset(cells))}
+    pq.write_table(pa.table({"granule": [name]}).replace_schema_metadata(meta), dirpath / f"{name}.parquet")
+    return dirpath / f"{name}.parquet"
+
+
+def test_the_footer_holds_a_hash_and_the_set_lives_once_beside_the_files(d):
+    """The compacted list was ~49 KB stamped into EVERY granule file (3.3 GiB of a 7 GiB store). Now the footer
+    carries a 40-char sha1 and one sidecar per distinct set."""
+    p1 = _granule(d, "G1", SMALL)
+    p2 = _granule(d, "G2", SMALL)
+    p3 = _granule(d, "G3", SMALL + EXTRA)
+    for p in (p1, p2, p3):
+        meta = pq.read_schema(p).metadata
+        assert index.CELLS_KEY.encode() not in meta, "the inline list is back"
+        sha = meta[index.CELLSET_KEY.encode()].decode()
+        assert len(sha) == 40 and (d / index.CELLSETS_DIR / f"{sha}.json").exists()
+    assert len(list((d / index.CELLSETS_DIR).glob("*.json"))) == 2, "one sidecar per DISTINCT set"
+    assert index.granule_proves(p1, SMALL) and not index.granule_proves(p1, EXTRA)
+    assert index.granule_proves(p3, SMALL + EXTRA)
+
+
+def test_a_legacy_inline_record_still_proves(d):
+    p = _legacy_granule(d, "OLD", SMALL)
+    assert index.granule_cells(p) == set(index.compacted_cellset(SMALL))
+    assert index.granule_proves(p, SMALL) is True
+    assert index.granule_proves(p, EXTRA) is False
+
+
+def test_a_missing_sidecar_is_unknown_provenance(d):
+    """A file whose set was lost cannot vouch for anything; with nothing asked of it, it is still left alone."""
+    p = _granule(d, "G1", SMALL)
+    sha = pq.read_schema(p).metadata[index.CELLSET_KEY.encode()].decode()
+    index._CELLSET_CACHE.clear()
+    (d / index.CELLSETS_DIR / f"{sha}.json").unlink()
+    assert index.granule_cells(p) is None
+    assert index.granule_proves(p, SMALL) is False
+    assert index.granule_proves(p, []) is True
+
+
+def test_migrate_footer_moves_the_list_and_keeps_every_other_key(d):
+    # a scattered set that does not compact away, so the inline text is the multi-KB string the real files carry
+    many = [h3.latlng_to_cell(60.0 + i * 0.05, -50.0 + (i % 7) * 0.3, 9) for i in range(400)]
+    p = _legacy_granule(d, "OLD", many)
+    before = pq.read_schema(p).metadata
+    inline = before[index.CELLS_KEY.encode()].decode()
+    size_before = p.stat().st_size
+    assert index.migrate_footer(p) is True
+    after = pq.read_schema(p).metadata
+    assert index.CELLS_KEY.encode() not in after
+    sha = after[index.CELLSET_KEY.encode()].decode()
+    assert sha == index.cellset_sha1(inline), "the sidecar must be addressed by the hash of the text that was inline"
+    assert json.loads((d / index.CELLSETS_DIR / f"{sha}.json").read_text()) == json.loads(inline)
+    for k, v in before.items():
+        if k != index.CELLS_KEY.encode():
+            assert after[k] == v, f"footer key {k!r} changed"
+    assert pq.read_table(p).to_pydict() == {"granule": ["OLD"]}
+    assert p.stat().st_size < size_before - 1000, (p.stat().st_size, size_before)
+    assert index.granule_proves(p, many) is True
+    assert index.migrate_footer(p) is False, "a second pass must be a no-op"
+    assert index.migrate_footer(_granule(d, "NEW", SMALL)) is False
+    assert index.migrate_footer(_granule(d, "NONE", None)) is False
+
+
+def test_a_new_build_shares_the_sidecar_a_migration_wrote(d):
+    """The hash of the inline text equals the hash cells_metadata computes for the same set, so migrated and freshly
+    built files point at ONE sidecar."""
+    old = _legacy_granule(d, "OLD", SMALL)
+    index.migrate_footer(old)
+    new = _granule(d, "NEW", SMALL)
+    assert pq.read_schema(old).metadata[index.CELLSET_KEY.encode()] == pq.read_schema(new).metadata[index.CELLSET_KEY.encode()]
+    assert len(list((d / index.CELLSETS_DIR).glob("*.json"))) == 1
+
+
+def test_recording_a_cellset_leaves_the_coverage_manifest_fresh(d):
+    """`_cellsets/` is a subdir, so writing into it must not move the index dir's mtime and force a manifest rebuild."""
+    from aicesat import coverage
+    d.mkdir(parents=True, exist_ok=True)
+    tbl = pa.table({"granule": ["G1"], "h3_cell": pa.array([h3.str_to_int(SMALL[0])], pa.uint64())})
+    pq.write_table(tbl.replace_schema_metadata(index.cells_metadata(SMALL, d)), d / "G1.parquet")
+    coverage._build_manifest(d, "'2019-01'", coverage._source_parquets(d))
+    assert coverage._manifest_fresh(d)
+    index.record_cellset(d, index.cellset_text(index.compacted_cellset(EXTRA)))
+    assert coverage._manifest_fresh(d), "a sidecar write invalidated the manifest"
 
 
 # --- the decision the build scripts make ------------------------------------------------------------------------
