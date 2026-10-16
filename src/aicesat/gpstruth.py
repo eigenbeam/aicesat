@@ -239,7 +239,9 @@ def parse_rows(source, bbox, arp_m: float, depth_cm: float, depth_known: bool) -
     year = a["year"][keep].astype("i4")
     doy = a["day_of_year"][keep].astype("i8")          # i8: (doy-1)*86_400_000 overflows int32
     hour = a["decimal_hour"][keep]
-    base = np.array([np.datetime64(f"{y:04d}-01-01", "ms") for y in year])
+    # Vectorised: datetime64[Y] counts years from 1970, so this is Jan 1 of each row's year. The per-row
+    # np.datetime64(f"{y}-01-01") comprehension it replaces was ~2 s of the 2.28 M-point Summit leg.
+    base = (year.astype("i8") - 1970).astype("datetime64[Y]").astype("datetime64[ms]")
     ms = (doy - 1) * 86_400_000 + np.round(hour * 3_600_000).astype("i8")
     t = base + ms.astype("timedelta64[ms]")
 
