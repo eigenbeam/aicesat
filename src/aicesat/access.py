@@ -179,9 +179,11 @@ def aio_pool_size(threads: int) -> int:
           32        8        6.0 s    6.3 s   6.2 s
          128        8        6.1 s    6.2 s   6.5 s
 
-    Identical within noise. Halving the workers halves ms/GET (35.6 -> 16.7) at the same wall, which is a shared
-    throughput cap (~300-400 MB/s read on the m6i.xlarge), not pool queueing: the requests already wait on bytes, not
-    on a connection. So the default stays at the floor; the env override exists to re-run this on other hardware."""
+    Identical within noise. Halving the workers halves ms/GET (35.6 -> 16.7) at the same wall: a shared cap of
+    ~300-400 MB/s read, not pool queueing. The cap turned out to be THIS CLIENT'S single Python event-loop thread
+    (100% of one core during a fetch, the other three idle; two processes together reached 520 MB/s), not the
+    instance: the CRT mechanism moves the bytes to C and reads 670-840 MB/s on the same box (see _CrtS3). The pool
+    default stays at the floor; the env override exists to re-run this on other hardware."""
     override = _env_int(S3_POOL_ENV)
     if override is not None:
         return override
@@ -274,7 +276,7 @@ def access_url(https_url: str, s3_url: str | None) -> str:
 class RangeReader:
     """Concurrent byte-range reader over Earthdata Cloud granules. Out-of-region: bearer -> 303 -> presigned CloudFront
     HTTPS GETs. In-region (s3:// URLs): direct range GETs against nsidc-cumulus S3 with STS creds — no presign, no
-    egress — via a selectable mechanism (env AICESAT_S3_FETCH; default "aiobotocore", see S3_FETCH_MECHANISMS). Wanted ranges
+    egress — via a selectable mechanism (env AICESAT_S3_FETCH; default "crt", see S3_FETCH_MECHANISMS). Wanted ranges
     are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
 
     def __init__(self, threads: int | None = None, max_gap: int | None = None):
@@ -327,10 +329,11 @@ class RangeReader:
         self._url_locks: dict[str, threading.Lock] = {}  # one lock per granule URL: presigns for different granules overlap
         self._s3 = None                                  # lazily-built s3fs filesystem (in-region S3-direct)
         # Pluggable in-region S3 range-GET mechanism (see S3_FETCH_MECHANISMS); "s3fs" is the historical path.
-        # Flip the winner in one place: export AICESAT_S3_FETCH=<name>.
-        # aiobotocore won the in-region benchmark on both shapes (~26% faster on many-small-GETs, tighter p95 than
+        # Flip the winner in one place: export AICESAT_S3_FETCH=<name>. Default: "crt" when awscrt is installed
+        # (2.2x faster than aiobotocore on the Summit fetch, see _CrtS3), else aiobotocore.
+        # aiobotocore won the earlier in-region benchmark on both shapes (~26% faster on many-small-GETs, tighter p95 than
         # the s3fs cat_file thread pool), byte-identical. Override with AICESAT_S3_FETCH (s3fs|s3fs_ranges|boto3|crt).
-        self.s3_fetch = os.environ.get("AICESAT_S3_FETCH", "aiobotocore")
+        self.s3_fetch = os.environ.get("AICESAT_S3_FETCH") or default_s3_mechanism()
         self._aio = None                                 # lazily-built aiobotocore loop+client (mechanism "aiobotocore")
         self._boto3 = None                               # lazily-built boto3 client (mechanism "boto3")
         self._crt = None                                 # lazily-built awscrt S3 client (mechanism "crt")
@@ -365,7 +368,7 @@ class RangeReader:
         """Fetch already-coalesced (offset, size) spans from one s3:// object via the selected mechanism.
         Returns bytes in span order, identical across mechanisms. `timings` (if a list) collects per-GET seconds
         where the mechanism can measure them (thread-pool ones can; the batched cat_ranges cannot)."""
-        name = getattr(self, "s3_fetch", "aiobotocore")
+        name = getattr(self, "s3_fetch", None) or default_s3_mechanism()
         mech = S3_FETCH_MECHANISMS.get(name)
         if mech is None:
             raise ValueError(f"unknown AICESAT_S3_FETCH={name!r}; choose from {sorted(S3_FETCH_MECHANISMS)}")
@@ -374,8 +377,10 @@ class RangeReader:
     def _s3_reset(self):
         """Drop every cached S3 client so the next call rebuilds with fresh STS creds."""
         self._s3 = None
-        _aio_evict()          # the shared client holds the expired token too; a per-reader reset alone would not help
-        for attr in ("_aio", "_boto3", "_crt"):
+        _aio_evict()          # the shared clients hold the expired token too; a per-reader reset alone would not help
+        _crt_evict()
+        self._aio = self._crt = None
+        for attr in ("_boto3",):
             obj = getattr(self, attr, None)
             if obj is not None and hasattr(obj, "close"):
                 try:
@@ -414,21 +419,15 @@ class RangeReader:
 
     def _crt_client(self):
         if self._crt is None:
-            self._crt = _CrtS3(s3_credentials())
+            self._crt = _crt_shared(s3_credentials(), S3_REGION)
         return self._crt
 
     def close(self):
         """Release this reader's own resources. Safe to call more than once.
 
-        The aiobotocore client is NOT closed here: it is shared process-wide by _aio_shared, and closing it would
-        stop a background loop other readers are still using. Dropping the reference is enough — the cache owns its
-        lifetime. The CRT client is still per-reader, so it is closed."""
-        obj = getattr(self, "_crt", None)
-        if obj is not None and hasattr(obj, "close"):
-            try:
-                obj.close()
-            except Exception:
-                pass
+        Neither the aiobotocore nor the CRT client is closed here: both are shared process-wide (_aio_shared,
+        _crt_shared), and closing one would stop loops other readers are still using. Dropping the references is
+        enough; the caches own their lifetimes."""
         self._crt = self._aio = None
 
     def _getter(self, url: str, refresh: bool = False):
@@ -476,7 +475,7 @@ class RangeReader:
         t0 = time.time()
         spans = coalesce(ranges, self.max_gap)
         if url.startswith("s3://"):
-            # In-region S3-direct: the mechanism (AICESAT_S3_FETCH, default aiobotocore) owns its own concurrency and
+            # In-region S3-direct: the mechanism (AICESAT_S3_FETCH, default crt) owns its own concurrency and
             # cred self-heal; every mechanism returns the same bytes.
             try:
                 blobs = self._s3_fetch_spans(url, spans)
@@ -542,7 +541,7 @@ class RangeReader:
 #
 # Each is an interchangeable way to fetch a set of already-coalesced (offset, size) spans from ONE s3:// object and
 # return their bytes in order, byte-identical to every other mechanism. The reader selects one by name via the env var
-# AICESAT_S3_FETCH (default "aiobotocore"; "s3fs" is the historical path). Adding/removing a mechanism is a
+# AICESAT_S3_FETCH (default "crt" when awscrt is installed, else "aiobotocore"; "s3fs" is the historical path). Adding/removing a mechanism is a
 # one-line edit of S3_FETCH_MECHANISMS below; flipping the production default is one env var (or one line in __init__).
 #
 #   name          concurrency model                              deps (beyond the always-present s3fs)
@@ -551,7 +550,7 @@ class RangeReader:
 #   s3fs_ranges   fsspec cat_ranges (batched, async internally)   —
 #   aiobotocore   async get_object gathered on one event loop     aiobotocore + botocore (installed)
 #   boto3         sync get_object in a ThreadPoolExecutor          boto3 (optional; may be absent)
-#   crt           awscrt S3 client, one ranged GET per span        awscrt (optional; EXPERIMENTAL, untested here)
+#   crt           awscrt S3 client, one ranged GET per span        awscrt (C event loops; the default where installed)
 #
 # A mechanism signature is mech(reader, s3url, spans, timings) -> list[bytes]. `timings`, if a list, collects per-GET
 # seconds where the mechanism can measure them (the thread-pool and async-gather ones can; the single batched
@@ -641,25 +640,13 @@ def _mech_boto3(reader: "RangeReader", url: str, spans, timings=None) -> list[by
 
 
 def _mech_crt(reader: "RangeReader", url: str, spans, timings=None) -> list[bytes]:
-    """awscrt S3 client, one signed ranged GET per span. EXPERIMENTAL: awscrt is not installed in this environment,
-    so this path is untested — the benchmark isolates any failure and reports it rather than trusting its timings."""
+    """awscrt S3 client, one signed ranged GET per span, all of a granule's spans submitted at once: the CRT owns the
+    concurrency (its connection pool, its event-loop threads), so there is no Python thread per request to add."""
     if not spans:
         return []
     bucket, key = _split_s3(url)
-
-    def one(s):
-        off, size = s
-        t = time.perf_counter()
-        data = reader._crt_client().get_range(bucket, key, off, size)
-        if timings is not None:
-            timings.append(time.perf_counter() - t)
-        return data
-
-    def run():
-        with ThreadPoolExecutor(reader.threads) as ex:
-            return list(ex.map(one, spans))
-
-    return _check_span_sizes(reader._s3_with_refresh(run), spans)
+    out = reader._s3_with_refresh(lambda: reader._crt_client().get_ranges(bucket, key, spans, timings))
+    return _check_span_sizes(out, spans)
 
 
 class _AioS3:
@@ -733,35 +720,106 @@ class _AioS3:
             pass
 
 
+_CRT_CACHE: dict = {}
+CRT_GBPS_ENV = "AICESAT_CRT_GBPS"
+
+
+def _crt_shared(creds: dict, region: str) -> "_CrtS3":
+    """One CRT S3 client per (STS token, region) per process, for the same reason as _aio_shared: readers are built
+    per granule, and a CRT client owns event-loop threads and a connection pool that must not be rebuilt 320 times."""
+    key = (creds.get("sessionToken"), region)
+    with _AIO_LOCK:
+        got = _CRT_CACHE.get(key)
+        if got is None:
+            for k in list(_CRT_CACHE):
+                if k[0] != key[0]:
+                    _CRT_CACHE.pop(k).close()
+            got = _CRT_CACHE[key] = _CrtS3(creds, region)
+        return got
+
+
+def _crt_evict() -> None:
+    with _AIO_LOCK:
+        for obj in list(_CRT_CACHE.values()):
+            try:
+                obj.close()
+            except Exception:
+                pass
+        _CRT_CACHE.clear()
+
+
 class _CrtS3:
-    """awscrt S3 client wrapper (EXPERIMENTAL, untested). S3RequestType.DEFAULT passes each request through the CRT
-    signer as a single ranged GET (no CRT-managed multipart), which is what a small-range workload wants."""
+    """awscrt S3 client wrapper. S3RequestType.DEFAULT passes each request through the CRT signer as a single ranged
+    GET (no CRT-managed multipart), which is what a small-range workload wants.
+
+    Why it is the default: the aiobotocore path moved every byte through ONE Python event-loop thread, and that thread
+    sat at 100% CPU while the other cores idled (top -H during a fetch; two concurrent processes only reached 520 MB/s
+    together). The CRT does TLS, HTTP and body handling in C on one event loop per core. Measured on the box
+    (scripts/bench_coalesce.py, Summit 320 granules / 10,205 ranges / 361 MB wanted, best of 3, byte-identical output):
+
+        mechanism / setting        gap 0.5 MiB   1 MiB   2 MiB
+        aiobotocore                   6.4 s      6.3 s   6.2 s
+        crt, target 10 Gbps           3.8 s      3.7 s   6.0 s (first row of the run pays connection warm-up)
+        crt, target 100 Gbps          2.8 s      2.9 s   3.3 s   (670-840 MB/s read)
+
+    `throughput_target_gbps` is how the CRT sizes its connection pool, not a promise about the NIC: at 10 the pool was
+    the limit (requests queued), at 100 it is not. AICESAT_CRT_GBPS overrides it. The coalescing knee also moved: with
+    the CRT a 0.5 MiB gap is as fast as 1 MiB while reading 700 MB less."""
 
     def __init__(self, creds: dict, region: str = S3_REGION):
         from awscrt import auth, io, s3
         self.region = region
-        self._elg = io.EventLoopGroup(1)
+        self._elg = io.EventLoopGroup(0)        # 0: one loop thread per core
         resolver = io.DefaultHostResolver(self._elg)
         bootstrap = io.ClientBootstrap(self._elg, resolver)
         provider = auth.AwsCredentialsProvider.new_static(
             access_key_id=creds["accessKeyId"], secret_access_key=creds["secretAccessKey"],
             session_token=creds["sessionToken"])
         self._client = s3.S3Client(bootstrap=bootstrap, region=region, credential_provider=provider,
-                                   throughput_target_gbps=10.0)
+                                   throughput_target_gbps=float(_env_int(CRT_GBPS_ENV) or 100))
 
-    def get_range(self, bucket: str, key: str, off: int, size: int) -> bytes:
+    def _start(self, bucket: str, key: str, off: int, size: int):
+        """Issue one ranged GET; returns (future, chunks, state). state collects the S3 error body so an expired-token
+        403 surfaces as text _s3_with_refresh can recognise (the CRT's own exception only names the status)."""
         from awscrt import http, s3
         chunks: list[bytes] = []
+        state: dict = {}
         headers = http.HttpHeaders([("Host", f"{bucket}.s3.{self.region}.amazonaws.com"),
                                     ("Range", f"bytes={off}-{off + size - 1}")])
         request = http.HttpRequest("GET", f"/{key}", headers)
-        req = self._client.make_request(type=s3.S3RequestType.DEFAULT, request=request,
-                                        on_body=lambda chunk, **kw: chunks.append(bytes(chunk)))
-        req.finished_future.result()   # raises on non-2xx / transport error
-        return b"".join(chunks)
+
+        def on_done(error=None, error_headers=None, error_body=None, status_code=None, **_kw):
+            state.update(error=error, status=status_code, body=error_body)
+
+        req = self._client.make_request(type=s3.S3RequestType.DEFAULT, operation_name="GetObject", request=request,
+                                        on_body=lambda chunk, **kw: chunks.append(bytes(chunk)), on_done=on_done)
+        return req, chunks, state
+
+    def get_ranges(self, bucket: str, key: str, spans, timings=None) -> list[bytes]:
+        t0 = time.perf_counter()
+        started = [self._start(bucket, key, off, size) for off, size in spans]
+        out = []
+        for req, chunks, state in started:
+            try:
+                req.finished_future.result()
+            except Exception as e:
+                body = (state.get("body") or b"").decode("utf-8", "replace") if isinstance(state.get("body"), (bytes, bytearray)) else str(state.get("body") or "")
+                raise IOError(f"S3 range GET failed (status {state.get('status')}): {e} {body[:300]}") from e
+            if timings is not None:
+                timings.append(time.perf_counter() - t0)
+            out.append(b"".join(chunks))
+        return out
+
+    def get_range(self, bucket: str, key: str, off: int, size: int) -> bytes:
+        return self.get_ranges(bucket, key, [(off, size)])[0]
 
     def close(self):
         self._client = None
+
+
+def default_s3_mechanism() -> str:
+    """The in-region mechanism used when AICESAT_S3_FETCH is unset: crt where awscrt imports, else aiobotocore."""
+    return "crt" if s3_mechanism_available("crt")[0] else "aiobotocore"
 
 
 S3_FETCH_MECHANISMS = {

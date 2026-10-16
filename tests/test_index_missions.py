@@ -172,3 +172,50 @@ def test_aio_client_is_shared_per_process_not_per_reader(monkeypatch):
     fresh = readers[2]._aio_client()
     assert fresh is not clients[0] and clients[0].closed is True, "the expired-token client was neither replaced nor closed"
     assert len(access._AIO_CACHE) == 1, "clients accumulate across token refreshes"
+
+
+def test_crt_client_is_shared_per_process_and_evicted_on_refresh(monkeypatch):
+    """The CRT client owns event-loop threads and a connection pool; built per reader (per granule) it would be
+    rebuilt hundreds of times a query. It is shared by STS token like the aiobotocore client, and _s3_reset evicts the
+    shared instance rather than closing a reader's handle to it."""
+    from aicesat import access
+
+    built, closed = [], []
+
+    class _FakeCrt:
+        def __init__(self, creds, region=None):
+            built.append(creds.get("sessionToken"))
+
+        def close(self):
+            closed.append(self)
+
+    monkeypatch.setattr(access, "_CrtS3", _FakeCrt)
+    monkeypatch.setattr(access, "_CRT_CACHE", {})
+    monkeypatch.setattr(access, "_AIO_CACHE", {})
+    creds = {"accessKeyId": "A", "secretAccessKey": "S", "sessionToken": "TOK-1"}
+    monkeypatch.setattr(access, "s3_credentials", lambda refresh=False: creds)
+    readers = [access.RangeReader.__new__(access.RangeReader) for _ in range(4)]
+    for r in readers:
+        r.threads, r._aio, r._crt, r._s3, r._boto3 = 8, None, None, None, None
+    clients = [r._crt_client() for r in readers]
+    assert len(built) == 1 and all(c is clients[0] for c in clients)
+
+    readers[0].close()
+    assert not closed, "closing one reader must not close the shared CRT client"
+    assert readers[1]._crt_client() is clients[0]
+
+    readers[2]._s3_reset()                       # expired token: the shared client goes, and comes back fresh
+    assert closed == [clients[0]] and access._CRT_CACHE == {}
+    creds2 = dict(creds, sessionToken="TOK-2")
+    monkeypatch.setattr(access, "s3_credentials", lambda refresh=False: creds2)
+    fresh = readers[2]._crt_client()
+    assert fresh is not clients[0] and built == ["TOK-1", "TOK-2"]
+
+
+def test_default_s3_mechanism_prefers_crt_when_installed(monkeypatch):
+    from aicesat import access
+
+    assert "crt" in access.S3_FETCH_MECHANISMS and access.s3_mechanism_available("crt")[0], "awscrt is a dependency now"
+    assert access.default_s3_mechanism() == "crt"
+    monkeypatch.setattr(access, "s3_mechanism_available", lambda name: (False, "missing awscrt"))
+    assert access.default_s3_mechanism() == "aiobotocore"

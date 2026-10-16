@@ -20,6 +20,7 @@ dependencies = [
     "rasterio>=1.5.1",
     "rich>=14",
     "shapely>=2.1",
+    "awscrt>=0.38.0",
 ]
 
 [project.scripts]
