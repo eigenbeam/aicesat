@@ -32,6 +32,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import re
 from datetime import datetime
 
@@ -175,16 +176,55 @@ def _parse_file(path: str, bbox, meta_row: dict | None) -> dict[str, np.ndarray]
     return parse_rows(path, bbox, *_sled_geometry(meta_row))
 
 
+# The columns parse_rows reads. Everything else in the CSV (rcvr_clk_ns, NSV, SDLAT_95, ...) is tokenised but never
+# converted, which is most of what makes the pyarrow reader cheap.
+_USED_COLUMNS = ("latitude_decimal_degree", "longitude_decimal_degree", "antenna_hae_m", "SDHGT_95",
+                 "year", "day_of_year", "decimal_hour", "GDOP")
+
+
+def _read_csv_columns(source) -> dict[str, np.ndarray] | None:
+    """The used columns of one survey CSV as float64 arrays, or None if the file has no `antenna_hae_m` column or
+    no rows. Malformed rows (a truncated final write such as "72.5916,-38.", or two rows run together into one
+    13+-field line) are skipped silently; an empty field is NaN, as it was with genfromtxt.
+
+    pyarrow.csv replaces numpy.genfromtxt: measured on real Summit spans on the deployed box, 156k lines took
+    0.66 s with genfromtxt and 0.03 s here (22x), identical row counts. The GPS leg of a Summit query was 11.5 s of
+    which ~9.6 s was this parse; the fetch itself is ~1-2 s."""
+    import pyarrow as pa
+    import pyarrow.csv as pcsv
+
+    if isinstance(source, (str, os.PathLike)):
+        with open(source, "rb") as f:
+            source = io.BytesIO(f.read())
+    pos = source.tell()
+    header = source.readline().decode("utf-8", "replace").strip().split(",")
+    source.seek(pos)
+    if "antenna_hae_m" not in header:
+        return None
+    want = [c for c in _USED_COLUMNS if c in header]
+    try:
+        tbl = pcsv.read_csv(
+            source,
+            read_options=pcsv.ReadOptions(column_names=header, skip_rows=1),
+            parse_options=pcsv.ParseOptions(invalid_row_handler=lambda _row: "skip"),
+            convert_options=pcsv.ConvertOptions(include_columns=want, include_missing_columns=True,
+                                                column_types={c: pa.float64() for c in want}))
+    except pa.ArrowInvalid as e:                      # a non-numeric value where genfromtxt would have put NaN
+        log.warning("GPS CSV unparseable, survey skipped: %s", e)
+        return None
+    if tbl.num_rows == 0:
+        return None
+    return {c: tbl.column(c).to_numpy(zero_copy_only=False) if c in tbl.column_names
+            else np.full(tbl.num_rows, np.nan) for c in _USED_COLUMNS}
+
+
 def parse_rows(source, bbox, arp_m: float, depth_cm: float, depth_known: bool) -> dict[str, np.ndarray] | None:
     """_parse_file's body with the sled geometry passed in. `source` is a path or a file-like object holding the
     CSV header row plus data lines -- the index fetch passes a fetched byte span with the header prepended."""
     w, s, e, n = bbox
-    # A handful of granules carry a truncated final-write row (e.g. "72.5916,-38."). invalid_raise=False skips
-    # those lines instead of failing the whole survey.
-    a = np.genfromtxt(source, delimiter=",", names=True, dtype="f8", invalid_raise=False)
-    if a.size == 0 or "antenna_hae_m" not in (a.dtype.names or ()):
+    a = _read_csv_columns(source)
+    if a is None:
         return None
-    a = np.atleast_1d(a)
     lat, lon = a["latitude_decimal_degree"], a["longitude_decimal_degree"]
     hae, sd = a["antenna_hae_m"], a["SDHGT_95"]
 

@@ -123,6 +123,36 @@ def test_parse_file_flags_imputed_sinkage(tmp_path):
     assert d["track_depth_cm"][0] == gpstruth.FALLBACK_TRACK_DEPTH_CM
 
 
+def test_parse_skips_a_truncated_final_row_silently(tmp_path, recwarn):
+    """A handful of surveys end in a half-written row ("72.5916,-38."). It is dropped; the good rows parse; and
+    nothing is printed (genfromtxt used to emit a ConversionWarning per span)."""
+    path = _csv(tmp_path, "IS2TGPSSS_ICE12360.2020_v01.csv", [_row(lat=72.60), _row(lat=72.61), "72.5916,-38."])
+    d = gpstruth._parse_file(path, (-39.0, 72.4, -38.0, 72.8), None)
+    assert d is not None and d["h"].size == 2
+    assert not [w for w in recwarn if "Conversion" in str(w.message)]
+
+
+def test_parse_skips_a_run_on_line(tmp_path):
+    """Two rows written into one line (13+ fields, no newline between them) are not two points and not a crash."""
+    runon = _row(lat=72.60).rstrip("\n") + _row(lat=72.61)       # 24 fields on one line
+    path = _csv(tmp_path, "IS2TGPSSS_ICE12360.2020_v01.csv", [_row(lat=72.62), runon, _row(lat=72.63)])
+    d = gpstruth._parse_file(path, (-39.0, 72.4, -38.0, 72.8), None)
+    assert d is not None and sorted(round(float(x), 2) for x in d["lat"]) == [72.62, 72.63]
+
+
+def test_parse_treats_an_empty_field_as_missing(tmp_path):
+    path = _csv(tmp_path, "IS2TGPSSS_ICE12360.2020_v01.csv",
+                [_row(lat=72.60), "72.61,-38.55,,15.5,236,2020,29637.5,8,3.1,0.037,0.028,0.10\n"])
+    d = gpstruth._parse_file(path, (-39.0, 72.4, -38.0, 72.8), None)
+    assert d is not None and d["h"].size == 1                  # the row without a height is dropped by the finite gate
+
+
+def test_parse_returns_none_without_a_height_column(tmp_path):
+    p = tmp_path / "x.csv"
+    p.write_text("latitude_decimal_degree,longitude_decimal_degree\n72.6,-38.5\n")
+    assert gpstruth._parse_file(str(p), (-39.0, 72.4, -38.0, 72.8), None) is None
+
+
 def test_longitude_is_not_renormalized(tmp_path):
     """IS2TGPSSS delivers -180..180 already, unlike GLAS and ICESSN; a 0..360 fixup would push Summit out."""
     path = _csv(tmp_path, "IS2TGPSSS_ICE12360.2020_v01.csv", [_row(lon=-38.55)])
