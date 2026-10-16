@@ -206,6 +206,17 @@ def precache_adjacent() -> bool:
     track. Measured price on the box: 114.5 -> 43.9 write thread-seconds, so 2.6x the write work on EVERY build to
     save a re-fetch on the minority that happen to be adjacent to a previous one. With fetch wall now ~12 s a miss is
     cheap, so the trade no longer pays. Set to 1 to restore the old behaviour (or to A/B it again).
+
+    A/B'd again 2026-10-16 (scripts/bench_ingest_phases.py, an uncached 0.7 x 0.3 deg interior box X, then its east
+    neighbour Y, lake forgotten between settings), because a query trace showed 1,380 of 1,713 fetched chunks over an
+    adjacent box already had a cached cell:
+
+        precache   X wall   X write-s   X files   lake growth    Y wall   Y chunks NASA / lake   Y bytes
+           off      25.4 s     42.5       6,897      161 MB       20.2 s      2,085 / 875          2.14 GB
+           on       53.1 s     97.6      53,380    1,215 MB       33.4 s      1,723 / 1,237        1.73 GB
+
+    The neighbour still fetches 83% of its chunks (a chunk is fetched if ANY wanted cell lacks it, and a block's strip
+    only brushes the next box), and both requests are slower with it on. Off, decisively.
     """
     import os
     return os.environ.get(PRECACHE_ENV, "0").lower() in ("1", "true", "yes")
