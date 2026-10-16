@@ -156,11 +156,36 @@ def map_as_completed(fn, items: list, workers: int, on_each=None) -> list:
 
 
 # Per-granule fetch fan-out (fetch_bbox across granules, in index_{atl06,glas,icessn}). Each granule's own fetch
-# already uses RangeReader's internal thread pool, so the OUTER pool is kept small: outer x inner concurrency then
-# stays within the HTTPS connection pool (pool_maxsize=32). Env AICESAT_FETCH_WORKERS overrides the outer width.
+# already uses RangeReader's internal concurrency (`threads`), so outer x inner requests are in flight at once. The
+# out-of-region urllib3 pool is sized to that product (it discards overflow connections, see __init__); the in-region
+# aiobotocore pool is not, because measurement showed it makes no difference (see aio_pool_size). Env
+# AICESAT_FETCH_WORKERS overrides the outer width.
 FETCH_WORKER_CAP = 16       # network-latency-bound, not CPU-bound — see pool_size(cpu_bound=False)
 FETCH_MIN_GRANULES = 3          # 1-2 granules: fetch serially (a pool would only add overhead)
 FETCH_WORKER_ENV = "AICESAT_FETCH_WORKERS"
+S3_POOL_ENV = "AICESAT_S3_POOL"  # in-region: aiobotocore connection pool size override (experiments; see aio_pool_size)
+
+
+def aio_pool_size(threads: int) -> int:
+    """Connection pool size for the shared in-region aiobotocore client: max(threads, 32), or AICESAT_S3_POOL.
+
+    The fetch fans out as outer granules x inner `threads` requests against ONE shared client, so 16 x 16 = 256 GETs
+    can be in flight over a 32-connection pool, and the flat ~0.35-0.45 s per GET regardless of size looked like
+    queueing. Measured (scripts/bench_coalesce.py, Summit 320 granules / 10,205 ranges / 361 MB wanted, best of 3):
+
+        pool  workers   gap 0.5 MiB   1 MiB   2 MiB
+          32       16        6.4 s    6.3 s   6.2 s
+         256       16        6.3 s    6.5 s   6.6 s
+          32        8        6.0 s    6.3 s   6.2 s
+         128        8        6.1 s    6.2 s   6.5 s
+
+    Identical within noise. Halving the workers halves ms/GET (35.6 -> 16.7) at the same wall, which is a shared
+    throughput cap (~300-400 MB/s read on the m6i.xlarge), not pool queueing: the requests already wait on bytes, not
+    on a connection. So the default stays at the floor; the env override exists to re-run this on other hardware."""
+    override = _env_int(S3_POOL_ENV)
+    if override is not None:
+        return override
+    return max(threads, 32)
 
 
 def in_region() -> bool:
@@ -249,7 +274,7 @@ def access_url(https_url: str, s3_url: str | None) -> str:
 class RangeReader:
     """Concurrent byte-range reader over Earthdata Cloud granules. Out-of-region: bearer -> 303 -> presigned CloudFront
     HTTPS GETs. In-region (s3:// URLs): direct range GETs against nsidc-cumulus S3 with STS creds — no presign, no
-    egress — via a selectable mechanism (env AICESAT_S3_FETCH; default "s3fs", see S3_FETCH_MECHANISMS). Wanted ranges
+    egress — via a selectable mechanism (env AICESAT_S3_FETCH; default "aiobotocore", see S3_FETCH_MECHANISMS). Wanted ranges
     are coalesced into spans before fetching; callers still get exactly the bytes they asked for."""
 
     def __init__(self, threads: int | None = None, max_gap: int | None = None):
@@ -301,8 +326,8 @@ class RangeReader:
         self._lock = threading.Lock()
         self._url_locks: dict[str, threading.Lock] = {}  # one lock per granule URL: presigns for different granules overlap
         self._s3 = None                                  # lazily-built s3fs filesystem (in-region S3-direct)
-        # Pluggable in-region S3 range-GET mechanism (see S3_FETCH_MECHANISMS). Default "s3fs" == the historical path;
-        # unset env => unchanged behaviour. Flip the winner in one place: export AICESAT_S3_FETCH=<name>.
+        # Pluggable in-region S3 range-GET mechanism (see S3_FETCH_MECHANISMS); "s3fs" is the historical path.
+        # Flip the winner in one place: export AICESAT_S3_FETCH=<name>.
         # aiobotocore won the in-region benchmark on both shapes (~26% faster on many-small-GETs, tighter p95 than
         # the s3fs cat_file thread pool), byte-identical. Override with AICESAT_S3_FETCH (s3fs|s3fs_ranges|boto3|crt).
         self.s3_fetch = os.environ.get("AICESAT_S3_FETCH", "aiobotocore")
@@ -340,7 +365,7 @@ class RangeReader:
         """Fetch already-coalesced (offset, size) spans from one s3:// object via the selected mechanism.
         Returns bytes in span order, identical across mechanisms. `timings` (if a list) collects per-GET seconds
         where the mechanism can measure them (thread-pool ones can; the batched cat_ranges cannot)."""
-        name = getattr(self, "s3_fetch", "s3fs")
+        name = getattr(self, "s3_fetch", "aiobotocore")
         mech = S3_FETCH_MECHANISMS.get(name)
         if mech is None:
             raise ValueError(f"unknown AICESAT_S3_FETCH={name!r}; choose from {sorted(S3_FETCH_MECHANISMS)}")
@@ -373,7 +398,7 @@ class RangeReader:
 
     def _aio_client(self):
         if self._aio is None:
-            self._aio = _aio_shared(s3_credentials(), S3_REGION, max(self.threads, 32))
+            self._aio = _aio_shared(s3_credentials(), S3_REGION, aio_pool_size(self.threads))
         return self._aio
 
     def _boto3_client(self):
@@ -451,8 +476,8 @@ class RangeReader:
         t0 = time.time()
         spans = coalesce(ranges, self.max_gap)
         if url.startswith("s3://"):
-            # In-region S3-direct: the mechanism (AICESAT_S3_FETCH) owns its own concurrency and cred self-heal.
-            # Default "s3fs" reproduces the historical path (cat_file per span in a thread pool) byte-for-byte.
+            # In-region S3-direct: the mechanism (AICESAT_S3_FETCH, default aiobotocore) owns its own concurrency and
+            # cred self-heal; every mechanism returns the same bytes.
             try:
                 blobs = self._s3_fetch_spans(url, spans)
             except IOError:
@@ -517,12 +542,12 @@ class RangeReader:
 #
 # Each is an interchangeable way to fetch a set of already-coalesced (offset, size) spans from ONE s3:// object and
 # return their bytes in order, byte-identical to every other mechanism. The reader selects one by name via the env var
-# AICESAT_S3_FETCH (default "s3fs" == the historical path, so unset changes nothing). Adding/removing a mechanism is a
+# AICESAT_S3_FETCH (default "aiobotocore"; "s3fs" is the historical path). Adding/removing a mechanism is a
 # one-line edit of S3_FETCH_MECHANISMS below; flipping the production default is one env var (or one line in __init__).
 #
 #   name          concurrency model                              deps (beyond the always-present s3fs)
 #   ------------  ---------------------------------------------  -------------------------------------
-#   s3fs          cat_file per span in a ThreadPoolExecutor       (baseline; the current behaviour)
+#   s3fs          cat_file per span in a ThreadPoolExecutor       (the historical baseline)
 #   s3fs_ranges   fsspec cat_ranges (batched, async internally)   —
 #   aiobotocore   async get_object gathered on one event loop     aiobotocore + botocore (installed)
 #   boto3         sync get_object in a ThreadPoolExecutor          boto3 (optional; may be absent)

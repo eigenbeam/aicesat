@@ -98,6 +98,35 @@ def test_access_url_prefers_s3_only_in_region(monkeypatch):
     assert access.access_url("https://cf/x", "") == "https://cf/x"
 
 
+def test_aio_pool_size_is_the_measured_floor_unless_pinned(monkeypatch):
+    """A 256-connection pool for the 16 x 16 fan-out measured identical to 32 (see aio_pool_size), so the default
+    stays at max(threads, 32); AICESAT_S3_POOL pins it for re-measurement and must reach the shared client."""
+    from aicesat import access
+
+    monkeypatch.delenv(access.S3_POOL_ENV, raising=False)
+    assert access.aio_pool_size(16) == 32
+    assert access.aio_pool_size(64) == 64
+    monkeypatch.setenv(access.S3_POOL_ENV, "40")
+    assert access.aio_pool_size(16) == 40
+
+    built = []
+
+    class _FakeAio:
+        def __init__(self, creds, region=None, max_pool=None):
+            built.append(max_pool)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(access, "_AioS3", _FakeAio)
+    monkeypatch.setattr(access, "_AIO_CACHE", {})
+    monkeypatch.setattr(access, "s3_credentials", lambda refresh=False: {"sessionToken": "T"})
+    r = access.RangeReader.__new__(access.RangeReader)
+    r.threads, r._aio = 16, None
+    r._aio_client()
+    assert built == [40]
+
+
 def test_aio_client_is_shared_per_process_not_per_reader(monkeypatch):
     """A RangeReader is built PER GRANULE, so the aiobotocore client must not be.
 
