@@ -266,6 +266,10 @@ def cells_bbox(cells) -> tuple:
     return (min(los), min(las), max(los), max(las))
 
 
+# chunk_refs columns that address the index, not the bytes: dropped from the rows handed to the fetch workers
+_ROW_ONLY_KEYS = frozenset({"h3_cell", "lat_min", "lat_max", "lon_min", "lon_max"})
+
+
 def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fine_cells=None) -> dict:
     t0 = time.time()
     # The index IS the discovery layer, and it is a precondition: no CMR search and no index build happen here.
@@ -278,18 +282,24 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
             f"{len(fine)} res-{index.COVERAGE_RES} cells of this area are not all claimed"
         raise RuntimeError(f"ATL03 not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
                            f"Build with: uv run scripts/build_index.py --bbox {' '.join(str(v) for v in bbox)}")
-    refs = index.chunk_refs(cells, bbox=prune_bbox, per_cell=True)  # per-chunk boxes prune what the coarse cells let through
+    # ONE index scan, by cells only. The per-chunk box prune and the time window are applied in Python below, so the
+    # same rows yield the rows to fetch AND the "how many did the box prune drop" statistic. This used to be two
+    # scans (the second only for that statistic): 10.3 s + 25.5 s over 48,838 ATL03 files for a 0.3° box.
+    refs = index.chunk_refs(cells, per_cell=True)
     all_rows = refs.to_pylist()
-    names_indexed = {r["granule"] for r in all_rows}
+    w_, s_, e_, n_ = prune_bbox
+    # per-chunk boxes prune what the coarse cells let through (a res-6 cell reaches ~3.7 km outside the box)
+    boxed = [r for r in all_rows if r["lat_max"] >= s_ and r["lat_min"] <= n_ and r["lon_max"] >= w_ and r["lon_min"] <= e_]
+    names_indexed = {r["granule"] for r in boxed}
     names = sorted(n for n in names_indexed if _in_window(n, window))
     in_window = set(names)
-    ref_rows = [r for r in all_rows if r["granule"] in in_window]
+    ref_rows = [r for r in boxed if r["granule"] in in_window]
     if not ref_rows:
         raise RuntimeError(f"no indexed ATL03 chunks over {bbox} in {list(window) if window else 'any window'} "
                            f"({len(names_indexed)} granules indexed for these cells, none inside the window)")
     # Same granule set, WITHOUT the per-chunk box prune, so chunks_pruned_by_boxes measures the box prune alone
     # rather than the box prune plus the time window.
-    refs_cells = index.chunk_refs(cells, granules=names)
+    n_by_cells_only = len({(r["granule"], r["beam"], r["chunk_index"]) for r in all_rows if r["granule"] in in_window})
     have = set() if force else lake.ingested_chunk_cells("ICESAT2", names)
     # cell-aware: a chunk is fetched if ANY requested cell it touches is not materialized (partial evictions re-fetch)
     todo_keys = {(r["granule"], r["beam"], r["chunk_index"]) for r in ref_rows
@@ -298,7 +308,7 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
     for r in ref_rows:
         k = (r["granule"], r["beam"], r["chunk_index"])
         if k not in seen:
-            seen.add(k); rows.append({kk: v for kk, v in r.items() if kk != "h3_cell"})
+            seen.add(k); rows.append({kk: v for kk, v in r.items() if kk not in _ROW_ONLY_KEYS})
     todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) in todo_keys]
     by_gb: dict[tuple[str, str], list[dict]] = {}
     for r in todo:
@@ -340,7 +350,7 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
           "hdf5_opens_at_query_time": 0, "structure_parses_at_query_time": 0}
     st.update({"cells": len(cells), "granules": names, "granules_indexed_for_cells": len(names_indexed),
                "chunk_refs": len(rows), "chunks_fetched": len(todo),
-               "chunk_refs_by_cells_only": refs_cells.num_rows, "chunks_pruned_by_boxes": refs_cells.num_rows - len(rows),
+               "chunk_refs_by_cells_only": n_by_cells_only, "chunks_pruned_by_boxes": n_by_cells_only - len(rows),
                "presign_seconds": round(t_presign, 1), "group_phase_seconds": round(t_groups, 1), "group_parallel": group_parallel,
                "fetch_seconds": round(agg["fetch_seconds"], 1), "decode_materialize_seconds": round(agg["materialize_seconds"], 1),
                "chunks_skipped_already_materialized": len(rows) - len(todo), "cell_files_written": n_written_cells,

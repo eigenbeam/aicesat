@@ -28,6 +28,9 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     # Passing `fine` here matched nothing whenever the claim resolution differed from H3_RES, i.e. on any
     # bbox small enough to claim finer than res 6 — every granule indexed 0 rows and reported success.
     out = index.ensure_index(granules, workers=a.workers, cells=cells)
+    # Roll the index down to its coverage manifest NOW, as build_atl06 does: the query path names the granule files it
+    # needs through the manifest, and without this the first request after a build pays the whole-directory rebuild.
+    rollup = coverage.build_manifest("ATL03")
     # The query path refuses an area whose index has no manifest covering it (planner._ensure).
     if out["failed"]:
         log.warning("NOT claiming coverage: %d granule(s) did not index; re-run to finish", len(out["failed"]))
@@ -35,7 +38,7 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     else:
         cov = index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=fine)
     print(json.dumps({"bbox": list(bbox), "claim_cells_compacted": len(cov["cells"]), "search_vertices": len(ring), "window": list(window), "granules": len(granules), **out,
-                      "wall_seconds": round(time.time() - t0, 1)}, indent=1))
+                      "manifest": rollup, "wall_seconds": round(time.time() - t0, 1)}, indent=1))
     if out["failed"]:
         print(f"\n{len(out['failed'])} granule(s) did not index; re-run this command to retry just those.", file=sys.stderr)
         sys.exit(1)

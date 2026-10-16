@@ -153,6 +153,65 @@ def test_chunk_refs_prunes_by_chunk_boxes(tmp_path, monkeypatch):
     assert index.chunk_refs([cell], bbox=(-45, 69.8, -43, 70.2))["chunk_index"][0].as_py() == 0
 
 
+def _write_atl03_index_file(d, name, cell, chunk_boxes):
+    """One ATL03 index parquet with one strong chunk per (lat_min, lat_max, lon_min, lon_max) box, all in `cell`."""
+    import pyarrow as pa, pyarrow.parquet as pq
+    base = {"granule": name, "url": f"u/{name}", "s3url": "", "revision": "1", "sc_orient": 1, "sdp_epoch": 1.0, "beam": "gt1r",
+            "strong": True, "cycle": 6, "rgt": 1, "ph_start": 0, "ph_end": 100}
+    for ds in index.DATASETS:
+        base.update({f"{ds}_offset": 0, f"{ds}_size": 1, f"{ds}_filters": "gzip", f"{ds}_dtype": "f8", f"{ds}_ncols": 1, f"{ds}_mask": 0})
+    rows = [dict(base, chunk_index=i, h3_cell=cell, lat_min=b[0], lat_max=b[1], lon_min=b[2], lon_max=b[3]) for i, b in enumerate(chunk_boxes)]
+    tbl = pa.table({k: pa.array([r[k] for r in rows], type=pa.uint64() if k == "h3_cell" else None) for k in rows[0]})
+    tbl = tbl.replace_schema_metadata({"aicesat_index_version": index.INDEX_SCHEMA_VERSION})
+    pq.write_table(tbl, d / f"{name}.parquet")
+
+
+def test_chunk_refs_reads_only_the_files_the_manifest_names(tmp_path, monkeypatch):
+    """Two granules in two cells: asking for one cell must open one file, resolved through the coverage manifest,
+    not scan the directory. (The deployed ATL03 dir has 48,838 files; the scan was 10.3 s per query.)"""
+    import h3
+    from aicesat import coverage
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path)
+    c1 = h3.str_to_int(h3.latlng_to_cell(70.0, -44.0, index.H3_RES))
+    c2 = h3.str_to_int(h3.latlng_to_cell(75.0, -40.0, index.H3_RES))
+    _write_atl03_index_file(tmp_path, "ATL03_20190601000000_02350103_007_01.h5", c1, [(69.95, 70.05, -44.1, -43.9)])
+    _write_atl03_index_file(tmp_path, "ATL03_20200601000000_02350103_007_01.h5", c2, [(74.95, 75.05, -40.1, -39.9)])
+    srcs = []
+    real = coverage.read_parquet_src
+    def spy(d, files):
+        srcs.append(files); return real(d, files)
+    monkeypatch.setattr(coverage, "read_parquet_src", spy)
+    t = index.chunk_refs([c1], per_cell=True)
+    assert t.num_rows == 1 and t["granule"][0].as_py().startswith("ATL03_2019")
+    assert srcs == [[str(tmp_path / "ATL03_20190601000000_02350103_007_01.h5.parquet")]], srcs
+    assert (tmp_path / "_coverage" / "manifest.parquet").exists()          # built lazily, used from then on
+    for col in ("lat_min", "lat_max", "lon_min", "lon_max", "h3_cell"):
+        assert col in t.column_names
+
+
+def test_chunk_refs_is_empty_without_a_scan_when_no_granule_touches_the_cells(tmp_path, monkeypatch):
+    import h3
+    from aicesat import coverage
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path)
+    c1 = h3.str_to_int(h3.latlng_to_cell(70.0, -44.0, index.H3_RES))
+    c_other = h3.str_to_int(h3.latlng_to_cell(60.0, -30.0, index.H3_RES))
+    _write_atl03_index_file(tmp_path, "ATL03_20190601000000_02350103_007_01.h5", c1, [(69.95, 70.05, -44.1, -43.9)])
+    monkeypatch.setattr(coverage, "read_parquet_src", lambda d, files: pytest.fail("scanned the index for an empty answer"))
+    assert index.chunk_refs([c_other]).num_rows == 0
+
+
+def test_chunk_refs_falls_back_to_the_directory_when_the_manifest_is_unavailable(tmp_path, monkeypatch):
+    import h3
+    from aicesat import coverage
+    monkeypatch.setattr(index, "ATL03_INDEX_DIR", tmp_path)
+    c1 = h3.str_to_int(h3.latlng_to_cell(70.0, -44.0, index.H3_RES))
+    _write_atl03_index_file(tmp_path, "ATL03_20190601000000_02350103_007_01.h5", c1, [(69.95, 70.05, -44.1, -43.9)])
+    monkeypatch.setattr(coverage, "index_files_for_cells", lambda coll, cells: None)
+    t = index.chunk_refs([c1])
+    assert t.num_rows == 1
+    assert not (tmp_path / "_coverage").exists()
+
+
 def test_vectorized_cells_match_h3py():
     import h3
     from aicesat import planner

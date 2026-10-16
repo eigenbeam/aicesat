@@ -459,6 +459,9 @@ def test_builders_claim_coverage_only_after_the_ground_is_indexed():
     src = _pl.Path("scripts/build_index.py").read_text()
     assert src.index("write_build_manifest") > src.index("ensure_index"), "ATL03 claims before it builds"
     assert "NOT claiming coverage" in src
+    # The planner names ATL03 index files through the coverage manifest, so the build must roll it up when it
+    # finishes (as build_atl06 does) rather than leave the first query to rebuild it from every granule file.
+    assert src.index('coverage.build_manifest("ATL03")') > src.index("ensure_index"), "ATL03 build does not roll up its manifest"
 
 
 class _FakeGlasGranule(dict):

@@ -84,11 +84,12 @@ def checksum():
 
 # ----------------------------------------------------------------------------- C. index + byte-range + lake
 def run_index():
-    from aicesat import index, lake, planner
+    from aicesat import coverage, index, lake, planner
 
     t0 = time.time()
     cells = planner.cells_for_bbox(bbox, res=index.H3_RES)
     idx = index.ensure_index(granules, cells=cells)         # one-time structure parse, amortized
+    coverage.build_manifest("ATL03")                        # the planner names index files through the manifest
     index.write_build_manifest(index.ATL03_INDEX_DIR, bbox, index.H3_RES, window, len(granules), cells=cells)
     t_index = time.time() - t0
     t1 = time.time()

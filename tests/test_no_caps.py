@@ -21,10 +21,12 @@ from aicesat import scene as scene_mod
 
 
 # --- granules: the planner must use every indexed granule in the window ------------------------------------------
-def _ref_rows(names):
-    """Minimal chunk_refs rows: one chunk per granule, one cell."""
-    return [{"granule": n, "url": f"https://x/{n}", "s3url": None, "beam": "gt1l", "sdp_epoch": 0.0, "cycle": 1,
-             "chunk_index": 0, "h3_cell": 603599455437979647, "ph_start": 0, "ph_end": 10} for n in names]
+def _ref_rows(names, chunk_index=0, box=None):
+    """Minimal chunk_refs rows: one chunk per granule, one cell. The chunk's own box sits inside BOX unless given."""
+    w, s, e, n = box or (BOX[0] + 0.1, BOX[1] + 0.1, BOX[2] - 0.1, BOX[3] - 0.1)
+    return [{"granule": g, "url": f"https://x/{g}", "s3url": None, "beam": "gt1l", "sdp_epoch": 0.0, "cycle": 1,
+             "chunk_index": chunk_index, "h3_cell": 603599455437979647, "ph_start": 0, "ph_end": 10,
+             "lat_min": s, "lat_max": n, "lon_min": w, "lon_max": e} for g in names]
 
 
 class _FakeStats:
@@ -82,6 +84,45 @@ def test_planner_window_filter_reads_the_granule_name(monkeypatch):
     plan = planner.ensure(BOX, ("2019-01-01", "2019-12-31"))
     assert plan["stats"]["granules"] == [names[0]]
     assert plan["stats"]["granules_indexed_for_cells"] == 2      # the other one is indexed, just out of window
+
+
+def _plan_with_rows(monkeypatch, rows, window=("2018-10-01", "2026-01-01")):
+    calls = []
+
+    def fake_refs(cells, **kw):
+        calls.append(kw)
+        return _FakeRefs(rows)
+
+    monkeypatch.setattr(index, "manifest_cells", lambda d: set(planner.cells_for_bbox(BOX)))
+    monkeypatch.setattr(index, "chunk_refs", fake_refs)
+    monkeypatch.setattr(planner.lake, "ingested_chunk_cells",
+                        lambda mission, ns: {(r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) for r in rows})
+    monkeypatch.setattr(planner.lake, "mark_ingested_many", lambda *a, **k: None)
+    monkeypatch.setattr(planner, "RangeReader", _FakeReader)
+    return planner.ensure(BOX, window), calls
+
+
+def test_planner_scans_the_index_once_by_cells_only(monkeypatch):
+    """One chunk_refs call, by cells: the box prune and the window are applied in Python. The second scan (only for a
+    statistic) cost 25.5 s over 48,838 ATL03 files on the deployed box."""
+    rows = _ref_rows(["ATL03_20190601000000_02350103_007_01.h5"])
+    plan, calls = _plan_with_rows(monkeypatch, rows)
+    assert len(calls) == 1, f"chunk_refs called {len(calls)} times"
+    assert calls[0].get("bbox") is None and calls[0].get("granules") is None, calls[0]
+    assert plan["stats"]["chunk_refs"] == 1
+
+
+def test_planner_box_prune_stats_keep_their_meaning(monkeypatch):
+    """Two chunks of one granule in the cells; one chunk's own box misses the query. chunk_refs_by_cells_only counts
+    both, chunk_refs the survivor, chunks_pruned_by_boxes the difference, and the pruned chunk is not fetched."""
+    name = "ATL03_20190601000000_02350103_007_01.h5"
+    rows = _ref_rows([name], chunk_index=0) + _ref_rows([name], chunk_index=1, box=(BOX[0] - 1.0, BOX[3] + 0.5, BOX[0] - 0.5, BOX[3] + 1.0))
+    plan, _calls = _plan_with_rows(monkeypatch, rows)
+    st = plan["stats"]
+    assert st["chunk_refs_by_cells_only"] == 2
+    assert st["chunk_refs"] == 1
+    assert st["chunks_pruned_by_boxes"] == 1
+    assert st["granules_indexed_for_cells"] == 1
 
 
 def test_planner_takes_no_granule_cap_argument():

@@ -531,11 +531,26 @@ def granule_proves(path, needed) -> bool:
     return rec is not None and cells_within(rec, needed)
 
 
-def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False) -> pa.Table:
+def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only: bool = True, bbox=None, per_cell: bool = False,
+               files: list[str] | None = None) -> pa.Table:
     """Distinct chunk references for a set of cells (one row per (granule, beam, chunk)); the addressing role of §5.1.
     bbox (W,S,E,N) additionally prunes chunks whose own segment bounding box misses the query — cells are coarse
-    (a res-6 cell reaches ~3.7 km outside the box), per-chunk boxes are not."""
-    if not ATL03_INDEX_DIR.exists() or not any(ATL03_INDEX_DIR.glob("*.parquet")):
+    (a res-6 cell reaches ~3.7 km outside the box), per-chunk boxes are not. Every row also carries the chunk's own
+    box (lat_min/lat_max/lon_min/lon_max) so a caller can prune in Python without a second scan.
+
+    The ATL03 index is flat (one parquet per granule), so scanning `{dir}/*.parquet` opened every granule's footer
+    to answer a few-cell query: 10.3 s over 48,838 files for a 0.3° box on the deployed box, against 0.7 s for the
+    whole ATL06 plan, which already went through the coverage manifest. Now the manifest names the files that touch
+    `cells` (`files`, resolved here when not given); the directory scan is only the fallback when the manifest is
+    unavailable, and an empty answer from the manifest is an empty table without opening a single footer."""
+    if not ATL03_INDEX_DIR.exists():
+        return pa.table({})
+    from . import coverage
+    if files is None:
+        files = coverage.index_files_for_cells("ATL03", cells)
+    if files == []:
+        return pa.table({})                       # the manifest says no granule touches these cells
+    if files is None and not any(ATL03_INDEX_DIR.glob("*.parquet")):
         return pa.table({})
     con = duckdb.connect()
     cond = [f"h3_cell IN ({','.join(str(int(c)) for c in cells)})"]
@@ -548,6 +563,8 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
         cond.append(f"lat_max >= {s_} AND lat_min <= {n} AND lon_max >= {w} AND lon_min <= {e}")
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
     cell_col = "h3_cell, " if per_cell else ""
-    q = f"""SELECT DISTINCT granule, url, s3url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end, {cols}
-            FROM read_parquet('{ATL03_INDEX_DIR}/*.parquet') WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
+    # The box columns are constant per chunk, so adding them leaves the DISTINCT cardinality unchanged.
+    q = f"""SELECT DISTINCT granule, url, s3url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end,
+                   lat_min, lat_max, lon_min, lon_max, {cols}
+            FROM {coverage.read_parquet_src(ATL03_INDEX_DIR, files)} WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
     return con.execute(q).to_arrow_table()
