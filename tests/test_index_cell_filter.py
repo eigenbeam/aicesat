@@ -62,6 +62,6 @@ def test_the_build_script_passes_addressing_cells_not_claim_cells():
     src = pathlib.Path(__file__).parent.parent / "scripts" / "build_index.py"
     t = src.read_text()
     assert "cells = planner.addressing_cells(fine, index.H3_RES)" in t
-    assert "ensure_index(granules, workers=a.workers, cells=cells)" in t
+    assert "ensure_index(granules, workers=a.workers, cells=cells, needed=needed)" in t
     assert "ensure_index(granules, workers=a.workers, cells=fine)" not in t
     assert "cells=fine)" in t, "the CLAIM must still be written at the claim resolution"
