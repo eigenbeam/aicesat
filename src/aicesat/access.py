@@ -1001,8 +1001,17 @@ def open_granule(url: str, s3url: str | None = None, *, whole_object: bool = Fal
     """A GranuleSource for a builder. `whole_object` is honoured only in-region, with an s3:// URL, through the CRT,
     and under the size cap; everywhere else this is exactly the block-cache path of before.
 
-    Measured (scripts/bench_build_io.py, box, 2026-10-17, 4 ATL06 granules of 34-101 MB): block cache 3.08 s per
-    granule, whole object 0.82 s with the positions still fetched remotely, ~0.3 s with them sliced from the buffer."""
+    Measured (scripts/bench_build_io.py, m6i.xlarge, 2026-10-17):
+
+        ATL06, 100 granules (32-128 MB)      block cache   whole object
+          8 workers                            44.7 s        21.3 s      (CPU 46% -> 94%)
+         16 workers                            31.5 s        25.0 s
+        ATL06, 300 granules, whole object: 6 / 8 / 12 workers -> 5.36 / 5.51 / 5.29 granules/s, CPU 92-98%
+        GLAS,  35 granules (2-5 MB), 8 workers  7.4 s         4.1 s
+
+    The build stops being latency-bound and becomes CPU-bound at ~0.7 core-seconds per ATL06 granule on this box
+    (TLS + copy of ~88 MB, the H3 assignment, zlib), so the worker count no longer matters past the core count and a
+    full ATL06 rebuild is ~1.7 h instead of 3.9 h. More cores are the next lever, not more workers."""
     cap = whole_object_max_bytes() if max_bytes is None else max_bytes
     buf = None
     if whole_object and s3url and cap > 0 and in_region():
