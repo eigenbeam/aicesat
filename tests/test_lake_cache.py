@@ -69,30 +69,35 @@ def _gz(a, dtype):
 A_DTYPE = {"latitude": "f8", "longitude": "f8", "h_li": "f4", "delta_time": "f8", "atl06_quality_summary": "i1"}
 
 
-def _build_atl06(lat, lon, h, q, C=10, granule="ATL06_20200115000000_11760601_007_01.h5", url="https://x/atl06.h5"):
-    n = lat.size
-    dt = np.linspace(2.0e7, 2.0e7 + n, n)
-    data = {"latitude": lat, "longitude": lon, "h_li": h, "delta_time": dt, "atl06_quality_summary": q}
-    cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), index_atl06.ATL06_RES)) for a, o in zip(lat, lon)], "u8")
+def _build_atl06(lat, lon, h, q, C=10, granule="ATL06_20200115000000_11760601_007_01.h5", url="https://x/atl06.h5",
+                 beams=None):
+    """A synthetic ATL06 granule: one strong beam `gt1r` over (lat, lon, h, q), or several via
+    `beams=[(name, strong, lat, lon, h, q), ...]`, all chunked at C segments and served from one blob."""
+    beams = beams or [("gt1r", True, lat, lon, h, q)]
     base = ["granule", "url", "s3url", "sdp_epoch", "beam", "strong", "chunk_index", "seg_start", "seg_end", "h3_cell"]
     rows = {k: [] for k in base}
     for ds in index_atl06.ATL06_DATASETS:
         for suf in ("offset", "size", "dtype", "filters", "mask"):
             rows[f"{ds}_{suf}"] = []
     blob = bytearray()
-    for k in range(-(-n // C)):
-        s0, s1 = k * C, min((k + 1) * C, n)
-        refs = {}
-        for ds in index_atl06.ATL06_DATASETS:
-            raw = _gz(data[ds][s0:s1], A_DTYPE[ds]); refs[ds] = (len(blob), len(raw)); blob.extend(raw)
-        for cell in sorted(set(cells[s0:s1].tolist())):
-            rows["granule"].append(granule); rows["url"].append(url); rows["s3url"].append("")
-            rows["sdp_epoch"].append(1.0e9); rows["beam"].append("gt1r"); rows["strong"].append(True)
-            rows["chunk_index"].append(k); rows["seg_start"].append(s0); rows["seg_end"].append(s1); rows["h3_cell"].append(int(cell))
+    for beam, strong, lat, lon, h, q in beams:
+        n = lat.size
+        dt = np.linspace(2.0e7, 2.0e7 + n, n)
+        data = {"latitude": lat, "longitude": lon, "h_li": h, "delta_time": dt, "atl06_quality_summary": q}
+        cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), index_atl06.ATL06_RES)) for a, o in zip(lat, lon)], "u8")
+        for k in range(-(-n // C)):
+            s0, s1 = k * C, min((k + 1) * C, n)
+            refs = {}
             for ds in index_atl06.ATL06_DATASETS:
-                off, sz = refs[ds]
-                rows[f"{ds}_offset"].append(off); rows[f"{ds}_size"].append(sz)
-                rows[f"{ds}_dtype"].append(A_DTYPE[ds]); rows[f"{ds}_filters"].append("gzip"); rows[f"{ds}_mask"].append(0)
+                raw = _gz(data[ds][s0:s1], A_DTYPE[ds]); refs[ds] = (len(blob), len(raw)); blob.extend(raw)
+            for cell in sorted(set(cells[s0:s1].tolist())):
+                rows["granule"].append(granule); rows["url"].append(url); rows["s3url"].append("")
+                rows["sdp_epoch"].append(1.0e9); rows["beam"].append(beam); rows["strong"].append(bool(strong))
+                rows["chunk_index"].append(k); rows["seg_start"].append(s0); rows["seg_end"].append(s1); rows["h3_cell"].append(int(cell))
+                for ds in index_atl06.ATL06_DATASETS:
+                    off, sz = refs[ds]
+                    rows[f"{ds}_offset"].append(off); rows[f"{ds}_size"].append(sz)
+                    rows[f"{ds}_dtype"].append(A_DTYPE[ds]); rows[f"{ds}_filters"].append("gzip"); rows[f"{ds}_mask"].append(0)
     tbl = pa.table({k: (pa.array(v, type=pa.uint64()) if k == "h3_cell" else pa.array(v)) for k, v in rows.items()})
     d = index_atl06._index_dir(index_atl06.ATL06_RES); d.mkdir(parents=True, exist_ok=True)
     pq.write_table(tbl, d / f"{granule}.parquet")

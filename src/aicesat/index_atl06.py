@@ -233,7 +233,7 @@ def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tupl
     if not d.exists():
         raise RuntimeError(f"no ATL06 index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
-    cols = ["granule", "url", "s3url", "sdp_epoch", "beam", "chunk_index", "seg_start", "seg_end", "h3_cell"]
+    cols = ["granule", "url", "s3url", "sdp_epoch", "beam", "strong", "chunk_index", "seg_start", "seg_end", "h3_cell"]
     for ds in ATL06_DATASETS:
         cols += [f"{ds}_offset", f"{ds}_size", f"{ds}_dtype", f"{ds}_filters", f"{ds}_mask"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
@@ -309,12 +309,28 @@ def plan_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True,
         chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
     # cell-aware skip (like ATL03): fetch a chunk if ANY of its wanted cells is not yet materialized
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
+    todo = _whole_groups(todo, chunk_cells, chunk_row)
     by_url: dict[str, list] = {}
     for k in todo:
         r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
     out.update(chunk_cells=chunk_cells, chunk_row=chunk_row, have=have, todo=todo,
                n_lake=len(chunk_cells) - len(todo), by_url=by_url)
     return out
+
+
+def beam_group(r: dict) -> str:
+    """The lake file a beam's chunk belongs to: the strong beams share one, the weak beams another."""
+    return "strong" if r.get("strong", True) else "weak"
+
+
+def _whole_groups(todo, chunk_cells, chunk_row) -> list:
+    """A beam GROUP's chunk is fetched whole. The lake writes one file per (cell, granule, chunk, group) as a full
+    overwrite of a deterministic name (lake.write_chunk_group). If one beam of a group were re-fetched alone -- its
+    chunk wanted a cell its sibling's does not -- that file would be rewritten with that beam's points only while the
+    sibling stayed marked: silent loss. So any beam needing chunk k brings the group's other beams' k along; their
+    points are rewritten identically, and nothing is lost."""
+    need = {(k[0], k[2], beam_group(chunk_row[k])) for k in todo}
+    return [k for k in chunk_cells if (k[0], k[2], beam_group(chunk_row[k])) in need]
 
 
 def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True, quality_zero: bool = True,
@@ -412,7 +428,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is
                 # not re-fetched forever; write_point_chunk adds any extra cell its points materialise.
                 writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["chunk_index"], mats,
-                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k]))))
+                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k])),
+                                              group=beam_group(r)))
                 keep = _keep(mats, {c for c in chunk_cells[k] if (k[0], k[1], k[2], c) in have})
                 g = out.setdefault(r["granule"], {kk: [] for kk in _EMPTY})
                 for kk in _EMPTY:

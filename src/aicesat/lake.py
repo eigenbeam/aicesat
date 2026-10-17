@@ -1,8 +1,10 @@
 """Persistent Parquet lake (spec §7) + coverage metadata (§5.7) + DuckDB queries (§8).
 
-Layout: data/lake/mission=<M>/h3_cell=<int>/<granule>__<beam>.parquet — one file per (cell, granule, beam).
-Idempotency is by construction: re-materializing the same (granule, beam) rewrites identical files, and every row
-also carries a deterministic surrogate row_id (§7.3) for cross-check. Each photon is written to the cell of its OWN
+Layout: data/lake/mission=<M>/h3_cell=<int>/<granule>__<beam>.parquet for ATL03 photons (one file per (cell, granule,
+beam)), and <gstem>__<group>__c<chunk>.parquet for the index missions (one file per (cell, granule, chunk, beam GROUP):
+`strong`/`weak` for ICESat-2, `full`/`coverage` for GEDI, `na` for the beamless collections -- see write_chunk_group).
+Idempotency is by construction: re-materializing the same unit rewrites an identical file under a deterministic name,
+and every ATL03 row also carries a deterministic surrogate row_id (§7.3) for cross-check. Each photon is written to the cell of its OWN
 lat/lon, so a chunk straddling cells never double-counts. Co-registered coordinates are materialized at ingest (§7.4).
 """
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import uuid
 import zlib
 from datetime import datetime, timezone
 from typing import NamedTuple
@@ -77,27 +80,71 @@ def _stem(granule: str) -> str:
     return granule.rsplit(".", 1)[0].replace("/", "_").replace("__", "_")
 
 
+def write_cell_file(path, tbl: "pa.Table") -> None:
+    """The one on-disk primitive of the index-mission lake: write beside the target and rename into place.
+
+    The rename is what the directory-mtime gate relies on (cell_stats: a landing creates or replaces a directory entry),
+    what keeps a concurrent query_points from ever seeing a half-written file, and what the writer tests block, slow or
+    fail to exercise the ordering guarantees."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.stem}.{uuid.uuid4().hex}.tmp"
+    try:
+        pq.write_table(tbl, tmp, compression="zstd", row_group_size=ROW_GROUP_ROWS)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def write_chunk_group(mission: str, granule: str, chunk_index: int, group: str, parts: list, res: int,
+                      extras: tuple[str, ...] = ()) -> tuple[dict[int, bool], list[list[int]]]:
+    """Materialize one (granule, chunk, beam GROUP): every beam's points for chunk k, one file per cell.
+
+    `parts` are the group's ChunkWrites (one per beam; a beamless collection has one). Each point is written to the
+    file of its OWN H3 cell at this mission's res, so a later query for the same cell but a different sub-bbox
+    re-filters correctly -- the partial-cell bug is impossible by construction. A part's `only_cells` restricts the
+    cells IT contributes (ICESSN's byte spans overlap, so a fetched span materializes only the cells it was fetched for).
+
+    Why a group and not a beam: six files per (cell, chunk) were 6,897 files for 2,960 chunks in one 8-cell ATL06
+    ingest at 3-6 ms each (2026-10-17). Why not ALL beams in one file: the planner may ask for the strong beams alone
+    (its default) or for all six (atl06.extract), so one name per beam set would be overwritten with a different set.
+    The group is the unit the planner fetches whole (plan_bbox), which is what makes `<gstem>__<group>__c<k>.parquet`
+    a full overwrite of a deterministic name: no merge, no lock, no directory listing.
+
+    Returns ({cell: landed}, [cells each part had points in]): a cell whose file failed is False, and the writer marks
+    no beam of the group as ingested there, so the chunk is re-fetched rather than believed."""
+    gstem = _stem(granule)
+    by_cell: dict[int, list] = {}
+    part_cells: list[list[int]] = []
+    for cw in parts:
+        tables = _cell_tables(granule, cw.beam, chunk_index, cw.arrays, res, extras, cw.only_cells)
+        for cell, tbl in tables.items():
+            by_cell.setdefault(int(cell), []).append(tbl)
+        part_cells.append(sorted(int(c) for c in tables))
+    landed: dict[int, bool] = {}
+    for cell, tbls in by_cell.items():
+        tbl = tbls[0] if len(tbls) == 1 else pa.concat_tables(tbls).unify_dictionaries()
+        try:
+            write_cell_file(cell_dir(mission, cell) / f"{gstem}__{group}__c{int(chunk_index)}.parquet", tbl)
+            landed[cell] = True
+        except Exception:   # one cell's failure must not lose the chunk's other cells, nor mark itself ingested
+            log.exception("lake writer: %s %s chunk %s (%s) failed to write cell %d; it will be re-fetched",
+                          mission, granule, chunk_index, group, cell)
+            landed[cell] = False
+    return landed, part_cells
+
+
 def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, arrays: dict, res: int,
                       extras: tuple[str, ...] = (), only_cells=None) -> dict[int, list[int]]:
-    """Chunk-aware materialization for the index missions (ATL06/GLAS/ICESSN), the analogue of write_photons.
-
-    `arrays` carries ONE fetched chunk's FULL, pre-bbox-mask points (lon, lat, h, t as datetime64[ms], plus any name
-    listed in `extras`, e.g. 'quality'). Each point is written to the file of its OWN H3 cell **at this mission's res**
-    (never res 6), so a later query for the same cell but a different sub-bbox re-filters correctly — the partial-cell
-    bug is impossible by construction. One Parquet file per cell, `<gstem>__<beam>__c<chunk>.parquet`, carrying a
-    `source_chunk_index` column. Returns {chunk_index: [cells written]} suitable for mark_ingested.
-
-    `only_cells` (optional) restricts writing to that set of cells — used by ICESSN, whose per-cell byte spans overlap,
-    so a fetched span must materialize ONLY the cells it was fetched for (writing a sibling cell from a partial span
-    would reintroduce the partial-cell bug). ATL06/GLAS pass None: a fetched chunk materializes every cell it touches.
-    """
-    tables = _cell_tables(granule, beam, chunk_index, arrays, res, extras, only_cells)
-    beam = beam or "na"; gstem = _stem(granule)
-    for cell, tbl in tables.items():
-        d = cell_dir(mission, cell); d.mkdir(parents=True, exist_ok=True)
-        pq.write_table(tbl, d / f"{gstem}__{beam}__c{int(chunk_index)}.parquet",
-                       compression="zstd", row_group_size=ROW_GROUP_ROWS)
-    return {int(chunk_index): sorted(tables)}
+    """One chunk of one beam as its own group (`<gstem>__<beam>__c<chunk>.parquet`): the pre-group entry point, kept
+    for callers and tests that materialize a single chunk. Raises if any cell's file failed to land.
+    Returns {chunk_index: [cells written]} suitable for mark_ingested."""
+    cw = ChunkWrite(granule, beam, chunk_index, arrays, only_cells=only_cells)
+    landed, (cells,) = write_chunk_group(mission, granule, chunk_index, beam or "na", [cw], res, extras)
+    failed = [c for c, ok in landed.items() if not ok]
+    if failed:
+        raise OSError(f"lake write failed for cells {failed} of {granule} chunk {chunk_index}")
+    return {int(chunk_index): sorted(cells)}
 
 
 def _const_dict(value: str, n: int) -> "pa.DictionaryArray":
@@ -459,6 +506,7 @@ class ChunkWrite(NamedTuple):
     arrays: dict
     only_cells: tuple | None = None
     mark_cells: tuple = ()
+    group: str = ""          # the beam group this chunk's file belongs to (write_chunk_group); "" -> the beam itself
 
 
 class _Writer:
@@ -539,17 +587,24 @@ class _Writer:
 
     def _run_job(self, job) -> None:
         mission, res, chunks, cells, extras = job
-        per_gb: dict[tuple[str, str], dict] = {}
+        # One file per (cell, granule, chunk, beam GROUP): the job's chunks are grouped and written together, and a
+        # beam is marked ingested in a cell only when that cell's file landed (write_chunk_group).
+        groups: dict[tuple[str, int, str], list] = {}
         for cw in chunks:
+            groups.setdefault((cw.granule, cw.chunk_index, cw.group or cw.beam or "na"), []).append(cw)
+        per_gb: dict[tuple[str, str], dict] = {}
+        for (granule, k, group), parts in groups.items():
             try:
-                cc = write_point_chunk(mission, cw.granule, cw.beam, cw.chunk_index, cw.arrays, res,
-                                       extras=extras, only_cells=cw.only_cells)
-            except Exception:   # one bad chunk must not lose the granule's other chunks, nor mark itself ingested
-                self.chunk_errors += 1
-                log.exception("lake writer: %s %s/%s chunk %s failed to write; it will be re-fetched",
-                              mission, cw.granule, cw.beam, cw.chunk_index)
+                landed, part_cells = write_chunk_group(mission, granule, k, group, parts, res, extras=extras)
+            except Exception:   # one bad group must not lose the granule's other chunks, nor mark itself ingested
+                self.chunk_errors += len(parts)
+                log.exception("lake writer: %s %s chunk %s (%s) failed to write; it will be re-fetched",
+                              mission, granule, k, group)
                 continue
-            per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted(set(cc[cw.chunk_index]) | set(cw.mark_cells))
+            failed = {c for c, ok in landed.items() if not ok}
+            self.chunk_errors += len(failed)
+            for cw, cc in zip(parts, part_cells):
+                per_gb.setdefault((cw.granule, cw.beam), {})[cw.chunk_index] = sorted((set(cc) | set(cw.mark_cells)) - failed)
         with self._lock:
             self._done.append((mission, [(g, b, cm) for (g, b), cm in per_gb.items()], cells))
             self.jobs_written += 1

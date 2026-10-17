@@ -33,13 +33,13 @@ WROTE = {"files": 0, "cells": set()}
 
 
 def _counted(fn):
-    """Tally the files a write actually produced, from its {chunk: [cells]} return value. Globbing the lake instead
-    counted every file any previous run had left behind."""
+    """Tally the files a group write actually landed, from its ({cell: landed}, ...) return value. Globbing the lake
+    instead counted every file any previous run had left behind."""
     def wrapper(*a, **k):
         out = fn(*a, **k)
-        for cells in out.values():
-            WROTE["files"] += len(cells)
-            WROTE["cells"].update(cells)
+        landed = out[0]
+        WROTE["files"] += sum(1 for ok in landed.values() if ok)
+        WROTE["cells"].update(c for c, ok in landed.items() if ok)
         return out
     return wrapper
 
@@ -50,7 +50,7 @@ def main(bbox) -> None:
     # trying to patch the inner import.
     RangeReader.fetch = _timed("fetch", RangeReader.fetch)
     index_atl06._decode_chunk = _timed("decode", index_atl06._decode_chunk)
-    lake.write_point_chunk = _counted(_timed("write", lake.write_point_chunk))
+    lake.write_chunk_group = _counted(_timed("write", lake.write_chunk_group))
     # everything else on the leg's critical path — the first run left 27.5s of 58.5s unaccounted
     index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
     lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
@@ -94,7 +94,7 @@ def main(bbox) -> None:
     print(f"                {(st.get('bytes', 0)-gap)/1e6:.1f} MB WANTED + {gap/1e6:.1f} MB over-fetch from coalescing")
     nch = st.get("chunks_fetched") or 1
     print(f"  lake wrote    {WROTE['files']:,} files in {len(WROTE['cells']):,} cells  "
-          f"({WROTE['files']/nch:.1f} files/chunk, {st.get('cells')} cells wanted)")
+          f"({WROTE['files']/nch:.2f} files/chunk; one per (cell, granule, chunk, beam group), {st.get('cells')} cells wanted)")
     print(f"\n  WALL          {wall:7.1f}s   (what the request waits for)")
     # CPU-s / wall-s over the leg, all threads of this process: ~1.0 while wall >> fetch means the GIL is the ceiling
     # (a process pool would pay); >= 2.5 on 4 vCPU means it is not.

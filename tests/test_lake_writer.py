@@ -35,14 +35,14 @@ def test_fetch_returns_before_the_lake_is_written():
     """The whole point of the change: the response does not wait on Parquet."""
     _atl06_scene()
     entered, release = threading.Event(), threading.Event()
-    real = lake.write_point_chunk
+    real = lake.write_cell_file
 
     def _blocked(*a, **kw):
         entered.set()
         assert release.wait(10.0), "writer was never released"
         return real(*a, **kw)
 
-    orig, lake.write_point_chunk = lake.write_point_chunk, _blocked
+    orig, lake.write_cell_file = lake.write_cell_file, _blocked
     try:
         got, st = index_atl06.fetch_bbox(BBOX)
         assert entered.wait(10.0), "no write was ever queued"
@@ -54,7 +54,7 @@ def test_fetch_returns_before_the_lake_is_written():
         assert lake.drain_writes(timeout=20.0)
     finally:
         release.set()
-        lake.write_point_chunk = orig
+        lake.write_cell_file = orig
         lake.drain_writes(timeout=20.0)
     assert list((lake.LAKE_DIR / "mission=ATL06").glob("h3_cell=*/*.parquet")), "the write never landed"
 
@@ -103,37 +103,40 @@ def test_force_refetch_does_not_double_the_result():
 def test_coverage_is_marked_only_after_the_file_lands():
     """A write that fails must leave the chunk unmarked, so the next request re-fetches instead of trusting a gap."""
     _atl06_scene()
-    real = lake.write_point_chunk
-    failed = []          # _index_rows selects DISTINCT with no ORDER BY, so WHICH chunk comes first is not fixed
+    real = lake.write_cell_file
+    failed = []          # (chunk, cell) of the one file that fails; WHICH comes first is not fixed (DISTINCT, no ORDER BY)
 
-    def _fails_once(mission, granule, beam, chunk_index, *a, **kw):
+    def _fails_once(path, tbl):
         if not failed:
-            failed.append(chunk_index)
+            failed.append((int(path.stem.rsplit("__c", 1)[1]), int(path.parent.name.split("=", 1)[1])))
             raise OSError("disk full")
-        return real(mission, granule, beam, chunk_index, *a, **kw)
+        return real(path, tbl)
 
-    orig, lake.write_point_chunk = lake.write_point_chunk, _fails_once
+    orig, lake.write_cell_file = lake.write_cell_file, _fails_once
     try:
         got, _ = index_atl06.fetch_bbox(BBOX)
         assert lake.drain_writes(timeout=20.0)
     finally:
-        lake.write_point_chunk = orig
+        lake.write_cell_file = orig
     assert got["lon"].size == 28, "the failed write must not cost the caller its points"
-    marked = lake.ingested_chunk_cells("ATL06", [GRANULE])
+    marked = {(k, c) for _g, _b, k, c in lake.ingested_chunk_cells("ATL06", [GRANULE])}
     assert marked, "the chunks that did write should be marked"
-    assert {k for _g, _b, k, _c in marked} == {0, 1, 2} - set(failed), f"chunk {failed} was marked despite failing"
+    (k_bad, cell_bad), = failed
+    assert (k_bad, cell_bad) not in marked, f"chunk {k_bad} was marked in cell {cell_bad} despite its file failing"
+    assert any(k == k_bad for k, _c in marked) or len({k for k, _c in marked}) == 2, "the chunk's other cells, and the other chunks, are marked"
 
-    # the next request re-fetches exactly the chunk that failed, and still returns the full result
+    # the next request re-fetches exactly the chunk whose cell failed, and still returns the full result
     again, st = index_atl06.fetch_bbox(BBOX)
     assert lake.drain_writes(timeout=20.0)
     assert st["chunks_from_nasa"] == 1 and st["chunks_from_lake"] == 2
+    assert (k_bad, cell_bad) in {(k, c) for _g, _b, k, c in lake.ingested_chunk_cells("ATL06", [GRANULE])}
     _same(got, again)
 
 
 def test_drain_is_a_barrier_for_the_cells_it_names():
     """A second build over the same cells must not observe a half-written lake."""
     _atl06_scene()
-    real = lake.write_point_chunk
+    real = lake.write_cell_file
     started, release = threading.Event(), threading.Event()
 
     def _slow(*a, **kw):
@@ -141,7 +144,7 @@ def test_drain_is_a_barrier_for_the_cells_it_names():
         release.wait(10.0)
         return real(*a, **kw)
 
-    orig, lake.write_point_chunk = lake.write_point_chunk, _slow
+    orig, lake.write_cell_file = lake.write_cell_file, _slow
     try:
         index_atl06.fetch_bbox(BBOX)
         assert started.wait(10.0)
@@ -152,7 +155,7 @@ def test_drain_is_a_barrier_for_the_cells_it_names():
         assert done.wait(20.0), "drain never returned after the write was released"
     finally:
         release.set()
-        lake.write_point_chunk = orig
+        lake.write_cell_file = orig
         lake.drain_writes(timeout=20.0)
     assert lake.ingested_chunk_cells("ATL06", [GRANULE]), "drain returned before coverage was marked"
 
@@ -295,14 +298,14 @@ def test_every_mission_returns_before_its_lake_write(mission):
                         else (index_icessn, _icessn_scene, (-45.5, 69.5, -44.5, 71.5)))
     scene()
     entered, release = threading.Event(), threading.Event()
-    real = lake.write_point_chunk
+    real = lake.write_cell_file
 
     def _blocked(*a, **kw):
         entered.set()
         assert release.wait(10.0), "writer was never released"
         return real(*a, **kw)
 
-    orig, lake.write_point_chunk = lake.write_point_chunk, _blocked
+    orig, lake.write_cell_file = lake.write_cell_file, _blocked
     try:
         got, st = mod.fetch_bbox(bbox)
         assert entered.wait(10.0), "no write was ever queued"
@@ -312,7 +315,7 @@ def test_every_mission_returns_before_its_lake_write(mission):
         assert lake.drain_writes(timeout=20.0)
     finally:
         release.set()
-        lake.write_point_chunk = orig
+        lake.write_cell_file = orig
         lake.drain_writes(timeout=20.0)
     golden, _ = mod._fetch_direct(bbox)
     _same(golden, got)

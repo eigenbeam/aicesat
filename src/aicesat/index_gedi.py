@@ -283,7 +283,7 @@ def _index_rows(bbox, window, res: int, full_power_only: bool = False, polygon=N
     if not d.exists():
         raise RuntimeError(f"no GEDI index built at res {res} yet")
     want_cells = planner.cells_for_bbox(bbox, res=res, polygon=polygon)
-    cols = ["granule", "url", "s3url", "gdate", "beam", "span_index", "seg_start", "seg_end", "h3_cell"]
+    cols = ["granule", "url", "s3url", "gdate", "beam", "full_power", "span_index", "seg_start", "seg_end", "h3_cell"]
     for key in GEDI_KEYS:
         cols += [f"{key}_offset", f"{key}_size", f"{key}_dtype", f"{key}_filters", f"{key}_mask", f"{key}_fill"]
     where = f"h3_cell IN ({','.join(str(int(c)) for c in want_cells)})"
@@ -327,6 +327,11 @@ def _decode_span(raws: dict, r: dict) -> dict:
             "quality": np.where(out["qual"] == 1, 0, 1).astype("i1"), "sens": out["sens"], "valid": valid}
 
 
+def beam_group(r: dict) -> str:
+    """The lake file a beam's span belongs to: the four full-power beams share one, the four coverage beams another."""
+    return "full" if r.get("full_power", r.get("beam") in FULL_POWER) else "coverage"
+
+
 def plan_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = False, force: bool = False,
               polygon=None, settle: bool = True) -> dict:
     """What a fetch over (bbox|polygon, window) WOULD read, decided without touching the network. Mirrors
@@ -349,6 +354,9 @@ def plan_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = Fa
         k = (r["granule"], r["beam"], r["span_index"])
         chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
+    # a beam GROUP's span is fetched whole -- see index_atl06._whole_groups for why
+    need = {(k[0], k[2], beam_group(chunk_row[k])) for k in todo}
+    todo = [k for k in chunk_cells if (k[0], k[2], beam_group(chunk_row[k])) in need]
     by_url: dict[str, list] = {}
     for k in todo:
         r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
@@ -420,7 +428,8 @@ def fetch_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = F
                 mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["beam"], r["span_index"])
                 writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["span_index"], mats,
-                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k]))))
+                                              only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k])),
+                                              group=beam_group(r)))
                 keep = _keep(mats, {c for c in chunk_cells[k] if (k[0], k[1], k[2], c) in have})
                 g = out.setdefault(r["granule"], {kk: [] for kk in _EMPTY})
                 for kk in _EMPTY:
