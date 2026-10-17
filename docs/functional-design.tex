@@ -1,0 +1,1800 @@
+% The aicesat functional design, from first principles.
+% Build:  xelatex -interaction=nonstopmode -halt-on-error functional-design.tex   (twice, for references)
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[a4paper,textwidth=112mm,marginparwidth=46mm,marginparsep=7mm,left=22mm,top=24mm,bottom=28mm,
+            footskip=12mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Palatino}
+\linespread{1.06}
+\setmonofont{Menlo}[Scale=0.82]
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,shapes.geometric,backgrounds,decorations.pathreplacing,matrix}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{fancyvrb}
+\usepackage{ragged2e}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+
+% ---- colours: one ink, one soft grey, one panel, one accent, one for the remote side ---------------------------
+\definecolor{ink}{HTML}{2B2B2B}
+\definecolor{soft}{HTML}{6B7A8D}
+\definecolor{panel}{HTML}{F1F4F8}
+\definecolor{idxblue}{HTML}{2F6FED}
+\definecolor{nasared}{HTML}{C0504D}
+
+\captionsetup{font=small,labelfont=bf,justification=RaggedRight,singlelinecheck=false,skip=6pt}
+\setlength{\itemsep}{1pt}
+\setlength{\marginparpush}{6pt}
+\setcounter{topnumber}{3}\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.9}\renewcommand{\textfraction}{0.05}\renewcommand{\floatpagefraction}{0.6}
+
+% ---- margin notes --------------------------------------------------------------------------------------------
+\newcounter{sidenote}
+\newcommand{\side}[1]{\stepcounter{sidenote}\textsuperscript{\thesidenote}%
+  \marginpar{\RaggedRight\footnotesize\textsuperscript{\thesidenote}\,#1}}
+\newcommand{\mnote}[1]{\marginpar{\RaggedRight\footnotesize #1}}
+\newcommand{\todaynote}{\textit{what exists today.}}
+\newcommand{\landed}[1]{\mnote{\todaynote\ #1}}
+
+% ---- code ----------------------------------------------------------------------------------------------------
+\newcommand{\code}[1]{\texttt{#1}}
+\lstdefinestyle{py}{language=Python,basicstyle=\ttfamily\footnotesize,keywordstyle=\bfseries,
+  commentstyle=\color{soft}\itshape,stringstyle=\color{ink},columns=fullflexible,keepspaces=true,
+  showstringspaces=false,breaklines=true,frame=none,xleftmargin=0pt,aboveskip=4pt,belowskip=4pt,
+  morekeywords={frozen,slots,dataclass}}
+\lstset{style=py}
+\fvset{fontsize=\footnotesize,baselinestretch=1.0}
+
+% ---- figure grammar (one definition, every figure) -----------------------------------------------------------
+\tikzset{
+  val/.style   = {rectangle, draw=ink, fill=white, line width=0.6pt, inner sep=4pt, align=center, font=\footnotesize},
+  pure/.style  = {rectangle, rounded corners=4pt, draw=ink, fill=white, line width=0.6pt, inner sep=5pt,
+                  align=center, font=\footnotesize},
+  eff/.style   = {rectangle, rounded corners=4pt, draw=ink, dashed, fill=panel, line width=0.6pt, inner sep=5pt,
+                  align=center, font=\footnotesize},
+  store/.style = {cylinder, shape border rotate=90, aspect=0.22, draw=ink, fill=panel, line width=0.6pt,
+                  inner sep=3pt, align=center, font=\footnotesize},
+  remote/.style= {cylinder, shape border rotate=90, aspect=0.22, draw=nasared, fill=nasared!6, line width=0.6pt,
+                  inner sep=3pt, align=center, font=\footnotesize, text=nasared!80!black},
+  proc/.style  = {rectangle, draw=soft, dashed, line width=0.5pt, inner sep=7pt, rounded corners=2pt},
+  lane/.style  = {rectangle, fill=panel, draw=none},
+  flow/.style  = {-{Stealth[length=2mm]}, line width=0.6pt, draw=ink},
+  flowsoft/.style = {-{Stealth[length=2mm]}, line width=0.5pt, draw=soft},
+  lbl/.style   = {font=\scriptsize, text=soft, align=center, inner sep=1pt},
+  lblw/.style  = {font=\scriptsize, text=soft, align=center, inner sep=1pt, fill=white},
+  note/.style  = {font=\scriptsize\itshape, text=soft, align=left},
+  hdr/.style   = {font=\scriptsize\bfseries, text=ink, anchor=west},
+  acc/.style   = {draw=idxblue, text=idxblue!85!black},
+}
+% a hexagon path: centre x, centre y, circumradius, rotation (plain numbers in the picture's units)
+\newcommand{\hexp}[4]{%
+  ({#1+#3*cos(#4)},{#2+#3*sin(#4)})
+  \foreach \kk in {1,...,5} {-- ({#1+#3*cos(#4+60*\kk)},{#2+#3*sin(#4+60*\kk)})} -- cycle
+}
+% a full-width figure body: overflows into the margin column on purpose
+\newcommand{\wide}[1]{\noindent\makebox[\textwidth][l]{#1}}
+
+\title{\textbf{The aicesat index, from first principles}\\[4pt]
+  \large a functional design for building and querying\\
+  \large sub-granule indexes over many altimetry collections}
+\author{}
+\date{2026-10-17}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+\begin{abstract}
+\noindent
+A scientist asks for every altimetry point of several satellite and airborne missions inside a box on the ice.
+The data sit in thousands of multi-gigabyte files in a cloud archive, and the box needs a few megabytes of them.
+This document derives, from that one requirement, a system that reads exactly the bytes the box needs: a
+\emph{sub-granule index} that records where every spatial cell's points live inside every file, a \emph{build}
+pipeline that produces the index once, a \emph{query} pipeline that turns a box into byte ranges and a cache of
+decoded points, and a \emph{framework} in which each collection is a value plugged into one shared pipeline. It
+is written for a reader who has not seen the current code. Every mechanism is motivated before it is named, every
+value and stage is drawn in one visual grammar, and every number is a measurement from the deployed instance.
+The design is partly built: the margin says, chapter by chapter, which pieces exist today.
+\end{abstract}
+
+\vspace{0.5em}
+\section*{How to read this document}
+
+The text proceeds in five parts. Part~I states the problem and the two kinds of data involved: the archive's
+files and the grid of cells that addresses the Earth. Part~II derives the index as a table and fixes what a row
+means. Part~III builds the index and Part~IV answers a query from it; both parts separate the \emph{structural}
+view (which values and functions exist) from the \emph{runtime} view (which processes and threads run them) and
+the \emph{computation} (what work is done per point, per chunk, per granule). Part~V is the framework: how six
+collections share one pipeline, how configuration and the grid become parameters, how the design is enforced in a
+language that enforces nothing.
+
+Figures use one grammar throughout (Figure~\ref{fig:legend}). The margin carries two kinds of note: numbered
+asides, and unnumbered notes in italics saying what already exists in the code for that chapter. Names of modules
+and functions live in those notes and in the listings, so the body can stay with concepts.
+
+\begin{figure}[h]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[val] (v) at (0,0) {value};
+  \node[pure] (p) at (24,0) {pure function};
+  \node[eff] (e) at (54,0) {effect};
+  \node[store] (s) at (78,0) {store};
+  \node[remote] (r) at (98,0) {remote};
+  \node[proc, minimum width=18mm, minimum height=9mm] (pr) at (10,-16) {};
+  \node[note, anchor=south west] at (pr.north west) {process};
+  \node[lane, minimum width=18mm, minimum height=5mm] (ln) at (36,-16) {};
+  \node[lbl] at (ln) {thread};
+  \draw[flow] (52,-16) -- node[lblw, above] {what crosses, how big} (98,-16);
+  \node[note, text width=44mm, anchor=west] at (104,-6)
+    {A \emph{value} is immutable data. A \emph{pure function} depends only on its arguments. An \emph{effect}
+     touches the world: network, disk, clock, a pool. The accent colour marks the one element a figure is about.};
+\end{tikzpicture}}
+\caption{The figure grammar. Sharp corners are data; rounded corners are code; grey dashed code has side
+effects; cylinders are stores, red when they belong to the archive. Arrows say what crosses and, where measured,
+how much.}
+\label{fig:legend}
+\end{figure}
+
+\tableofcontents
+
+%=====================================================================================================================
+\part{The problem and the data}
+%=====================================================================================================================
+
+\section{What the system must do}
+\label{ch:problem}
+
+The request is always the same shape: \emph{every point from these missions, inside this area, in this time
+window}. The area is a few tens of kilometres across; a glacier, a transect, a study site. The missions are
+satellite laser altimeters (ICESat's GLAS, ICESat-2's ATL03 photons and ATL06 land-ice segments, GEDI's
+footprints) and airborne or ground campaigns (IceBridge ATM, a GPS traverse). The answer is a table of
+positions, heights and times, drawn on a map and fed to analysis.
+
+The data live in the Earthdata cloud: one \emph{granule} per orbit segment or flight, each a file in S3 in the
+\code{us-west-2} region, found through a catalogue (CMR) that answers spatial and temporal searches with granule
+names and URLs. There are two ways to turn a box into points.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % left: download
+  \node[hdr] at (0,42) {(a) download the granules the catalogue names};
+  \node[val, minimum width=16mm] (box1) at (8,30) {box};
+  \node[remote, minimum width=22mm, minimum height=14mm] (s3a) at (48,30) {archive\\granule files};
+  \node[store, minimum width=22mm, minimum height=12mm] (disk) at (48,8) {local copies};
+  \node[pure] (filt) at (10,8) {filter\\by box};
+  \draw[flow] (box1) -- node[lblw, above] {names} (s3a);
+  \draw[flow, draw=nasared] (s3a) -- node[lblw, right] {every byte of every file\\ \textbf{tens of GB}} (disk);
+  \draw[flow] (disk) -- node[lblw, below] {read, keep 0.1\,\%} (filt);
+  % right: ranges
+  \node[hdr] at (80,42) {(b) read only the bytes that hold the box's points};
+  \node[val, minimum width=16mm] (box2) at (88,30) {box};
+  \node[store, minimum width=20mm, minimum height=12mm] (idx) at (118,30) {index};
+  \node[remote, minimum width=22mm, minimum height=14mm] (s3b) at (152,30) {archive\\granule files};
+  \node[pure] (dec) at (118,8) {decode};
+  \node[val] (pts) at (88,8) {points};
+  \draw[flow] (box2) -- node[lblw, above] {cells} (idx);
+  \draw[flow] (idx) -- node[lblw, above] {byte ranges} (s3b);
+  \draw[flow, draw=nasared] (s3b) |- node[lblw, below, pos=0.75] {a few thousand range GETs\\ \textbf{about 1\,GB}} (dec);
+  \draw[flow] (dec) -- (pts);
+\end{tikzpicture}}
+\caption{The same box answered two ways. Downloading keeps a tenth of a percent of what it moves. Reading by
+byte range needs something the archive does not provide: a table saying which bytes of which file hold which
+part of the Earth. That table is the index.}
+\label{fig:twoways}
+\end{figure}
+
+Downloading (Figure~\ref{fig:twoways}a) is simple and wrong at this scale. An ICESat-2 ATL06 granule is 32 to
+128\,MB; an ATL03 granule is 0.2 to 6.7\,GB, median 1.3\,GB over Greenland's Summit; a few hundred granules cross
+any site, and the box wants a fraction of a percent of each. Reading by byte range (Figure~\ref{fig:twoways}b)
+moves only what the box needs, but S3 can serve a byte range only when the caller already knows the offset and
+length. Someone must have looked inside every file once and written down where each part of the Earth is.
+
+That table is the \textbf{sub-granule index}, and the whole system is organised around it. It fixes the two
+costs the design must respect:
+
+\begin{itemize}
+\item \textbf{The build} looks inside every granule once. On the deployed machine the regional indexes hold
+  33{,}484 ATL06 granules and 48{,}838 ATL03 granules; a build is hours, so it must be resumable, parallel and
+  never silently incomplete.
+\item \textbf{The query} must be bounded below by the network and nothing else. In the archive's region a byte
+  range arrives in tens of milliseconds, and a scene's worth of ranges in about three seconds. Everything the query
+  does beyond fetching (decoding, deciding which point belongs to which cell, caching) must cost less than that or
+  it is the bottleneck.
+\end{itemize}
+
+Two more requirements come from use rather than scale. The same area is asked for again and again with small
+changes, so decoded points are worth keeping in a local \emph{lake} that later queries read first. And the
+collections differ in file format, chunking and quality semantics while asking the same question, so adding a
+collection must mean describing it, not re-implementing the pipeline.\side{Six collections exist today, built and
+queried by six copies of nearly the same code. Part~V is about the seventh.}
+
+\section{What a granule is}
+\label{ch:granule}
+
+Four of the six collections are HDF5 files; two are CSV text. The design needs only a small part of HDF5, but
+that part has to be exact, because the index will address bytes inside files it never opens again.
+
+\paragraph{Groups, datasets, chunks.} An HDF5 file is a tree of \emph{groups} holding \emph{datasets}. An ATL06
+file has six beam groups (\code{gt1l}, \code{gt1r}, \ldots, \code{gt3r}); each holds a group
+\code{land\_ice\_segments} with one dataset per variable: latitude, longitude, height, time, a quality flag. A dataset is stored in
+\emph{chunks}, fixed-size pieces of the array, each compressed on its own (gzip, usually after a byte-shuffle filter)
+and written wherever the file had room. The file keeps a B-tree per dataset mapping chunk number to (offset, size).
+Reading element $i$ means finding chunk $i\,\mathrm{div}\,C$ in that tree, fetching its bytes, decompressing
+them, and taking element $i \bmod C$.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % the file as a byte column
+  \node[hdr] at (0,62) {one granule, as bytes};
+  \draw[draw=ink, line width=0.6pt] (0,0) rectangle (10,58);
+  \foreach \y/\h/\c in {52/3/idxblue, 44/2.5/soft, 38/3/soft, 30/2.6/idxblue, 24/2/soft, 16/3/idxblue, 8/2.4/soft, 3/2/soft}
+    {\fill[\c!35] (0.3,\y) rectangle (9.7,\y+\h);}
+  \node[lbl, anchor=east] at (-1,57) {0};
+  \node[lbl, anchor=east] at (-1,1) {EOF};
+  \node[note, text width=18mm, anchor=north west] at (0,-1.5) {chunks of many datasets, in the order the writer
+    had room};
+  % the tree
+  \node[hdr] at (30,62) {the structure};
+  \node[val, font=\scriptsize] (root) at (40,54) {\code{/}};
+  \node[val, font=\scriptsize] (g) at (40,45) {\code{gt1l/land\_ice\_segments}};
+  \node[val, font=\scriptsize, acc] (lat) at (28,34) {\code{latitude}};
+  \node[val, font=\scriptsize] (lon) at (44,34) {\code{longitude}};
+  \node[val, font=\scriptsize] (h) at (58,34) {\code{h\_li}};
+  \draw[flowsoft] (root) -- (g); \draw[flowsoft] (g) -- (lat); \draw[flowsoft] (g) -- (lon); \draw[flowsoft] (g) -- (h);
+  \node[note, text width=40mm, anchor=north west] at (24,12) {each dataset: $N$ elements in chunks of $C$;
+    a B-tree per dataset says where chunk $k$ is};
+  % the chunk map
+  \node[hdr] at (78,62) {its chunk map, one dataset};
+  \foreach \r/\k/\o/\z/\f in {0/$k$/offset/size/filters, 1/0/8\,552\,114/31\,208/gzip, 2/1/9\,104\,882/30\,977/gzip, 3/2/11\,903\,002/31\,540/gzip, 4/$\vdots$//{}/{}} {
+    \node[font=\scriptsize, anchor=west] at (80,{48-5*\r}) {\k};
+    \node[font=\scriptsize, anchor=west] at (88,{48-5*\r}) {\o};
+    \node[font=\scriptsize, anchor=west] at (110,{48-5*\r}) {\z};
+    \node[font=\scriptsize, anchor=west] at (124,{48-5*\r}) {\f};
+  }
+  \draw[draw=soft, line width=0.4pt] (79,45.5) -- (136,45.5);
+  % connect chunk 1 to the byte column
+  \node[lbl, anchor=west, text=idxblue!85!black] at (10.5,31.3) {chunk 1};
+  \draw[draw=idxblue, line width=0.5pt] (79,40.5) rectangle (136,35.5);
+  \node[note, text width=46mm, anchor=north west] at (78,22) {\textbf{what the index keeps}: for every chunk the
+    query may want, this row for every dataset, so the file is never opened again};
+\end{tikzpicture}}
+\caption{A granule's bytes, its structure, and the chunk map that connects them. The index is the chunk map,
+reorganised by where on the Earth each chunk's points fall.}
+\label{fig:chunkmap}
+\end{figure}
+
+The chunk map (Figure~\ref{fig:chunkmap}) is the only thing the query needs from the file's structure. Walking the
+tree to obtain it is the expensive part of a build; Chapter~\ref{ch:readgranule} is about making that walk cheap.
+Decoding a chunk is the cheap, pure part: inflate, undo the shuffle, reinterpret as the dtype.\side{Decoding is
+validated byte-identical against the reference HDF5 library on real chunks; it needs no HDF5 code at query time.}
+
+\paragraph{Three layouts.} The collections differ in how their datasets are chunked, and that difference decides
+what a row of the index can mean (Figure~\ref{fig:layouts}).
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % (a) shared
+  \node[hdr] at (0,30) {(a) shared chunking (ATL03, ATL06, GLAS)};
+  \foreach \r/\n in {0/latitude, 1/longitude, 2/h\_li} {
+    \node[lbl, anchor=east] at (-1,{24-5*\r}) {\n};
+    \draw[draw=ink, line width=0.5pt] (0,{22.5-5*\r}) rectangle (60,{25.5-5*\r});
+    \foreach \x in {15,30,45} \draw[draw=ink, line width=0.5pt] (\x,{22.5-5*\r}) -- (\x,{25.5-5*\r});
+  }
+  \fill[idxblue!25] (15,22.5) rectangle (30,25.5); \fill[idxblue!25] (15,17.5) rectangle (30,20.5); \fill[idxblue!25] (15,12.5) rectangle (30,15.5);
+  \node[note, anchor=west] at (62,19) {chunk $k$ of every dataset holds the\\same elements: one row carries\\one range per dataset};
+  % (b) spans
+  \node[hdr] at (0,4) {(b) differing chunking (GEDI): rows are spans at the union of boundaries};
+  \foreach \r/\n/\c in {0/lat/20, 1/lon/20, 2/elev/12} {
+    \node[lbl, anchor=east] at (-1,{-2-5*\r}) {\n};
+    \draw[draw=ink, line width=0.5pt] (0,{-3.5-5*\r}) rectangle (60,{-0.5-5*\r});
+    \foreach \x in {\c,...,59} {\pgfmathparse{int(mod(\x,\c))}\ifnum\pgfmathresult=0 \draw[draw=ink, line width=0.5pt] (\x,{-3.5-5*\r}) -- (\x,{-0.5-5*\r});\fi}
+  }
+  \foreach \x in {12,20,24,36,40,48} \draw[draw=idxblue, dashed, line width=0.5pt] (\x,-14) -- (\x,0);
+  \fill[idxblue!25] (24,-3.5) rectangle (36,-0.5); \fill[idxblue!25] (24,-8.5) rectangle (36,-5.5); \fill[idxblue!25] (24,-13.5) rectangle (36,-10.5);
+  \node[note, anchor=west] at (62,-7) {a span lies inside one chunk of\\every dataset; decoded chunks are\\sliced back to the span};
+  % (c) lines
+  \node[hdr] at (0,-20) {(c) text lines (ICESSN, GPS): a row is a byte span of lines in one cell};
+  \draw[draw=ink, line width=0.5pt] (0,-27) rectangle (60,-24);
+  \foreach \x in {4,8,...,56} \draw[draw=soft, line width=0.3pt] (\x,-27) -- (\x,-24);
+  \fill[idxblue!25] (20,-27) rectangle (32,-24);
+  \node[note, anchor=west] at (62,-25.5) {the whole file is scanned once at build;\\a query fetches a line span and parses it};
+\end{tikzpicture}}
+\caption{Three storage layouts, one index shape. In each case a row names a contiguous element interval and the
+byte ranges that hold it, so the query reads ranges and slices without knowing which layout produced the row.}
+\label{fig:layouts}
+\end{figure}
+
+For the ICESat products and GLAS, every dataset of a group is chunked identically (10{,}000 segments per chunk in
+ATL06, 100{,}000 photons in ATL03), so chunk $k$ of the latitude dataset covers the same elements as chunk $k$ of
+the height dataset, and one row can carry one byte range per dataset. GEDI chunks its datasets differently; the
+design cuts the element axis at the union of every dataset's chunk boundaries, so each resulting \emph{span} lies
+inside exactly one chunk of every dataset and the row again carries one range per dataset, plus the offset of the
+span inside each chunk. The text collections have no chunks at all: the build scans the whole file once and a row
+is the byte span of the lines that fall in one cell.
+
+\paragraph{ATL03's indirection.} The photon product adds one twist that matters later. Photons are stored by
+time, and their positions are stored twice: every photon has its own latitude and longitude, and every 20\,m
+\emph{segment} has a reference photon and a count. A build cannot afford to read a billion photon positions, so it
+reads the segment positions and maps each segment's photon range (\code{ph\_index\_beg}, \code{segment\_ph\_cnt})
+onto chunks. A chunk of 100{,}000 photons is thus located by the few hundred segments that cover it.
+
+\paragraph{The six collections.} Table~\ref{tab:collections} is the whole of what differs; everything else is
+shared. It is also, almost verbatim, the descriptor of Chapter~\ref{ch:descriptor}.
+
+\begin{table}[h]
+\footnotesize
+\wide{\begin{tabular}{@{}lllp{30mm}p{36mm}@{}}
+\toprule
+collection & product & layout & position source & group structure \\
+\midrule
+ATL03 & ICESat-2 photons & shared chunks & segment reference photons & 6 beams; strong/weak \\
+ATL06 & ICESat-2 land ice & shared chunks & per segment & 6 beams; strong/weak \\
+GLAS & ICESat GLAH06 & shared chunks & per shot & one group \\
+GEDI & GEDI L2A & spans & per shot & 8 beams; full/coverage power \\
+ICESSN & IceBridge ATM L2 & text lines & per platelet line & none \\
+GPS & Summit traverse & text lines & per fix line & none; sled geometry from a metadata file \\
+\bottomrule
+\end{tabular}}
+\caption{What differs between collections. Each difference is a value or a small function in Part~V.}
+\label{tab:collections}
+\end{table}
+
+\section{Cells}
+\label{ch:cells}
+
+The index must answer ``which chunks hold points inside this area'' without geometry at query time. The standard
+device is a discrete global grid: partition the Earth into cells with integer identifiers at several resolutions,
+assign every point its cell once at build time, and let the query ask for cell identifiers. The current grid is
+H3,\side{H3's hexagons have the pleasant property that a straight track meets a cell in one contiguous stretch,
+which Chapter~\ref{ch:row} exploits. Chapter~\ref{ch:grid} makes the grid a parameter and says exactly which of its
+properties the design relies on.} whose cells are hexagons with 64-bit identifiers; a resolution-5 cell is
+253\,km$^2$ (edge 9.85\,km), resolution 6 is 36\,km$^2$.
+
+A cell plays three roles, at two resolutions (Figure~\ref{fig:cells}):
+
+\begin{enumerate}
+\item \textbf{Addressing.} Every index row carries the cell of its points at the collection's addressing
+  resolution: 5 for the segment and footprint products, 6 for photons, chosen so that a cell is roughly the
+  footprint of one chunk. A query turns its area into the set of addressing cells it overlaps and asks the index
+  for rows with those cells.
+\item \textbf{Partitioning.} The lake of decoded points is partitioned by the same cell, so a query reads
+  exactly the cells it asked for and eviction has a unit.
+\item \textbf{Claiming.} A build records the ground it covered as a set of finer cells (the \emph{claim}),
+  compacted up the hierarchy where whole parents are covered. A later query over an area checks that every fine
+  cell of the area has an ancestor in the claim; a later build over a larger area finds the fine cells not yet
+  claimed and builds only those.
+\end{enumerate}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize]
+  \begin{scope}
+    \node[hdr] at (-4,34) {(a) a track and its chunks over addressing cells};
+    \foreach \i in {0,2,4} { \foreach \j in {0,1,2} {
+      \draw[draw=soft!60, line width=0.4pt] \hexp{10.5*\i}{12.124*\j}{7}{0}; } }
+    \foreach \i in {1,3} { \foreach \j in {0,1,2} {
+      \draw[draw=soft!60, line width=0.4pt] \hexp{10.5*\i}{12.124*\j+6.062}{7}{0}; } }
+    \fill[idxblue!16] \hexp{10.5}{6.062}{7}{0}; \fill[idxblue!16] \hexp{21}{12.124}{7}{0}; \fill[idxblue!16] \hexp{31.5}{18.186}{7}{0};
+    \fill[idxblue!16] \hexp{0}{0}{7}{0}; \fill[idxblue!16] \hexp{42}{24.248}{7}{0};
+    \draw[draw=nasared, line width=0.9pt] (-6,-3.5) -- (48,27.7);
+    \foreach \s in {0,0.5,1} { \draw[draw=nasared, line width=1.2pt] ({-6+54*\s-1},{-3.5+31.2*\s+1.7}) -- ({-6+54*\s+1},{-3.5+31.2*\s-1.7}); }
+    \node[note, anchor=west, text=nasared!80!black] at (49,27) {chunk boundaries};
+    \node[note, text width=44mm, anchor=north west] at (-4,-10) {Shaded: the cells this track touches. A chunk of
+      10\,000 segments is several cells long, so a (chunk, cell) pair is the unit: one index row, one lake file.};
+  \end{scope}
+  \begin{scope}[shift={(96,0)}]
+    \node[hdr] at (-10,34) {(b) the claim: fine cells, compacted};
+    \foreach \m in {0,...,5} {
+      \fill[idxblue!14] \hexp{9.821*cos(49.106+60*\m)+10}{9.821*sin(49.106+60*\m)+12}{5.669}{19.106};
+      \draw[draw=idxblue!70, line width=0.4pt] \hexp{9.821*cos(49.106+60*\m)+10}{9.821*sin(49.106+60*\m)+12}{5.669}{19.106}; }
+    \fill[idxblue!30] \hexp{10}{12}{5.669}{19.106}; \draw[draw=idxblue!70, line width=0.4pt] \hexp{10}{12}{5.669}{19.106};
+    \draw[draw=ink, line width=1.1pt] \hexp{10}{12}{15}{0};
+    \draw[draw=idxblue!70, line width=0.4pt] \hexp{36}{18}{5.669}{19.106}; \fill[idxblue!14] \hexp{36}{18}{5.669}{19.106};
+    \draw[draw=idxblue!70, line width=0.4pt] \hexp{36}{6.6}{5.669}{19.106}; \fill[idxblue!14] \hexp{36}{6.6}{5.669}{19.106};
+    \node[note, text width=52mm, anchor=north west] at (-10,-10) {Seven covered children compact to their parent;
+      two lone cells stay fine. Membership of a fine cell is an ancestor walk, so a mixed-resolution claim answers
+      exactly without being expanded.};
+  \end{scope}
+\end{tikzpicture}}
+\caption{Cells in their two roles. Left, addressing: rows and lake files are keyed by (chunk, cell). Right,
+claiming: the ground a build covered, stored compactly, consulted by every query and every enlarging build.}
+\label{fig:cells}
+\end{figure}
+
+Two consequences shape everything downstream. First, a cell is coarse relative to a box, so the index over-selects
+by design and the query re-applies the exact box predicate to decoded points; the index is for finding bytes, never
+for answering the box. Second, the per-point assignment of a cell is the one operation the system performs
+\emph{per point} on both sides, build and query, and it is the first thing to remove from the query side
+(Chapter~\ref{ch:row}).\landed{\code{planner.cells\_for\_bbox}, \code{coverage\_cells}, \code{addressing\_cells};
+the claim in \code{index.write\_build\_manifest} and \code{unclaimed\_cells}; the hot kernel is
+\code{planner.\_cells\_vectorized} over h3ronpy.}
+
+%=====================================================================================================================
+\clearpage
+\part{The index as data}
+%=====================================================================================================================
+
+\section{The index row}
+\label{ch:row}
+
+Everything so far can be assembled into the row the build writes. Take one granule, one group, one chunk $k$.
+The build has the positions of the chunk's elements (read once, from the position datasets or the segment table),
+assigns each its addressing cell, and so knows the set of cells the chunk touches. For each such cell it writes one
+row. The row has four parts:
+
+\begin{itemize}
+\item \textbf{Identity}: granule name, both URLs (HTTPS and \code{s3://}), the archive revision, the group
+  (beam) and whether it is a strong beam, orbit numbers, the chunk index and the element interval the chunk covers.
+\item \textbf{The cell}, and the chunk's own bounding box in latitude and longitude. The box is a second, finer
+  filter: a cell reaches kilometres outside a small query box, and the chunk's box prunes rows the cell let through.
+\item \textbf{The run}: where, inside the chunk, this cell's elements sit. Below.
+\item \textbf{Byte ranges}, one per dataset: offset, size, the filter pipeline, dtype, column count and the per-chunk
+  filter mask. This is the chunk map of Figure~\ref{fig:chunkmap}, copied so the file need never be opened again.
+\end{itemize}
+
+Rows are few: a granule contributes about 18 rows for ATL06, 7 for ATL03, 25 for GLAS, 2 for ICESSN, because a
+chunk is long and a cell is large. The same chunk appears under every cell it touches, with identical byte ranges;
+the query deduplicates by (granule, group, chunk) before fetching.
+
+\subsection{The run}
+
+The build already paid for the one per-point operation: it assigned every positioned element its cell. Without the
+run, the query would pay it again on every fetched chunk, because after decoding it has 10{,}000 segments or
+100{,}000 photons and must know which of them belong to the cells it asked for. On the deployed machine that
+re-assignment was 59 million lookups and 24 to 31 thread-seconds of an 8-cell query.
+
+The run records what the build learned. For a (chunk, cell) row:
+\begin{align*}
+[\code{run\_lo},\ \code{run\_hi}) &= \bigl[\min i,\ \max i + 1\bigr) \quad\text{over this cell's elements } i,\\
+\code{run\_exact} &= \bigl(\#\{i \in [\code{lo},\code{hi}) \text{ positioned}\} = \#\{i \text{ in this cell}\}\bigr).
+\end{align*}
+Exactness is decidable at build time because the build has every element's cell. It says: no element of another
+cell sits inside this interval. When every wanted cell's run is exact, the query labels the chunk's elements by
+slicing, in constant time per cell, and never calls the grid. A straight-ish track meets a convex cell in one
+contiguous stretch, so runs are exact unless cells interleave; on real ATL06 data 99.3\,\% of 9{,}422 runs over
+twelve granules are exact, and in an 8-cell ingest all 2{,}948 chunks were labelled from runs.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,30) {(a) one chunk of 10\,000 segments, three cells, three rows};
+  \draw[draw=ink, line width=0.6pt] (0,18) rectangle (100,24);
+  \fill[idxblue!18] (0,18) rectangle (38,24); \fill[idxblue!40] (38,18) rectangle (71,24); \fill[idxblue!18] (71,18) rectangle (100,24);
+  \draw[draw=ink, line width=0.6pt] (0,18) rectangle (100,24);
+  \node[lbl] at (19,21) {cell A}; \node[lbl, text=ink] at (54.5,21) {cell B}; \node[lbl] at (85.5,21) {cell C};
+  \node[lbl, anchor=north] at (0,17.5) {0}; \node[lbl, anchor=north] at (38,17.5) {3\,810}; \node[lbl, anchor=north] at (71,17.5) {7\,120}; \node[lbl, anchor=north] at (100,17.5) {10\,000};
+  \node[font=\scriptsize, anchor=west] at (0,10) {row (k, A): \code{run\_lo}=0, \code{run\_hi}=3\,810, \code{run\_exact}=true};
+  \node[font=\scriptsize, anchor=west, acc] at (0,5) {row (k, B): \code{run\_lo}=3\,810, \code{run\_hi}=7\,120, \code{run\_exact}=true};
+  \node[font=\scriptsize, anchor=west] at (0,0) {row (k, C): \code{run\_lo}=7\,120, \code{run\_hi}=10\,000, \code{run\_exact}=true};
+  \node[hdr] at (0,-10) {(b) a track that grazes a cell boundary: A and B interleave, both rows are inexact};
+  \draw[draw=ink, line width=0.6pt] (0,-22) rectangle (100,-16);
+  \fill[idxblue!18] (0,-22) rectangle (30,-16); \fill[idxblue!40] (30,-22) rectangle (34,-16); \fill[idxblue!18] (34,-22) rectangle (37,-16);
+  \fill[idxblue!40] (37,-22) rectangle (71,-16); \fill[idxblue!18] (71,-22) rectangle (100,-16);
+  \draw[draw=ink, line width=0.6pt] (0,-22) rectangle (100,-16);
+  \node[lbl] at (15,-19) {A}; \node[lbl, text=ink] at (54,-19) {B}; \node[lbl] at (85.5,-19) {C};
+  \node[font=\scriptsize, anchor=west] at (0,-28) {row (k, A): [0, 3\,700), \code{run\_exact}=\textbf{false}\quad row (k, B): [3\,000, 7\,100), \textbf{false}\quad row (k, C): [7\,100, 10\,000), true};
+  \node[note, text width=58mm, anchor=north west] at (104,24) {An exact run lets the query write the cell into a
+    slice of the label array. An inexact run makes the query fall back to assigning every element of the chunk; it
+    never guesses. Rows from an index built before the columns existed have no run and take the same fallback.};
+\end{tikzpicture}}
+\caption{Cell runs. Each row carries the element interval of its cell inside the chunk and whether that interval
+is pure. The fast path is a slice; the slow path is the per-point assignment, kept alive by every inexact row.}
+\label{fig:runs}
+\end{figure}
+
+The two pure kernels are short enough to show whole, because they \emph{are} the contract between build and
+query:\landed{\code{index.cell\_runs}, \code{index.cells\_from\_runs}; the ATL06, GLAS and GEDI builders write
+\code{run\_lo/run\_hi/run\_exact} (schema versions 3, 3, 2); their ingests slice. Counter
+\code{chunks\_cells\_from\_runs} in the fetch stats.}
+
+\begin{lstlisting}
+def cell_runs(pos, cells) -> dict[int, tuple[int, int, bool]]:
+    """{cell: (lo, hi, exact)} for one chunk; pos are within-chunk positions of its
+    positioned points, cells their cells."""
+    order = np.argsort(pos, kind="stable"); pos, cells = pos[order], cells[order]
+    out = {}
+    for cell in np.unique(cells):
+        idx = np.flatnonzero(cells == cell)
+        lo, hi = int(pos[idx[0]]), int(pos[idx[-1]]) + 1
+        inside = np.searchsorted(pos, hi) - np.searchsorted(pos, lo)   # positioned points in [lo, hi)
+        out[int(cell)] = (lo, hi, inside == idx.size)
+    return out
+
+def cells_from_runs(n, runs, wanted) -> np.ndarray | None:
+    """Labels for a chunk's n points, or None when the fast path does not apply."""
+    if not runs: return None
+    out = np.zeros(n, "u8")
+    for cell in wanted:
+        r = runs.get(int(cell))
+        if r is None or not r[2]: return None      # missing or inexact: fall back
+        out[r[0]:r[1]] = int(cell)
+    return out
+\end{lstlisting}
+
+\subsection{Photons: runs with edges}
+
+ATL03 complicates the run in one way, because a photon's cell is known to the build only through its segment.
+The build assigns a cell to each 20\,m segment from its reference photon and expresses the run in photon index
+space: $[\code{run\_lo}, \code{run\_hi})$ is the union of the cell's segments' photon ranges inside the chunk. But
+a segment straddling the cell boundary has photons on both sides, and the index must not claim for a cell photons
+that belong to its neighbour. So the row records two more numbers, \code{edge\_lo\_end} and \code{edge\_hi\_start}:
+where the run's first segment ends and where its last begins (Figure~\ref{fig:photonruns}). The query labels the
+interior by slicing and assigns the grid cell individually only to the photons of the two edge segments, and to
+photons outside every wanted run. The result is photon-exact, byte-identical to assigning all 100{,}000, at a few
+hundred lookups.\landed{\code{index.photon\_cell\_runs}, \code{labels\_from\_photon\_runs}; ATL03 schema
+version 6; the planner's \code{\_materialize} assigns only where \code{assign} is set and reports
+\code{photons\_assigned}.}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,22) {one ATL03 chunk, photon index space; segments of ~50 photons, each labelled by its reference photon};
+  \draw[draw=ink, line width=0.6pt] (0,10) rectangle (120,16);
+  \foreach \x in {0,6,...,114} \draw[draw=soft!70, line width=0.3pt] (\x,10) -- (\x,16);
+  \fill[idxblue!35] (42,10) rectangle (84,16);
+  \fill[idxblue!12] (36,10) rectangle (42,16); \fill[idxblue!12] (84,10) rectangle (90,16);
+  \draw[draw=ink, line width=0.6pt] (0,10) rectangle (120,16);
+  \draw[draw=idxblue, line width=0.9pt] (36,8) -- (36,18); \draw[draw=idxblue, line width=0.9pt] (90,8) -- (90,18);
+  \node[lbl, text=idxblue!85!black, anchor=south] at (36,18.2) {\code{run\_lo}}; \node[lbl, text=idxblue!85!black, anchor=south] at (90,18.2) {\code{run\_hi}};
+  \draw[draw=ink, line width=0.5pt] (42,8) -- (42,10); \draw[draw=ink, line width=0.5pt] (84,8) -- (84,10);
+  \node[lbl, anchor=north] at (42,7.5) {\code{edge\_lo\_end}}; \node[lbl, anchor=north] at (84,7.5) {\code{edge\_hi\_start}};
+  \node[lbl] at (63,13) {interior: labelled by slicing};
+  \node[note, anchor=west] at (122,13) {edge segments: assigned\\photon by photon};
+  \node[note, text width=118mm, anchor=north west] at (0,3) {A segment's photons may lie on both sides of the cell
+    boundary while its reference photon is inside. The run claims the interior for the cell and leaves its two
+    edge segments to the exact per-photon assignment, as it leaves everything outside every wanted run.};
+\end{tikzpicture}}
+\caption{Photon runs. The interior of a cell's run is labelled by slicing; the two edge segments and all photons
+outside wanted runs are assigned individually, so the result equals assigning every photon.}
+\label{fig:photonruns}
+\end{figure}
+
+\section{Files, provenance and the claim}
+\label{ch:claim}
+
+The rows of one granule are one Parquet file, named after the granule, under the collection's index directory.
+Writes are to a temporary name followed by a rename, so a reader never sees a torn file and an interrupted build
+leaves no corpse for the next run to trip on. The file is the unit of resumption: a build lists the directory, and
+a granule whose file exists with the current schema version is done.
+
+That rule has a hole, and closing it is what the rest of this chapter is about. A build over a region asks for
+rows only in the cells of that region: a granule's pole-to-pole track would otherwise fill the index with cells no
+query ever asked for, each holding only the granules that happened to cross the region. So a granule's file is
+\emph{relative to the cells the build asked for}, and a later build over a larger region cannot tell from the name
+whether the file holds rows for the added ground.
+
+\paragraph{Provenance.} Each file's footer therefore records the build's filter set: the compacted cell set the
+build asked for, stored once as a content-addressed sidecar (\code{\_cellsets/<sha1>.json}) and referenced by its
+hash.\side{The full compacted list was first stamped into every footer; at 49\,KB it was three quarters of an ATL06
+index file and 3.3\,GB of a 7\,GB store. The sidecar took the store to 4.7\,GB.} A granule \emph{proves} a set of
+cells if its recorded set contains them. An enlarging build computes the fine cells not yet claimed and rebuilds
+exactly the granules that cannot prove them.
+
+The invariant is easy to state and was broken twice: the footer must record the \emph{filter}, never the cells the
+granule happened to touch. Two builders had shadowed the filter variable with the per-point cell array. For GLAS
+the recorded set was touched\,$\cap$\,filter, which was never wrong but gave every granule its own sidecar (4{,}220
+for 4{,}799 files) and rebuilt everything on every enlargement. For ATL03 it was the unfiltered touched set of the
+last beam, so a file whose rows had been dropped could prove ground it did not hold, and an enlarging build silently
+skipped it: the exact class of bug provenance exists to prevent.\landed{fixed 2026-10-17; the footer key is
+\code{aicesat\_index\_cellset\_sha1}; \code{index.granule\_proves} answers False for unknown provenance;
+\code{tests/test\_build\_provenance.py} pins both builders with a two-cell track and a one-cell filter.}
+
+\paragraph{The claim.} When every granule of a build has landed, and only then, the build unions its fine cells
+into the collection's claim (\code{\_build.json}): the compacted set of ground the index covers. Every query checks
+its area against the claim before doing anything else; an unclaimed area is an error naming the build command, not
+a slow success through whole-granule fallback. An empty catalogue search is recorded but claims nothing: silence from
+the catalogue is not evidence of empty ground.
+
+\paragraph{The manifest.} Coverage questions (which granules touch these cells, over which months) should not open
+tens of thousands of footers. The build ends by folding the index into one small manifest of distinct (cell,
+granule, month) rows (\code{\_coverage/manifest.parquet}), rebuilt whenever the directory's modification time says
+a file landed. The query uses it to name the handful of files that touch its cells, so a plan reads a few files
+rather than a glob of 48{,}838.\side{Before the manifest the ATL03 plan for a 0.3$^\circ$ box scanned every
+footer: 36\,s. Through the manifest, 0.66\,s.}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[proc, minimum width=72mm, minimum height=40mm, anchor=north west] (dir) at (0,43) {};
+  \node[note, anchor=south west] at (dir.north west) {\code{index/atl06\_res5/}};
+  \node[store, minimum width=26mm] (files) at (16,33) {granule files\\ \scriptsize \code{<name>.parquet} $\times$ 33\,484};
+  \node[store, minimum width=22mm] (sets) at (16,14) {\code{\_cellsets/}\\ \scriptsize one json per filter set};
+  \node[val, minimum width=24mm] (claim) at (54,33) {\code{\_build.json}\\ \scriptsize the claim};
+  \node[val, minimum width=24mm] (man) at (54,14) {\code{\_coverage/}\\ \scriptsize manifest.parquet};
+  \draw[flowsoft] (files) -- (sets);
+  \node[lbl, anchor=west] at (18.5,23.5) {footer $\to$ sha1};
+  % the fold
+  \node[pure] (fold) at (96,33) {claim(records)};
+  \node[val] (rec) at (96,46) {search records\\ \scriptsize what each build asked for};
+  \draw[flow] (rec) -- (fold); \draw[flow] (fold) -- node[lblw, above] {fold} (claim);
+  \node[pure] (roll) at (96,14) {manifest(files)};
+  \draw[flow] (files.east) -- ++(8,0) |- (roll.west); \draw[flow] (roll) -- (man);
+  \node[note, text width=56mm, anchor=north west] at (112,46) {The claim is \emph{derived}: a fold over the
+    records of successful builds. The manifest is \emph{derived}: a fold over the files. Neither is primary, both
+    are cached because their derivation costs time, and both are rebuilt rather than repaired.};
+\end{tikzpicture}}
+\caption{One collection's index on disk. Granule files are primary and immutable; the claim and the manifest
+are folds over them. The provenance sidecars say which cells each file was built against.}
+\label{fig:stores}
+\end{figure}
+
+What the chapter establishes is a discipline for every derived thing in the system: the granule files are the
+primary data; the claim and the manifest are folds over them, cached because the fold is expensive, and never
+edited in place. Chapter~\ref{ch:buildvalues} turns the build records into a value so the claim becomes a pure
+function of them.
+
+%=====================================================================================================================
+\clearpage
+\part{The build pipeline}
+%=====================================================================================================================
+
+\section{Build as a pipeline of values}
+\label{ch:buildvalues}
+
+A build is one sequence, whatever the collection: decide the ground, find the granules, decide which still need
+building, build each, record what was built. Written as stages over values, with the effects named
+(Figure~\ref{fig:buildstages}):
+
+\begin{Verbatim}[fontsize=\footnotesize]
+plan(area, coll)                 -> BuildSpec        pure: fine cells, addressing cells, search ring
+search(spec)                     -> SearchRecord     EFFECT (catalogue); stored, append-only
+jobs(spec, record, present)      -> tuple[Job]       pure: refs whose file is absent or cannot prove the ground
+build_job(job, coll, cellset, io)-> IndexFile        pure given io = (open, fetch): rows + footer metadata
+store.put(file)                  -> key              EFFECT: tmp + rename, write-once
+claim(records)                   -> CellSet          pure fold; cached as _build.json
+manifest(store)                  -> Table            pure fold; cached as _coverage/manifest.parquet
+\end{Verbatim}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm, node distance=4mm]
+  \node[val] (area) at (0,20) {area};
+  \node[pure, right=of area] (plan) {plan};
+  \node[val, right=of plan] (spec) {BuildSpec};
+  \node[eff, right=of spec] (search) {search};
+  \node[val, right=of search] (rec) {SearchRecord\\ \scriptsize $n$ GranuleRefs};
+  \node[pure, right=of rec] (jobs) {jobs};
+  \node[val, right=of jobs] (job) {Job $\times$ todo};
+  \node[remote, above=9mm of search] (cmr) {catalogue};
+  \draw[flow] (area) -- (plan); \draw[flow] (plan) -- (spec); \draw[flow] (spec) -- (search); \draw[flow] (search) -- (rec);
+  \draw[flow] (rec) -- (jobs); \draw[flow] (jobs) -- (job);
+  \draw[flowsoft, <->] (search) -- (cmr);
+  \node[store, below=9mm of jobs] (store) {index store};
+  \draw[flowsoft] (store) -- node[lblw, right] {present keys} (jobs);
+  % second row
+  \node[pure, minimum width=26mm] (bj) at (118,0) {build\_job};
+  \node[val, right=of bj] (file) {IndexFile};
+  \node[eff, right=of file] (put) {put};
+  \draw[flow] (job.south) |- (bj.west);
+  \draw[flow] (bj) -- (file); \draw[flow] (file) -- (put); \draw[flow] (put.south) |- ++(-6,-7) -| (store.south);
+  \node[remote, below=7mm of bj] (s3) {archive};
+  \draw[flowsoft, <->] (bj) -- node[lblw, right] {io: open, fetch} (s3);
+  \node[pure] (claim) at (40,0) {claim};
+  \node[val, left=of claim] (cells) {CellSet};
+  \draw[flow] (rec.south) |- ++(0,-8) -| (claim.north);
+  \draw[flow] (claim) -- (cells);
+  \node[note, text width=40mm, anchor=north west] at (0,-8) {only after every job of the record landed; a partial
+    build claims nothing and is re-run from the same record};
+\end{tikzpicture}}
+\caption{The build as stages over values. Rounded white boxes are pure; grey dashed boxes touch the catalogue, the
+archive or the disk. The record of a search is the primary value: jobs, outcomes and the claim derive from it.}
+\label{fig:buildstages}
+\end{figure}
+
+The values are small and frozen, and they are what crosses process boundaries:
+
+\begin{lstlisting}
+@dataclass(frozen=True, slots=True)
+class GranuleRef:    # what a worker needs: strings, not the catalogue's object
+    name: str; url: str; s3url: str; revision: str; native_id: str = ""
+
+@dataclass(frozen=True, slots=True)
+class BuildSpec:     # the ground at both resolutions; the shape the catalogue is asked
+    collection: str; res: int; schema: str
+    fine_cells: tuple[int, ...]; addressing: tuple[int, ...]
+    ring: tuple[tuple[float, float], ...]; window: tuple[str, str] | None
+
+@dataclass(frozen=True, slots=True)
+class SearchRecord:  # PRIMARY, append-only: what the catalogue answered, when
+    spec: BuildSpec; at: str; granules: tuple[GranuleRef, ...]
+
+@dataclass(frozen=True, slots=True)
+class Job:           # one granule under one spec; its key names the index file
+    collection: str; granule: GranuleRef; res: int; schema: str; cellset_sha: str; params_sha: str
+    @property
+    def key(self) -> str: ...   # sha1(name, revision, schema, res, cellset, params)[:20]
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    key: str; rows: int; error: str | None
+    seconds: float; requests: int; bytes: int
+\end{lstlisting}
+
+Three design points follow from writing it this way.
+
+\textbf{The record is primary.} Today the catalogue's answer is cached for a day as a pickle of the client's
+objects and the claim is a file mutated by each build. Storing \code{SearchRecord}s makes the claim a fold and
+makes replay possible (Chapter~\ref{ch:replay}): a failed build is re-run from its record, not re-searched; what a
+build \emph{would} do is computed from the record and the store's keys without touching the network.
+
+\textbf{The job key names the file.} With content-addressed keys the resume set is a directory listing instead of
+a footer read per file (33{,}484 reads today, before the first job starts), and the provenance question of
+Chapter~\ref{ch:claim} is answered by the name: a file built under a different cell set has a different key. The
+GPS collection stamps a metadata hash into its rows for the same reason; that is the \code{params\_sha} slot,
+empty for the other five.
+
+\textbf{Pure given io.} \code{build\_job} reads a remote file, so it is not pure in the strict sense; it is pure
+\emph{given} two functions, \code{open} and \code{fetch}, passed in. In production they are the archive; in tests
+they are a synthetic HDF5 file in memory. Nothing else in the stage touches the world, which is what makes it
+testable per collection without a network and what lets a worker process run it with nothing but a \code{Job}.
+
+\landed{\code{build.GranuleRef} (four strings plus a compatibility shim for the builders), \code{build.BuildCollection}
+(the per-collection parameters), \code{build.run\_build} (the sequence, once, for ATL06, GEDI, GLAS, ICESSN and GPS)
+over \code{pool.run\_pool}. Still proposed: \code{SearchRecord} stored, content-addressed keys, the claim as a fold.}
+
+\section{Reading one granule}
+\label{ch:readgranule}
+
+The build's cost is in \code{build\_job}, and inside it almost entirely in reading the file's structure. Before
+any position is read, the HDF5 library walks the superblock, the group tree and the chunk B-trees: for an ATL06
+granule about 66 small reads, each a dependent round trip, because the next address is learned from the previous
+read. Through a 1\,MiB block cache over the object store that walk took about 2\,s of a 3.3\,s granule; the position
+fetch 0.5\,s; the actual computation 0.3\,s. Workers scaled the wall time until the machine ran out of threads to
+wait on, and then not at all (Table~\ref{tab:workers}).
+
+\begin{table}[h]
+\footnotesize
+\begin{tabular}{@{}rrrrl@{}}
+\toprule
+workers & wall (s) & granules/s & s per granule per worker & CPU busy \\
+\midrule
+4 & 81.0 & 1.23 & 3.24 & 20\,\% \\
+8 & 41.9 & 2.39 & 3.35 & 44\,\% \\
+16 & 26.2 & 3.81 & 4.20 & 80\,\% \\
+32 & 26.2 & 3.81 & 8.39 & 92\,\% \\
+\bottomrule
+\end{tabular}
+\caption{ATL06, 100 granules, 4 vCPU, before the whole-object read: latency-bound to 16 workers, then flat. The
+per-granule time is the sum of serial round trips.}
+\label{tab:workers}
+\end{table}
+
+A dependent walk cannot be parallelised, but it can be made local. The granule sizes decide how
+(Figure~\ref{fig:timelines}):
+
+\begin{itemize}
+\item \textbf{Small granules (ATL06, GLAS, 2 to 128\,MB): read the whole object once.} The first 8\,MiB span is
+  requested alone and the object's size read from the response's \code{Content-Range}, with no \code{HEAD} and no
+  extra round trip; the remaining 8\,MiB spans go out in one concurrent submission; the structure walk then runs over
+  an in-memory buffer at memory speed, and the position chunks are sliced from the same buffer. Objects over a cap
+  (256\,MiB, since the per-worker peak is two to three times the object) fall back to the block cache having spent one
+  span.
+\item \textbf{Large granules (ATL03, 0.2 to 6.7\,GB): read bigger blocks.} The structure of an ATL03 file is
+  clustered, so a 4\,MiB block satisfies the walk in 7 reads instead of 114 while moving 29\,MB instead of 120.
+  Larger blocks read more for nothing (16\,MiB: 4 reads, 67\,MB, no faster).
+\end{itemize}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \draw[draw=soft, line width=0.4pt] (0,34) -- (150,34);
+  \foreach \t in {0,0.5,...,3.0} {\draw[draw=soft, line width=0.4pt] ({\t*50},33) -- ({\t*50},35); \node[lbl, anchor=south] at ({\t*50},35.5) {\t\,s};}
+  \node[hdr] at (0,28) {before: structure walk through a 1\,MiB block cache, then positions by range};
+  \foreach \i in {0,...,65} {\fill[soft!70] ({\i*1.5},21) rectangle ({\i*1.5+1.1},25);}
+  \foreach \i in {0,...,11} {\fill[idxblue!60] ({100+\i*2},21) rectangle ({100+\i*2+1.6},25);}
+  \fill[ink] (125,21) rectangle (140,25);
+  \node[lbl, anchor=west] at (0,18.5) {66 dependent round trips, 31\,ms each};
+  \node[lbl, anchor=west] at (100,18.5) {12 range GETs};
+  \node[lbl, anchor=west] at (125,18.5) {CPU};
+  \node[hdr] at (0,10) {after: one whole-object read, then everything from memory};
+  \fill[nasared!60] (0,3) rectangle (4,7); \fill[nasared!60] (5,3) rectangle (12,7);
+  \fill[ink] (13,3) rectangle (28,7);
+  \node[lbl, anchor=west] at (0,0.5) {first span, then the rest concurrently: 0.2\,s for 88\,MB};
+  \node[lbl, anchor=west] at (29,5) {walk + positions + cells, in memory: 0.3\,s};
+  \node[lbl, anchor=west] at (0,-3.5) {wall per granule 3.3\,s $\to$ 0.5--0.8\,s; the machine is now CPU-bound};
+\end{tikzpicture}}
+\caption{One ATL06 granule's build, before and after, on the same time axis. The serial walk disappears into a
+buffer; what remains is computation, so adding workers past the core count buys nothing and the lever becomes
+cores.}
+\label{fig:timelines}
+\end{figure}
+
+Both cases go through one door. A \code{GranuleSource} is what a builder opens: \code{open()} returns the object
+the HDF5 library parses (a memory buffer, or the block-cached remote file), \code{fetch(ranges)} returns byte ranges
+from the \emph{same} bytes (sliced from the buffer, or range GETs), and \code{stats} counts what was moved. Every
+dataset a builder reads goes through one function, \code{read\_via\_chunks}, which takes the dataset's chunk map
+and asks the source for the chunks, decoding them with the same decoder the query uses. The builder therefore does
+not know which path it is on, and a test can hand it a buffer of a synthetic file.
+
+\begin{table}[h]
+\footnotesize
+\wide{\begin{tabular}{@{}llrrl@{}}
+\toprule
+collection & configuration & before & after & note \\
+\midrule
+ATL06, 100 granules, 8 workers & whole object & 44.7\,s & 21.3\,s & CPU 46\,\% $\to$ 94\,\% \\
+ATL06, 300 granules, 6/8/12 workers & whole object & & 5.4 gran/s & flat in workers, CPU 92--98\,\% \\
+ATL06, full regional rebuild (33\,484) & whole object & 3.9\,h & 62\,min & 9.1 gran/s sustained \\
+GLAS, 35 granules, 8 workers & whole object & 7.4\,s & 4.1\,s & \\
+GLAS, full rebuild (4\,799) & whole object & 10\,min & 3.5\,min & \\
+ATL03, 20 granules, 8 workers & 4\,MiB blocks & 23.4\,s & 11.1\,s & 114 $\to$ 7 structure reads \\
+ATL03, full regional rebuild (48\,838) & 4\,MiB, 16 workers & 12\,h & $\approx$7.3\,h & 1.88 gran/s, CPU-bound \\
+\bottomrule
+\end{tabular}}
+\caption{Build measurements on the deployed instance (m6i.xlarge, 4 vCPU, in-region), 2026-10-17.}
+\label{tab:buildnumbers}
+\end{table}
+
+The measurements (Table~\ref{tab:buildnumbers}) say the build is no longer waiting on the network. What is left
+is computation in the worker, so the next lever is cores, not workers.\landed{\code{access.read\_whole\_object},
+\code{GranuleSource}, \code{open\_granule}; \code{index.read\_via\_chunks}; \code{index.ATL03\_BLOCK\_SIZE = 4\,MiB}.
+ATL06 and GLAS opt in to the whole object; GEDI stays on the block cache until its sizes are measured.}
+
+\section{The build at runtime}
+\label{ch:buildruntime}
+
+The structural view says what is computed; this chapter says by whom. A build is one parent process and a pool of
+worker processes (Figure~\ref{fig:buildproc}). The parent does everything that is cheap and must happen once:
+plans the ground, logs in, searches the catalogue, lists the store, decides the jobs, and at the end claims and
+folds the manifest. A worker does one thing: \code{build\_job} for the job it is handed, with its own login and its
+own archive client.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[proc, minimum width=56mm, minimum height=50mm, anchor=north west] (parent) at (0,50) {};
+  \node[note, anchor=south west] at (parent.north west) {parent process};
+  \node[pure] (plan) at (14,43) {plan};
+  \node[eff] (search) at (40,43) {search};
+  \node[eff] (list) at (14,31) {list store};
+  \node[pure] (jobs) at (40,31) {jobs};
+  \node[eff, minimum width=30mm] (pool) at (28,19) {pool: submit, deadline, retry};
+  \node[pure] (claim) at (14,7) {claim};
+  \node[pure] (man) at (40,7) {manifest};
+  \draw[flow] (plan) -- (search); \draw[flow] (search) -- (jobs); \draw[flow] (list) -- (jobs);
+  \draw[flow] (jobs) -- (pool); \draw[flow] (pool) -- (claim); \draw[flow] (claim) -- (man);
+  % workers
+  \foreach \i/\y in {0/48, 1/31, 2/13} {
+    \node[proc, minimum width=50mm, minimum height=11mm, anchor=north west] (w\i) at (84,\y) {};
+    \node[eff, font=\scriptsize] (login\i) at (94,{\y-5.5}) {login};
+    \node[pure, font=\scriptsize, minimum width=24mm] (bj\i) at (118,{\y-5.5}) {build\_job};
+    \draw[flowsoft] (login\i) -- (bj\i);
+  }
+  \node[note, anchor=south west] at (w0.north west) {worker 1 of $n$ (spawned: starts empty)};
+  \node[note, anchor=south east] at (w1.north east) {worker 2};
+  \node[note, anchor=south east] at (w2.north east) {worker $n$};
+  \node[lbl] at (109,-1) {$\vdots$};
+  \draw[flow] (56,22) -- node[lblw, above, pos=0.5] {GranuleRef + 3 ints, $<$1\,KB} (84,22);
+  \draw[flow] (84,16) -- node[lblw, below, pos=0.5] {(name, rows), or an error string} (56,16);
+  % archive
+  \node[remote, minimum height=12mm] (s3) at (152,25) {archive};
+  \foreach \i in {0,1,2} \draw[flowsoft, <->] (bj\i.east) -- (s3.west);
+  \node[remote] (cmr) at (40,58) {catalogue};
+  \draw[flowsoft, <->] (search) -- (cmr);
+  \node[store] (store) at (-10,19) {store};
+  \draw[flowsoft, <->] (list) -- (store);
+  \node[note, text width=50mm, anchor=north west] at (84,2) {What crosses the boundary is a few hundred bytes per
+    job and a tuple per result. The catalogue's answer, the client objects and the parent's open connections never
+    do.};
+\end{tikzpicture}}
+\caption{The build at runtime. One parent, $n$ spawned workers, each holding its own archive client. The arrows
+carry values small enough to pickle without thought.}
+\label{fig:buildproc}
+\end{figure}
+
+\paragraph{Spawn, not fork.} A forked worker begins as a copy of its parent. For a regional ATL03 build the
+parent holds the catalogue's answer, several gigabytes of client objects, and copy-on-write un-shares those pages
+worker by worker until memory approaches $(n+1)$ times the parent; a 16-worker ATL06 build was killed that way. A
+spawned worker begins empty and receives only its job. The price is a second of imports and a login per worker, paid
+once per build.
+
+\paragraph{One policy for the pool.} Five builders once owned five pools and disagreed on everything that matters.
+The one pool now has one policy: submit every job; consume the futures \emph{in submission order} with a per-future
+timeout computed from a monotonic clock (a laptop that sleeps must not report a healthy build as timed out), so a
+progress callback sees jobs in a stable order; treat every worker exception as retryable, because the real cause of a
+transient archive error is destroyed in transit when the error object cannot be pickled back; run a second attempt for
+the failures in a fresh pool; then cancel what is left (Figure~\ref{fig:retry}).\landed{\code{pool.run\_pool}, called
+with exactly \code{max\_workers} and \code{mp\_context}; \code{build.run\_build} claims only when every job of the
+attempt landed and otherwise logs that it is not claiming.}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[val] (sub) at (0,0) {submitted};
+  \node[pure] (run) at (30,0) {running};
+  \node[val] (done) at (58,0) {done};
+  \node[val] (fail) at (30,-14) {failed or timed out};
+  \node[val] (retry) at (0,-14) {attempt 2};
+  \node[val] (given) at (30,-28) {reported; nothing claimed};
+  \draw[flow] (sub) -- (run); \draw[flow] (run) -- node[lblw, above] {result} (done);
+  \draw[flow] (run) -- node[lblw, right] {any exception, or deadline} (fail);
+  \draw[flow] (fail) -- node[lblw, above] {first time} (retry); \draw[flow] (retry) -- node[lblw, left] {fresh pool} (sub);
+  \draw[flow] (fail) -- node[lblw, right] {second failure} (given);
+\end{tikzpicture}
+\caption{The life of one job in the pool. The claim at the end of the build requires every job to reach
+\emph{done}; a single job in the bottom state withholds it, and the next run resumes from the files that landed.}
+\label{fig:retry}
+\end{figure}
+
+\paragraph{How many workers.} After Chapter~\ref{ch:readgranule} an ATL06 granule costs about 0.7 core-seconds,
+so on four vCPUs the knee is at six to eight workers and sixteen buys nothing but memory. The text collections and
+ATL03 are still latency-bound (a whole-file GET, or a large structure walk) and take sixteen. Memory for sixteen
+spawned workers with whole-object buffers peaked at 3.4\,GB on a 15\,GB machine; two collections are never built at
+once.\landed{\code{BuildCollection.default\_workers}: 8 for the HDF5 builders, 16 for ATL03, ICESSN and GPS; GEDI's
+per-granule timeout is 600\,s because a granule is a quarter orbit.}
+
+%=====================================================================================================================
+\clearpage
+\part{The query pipeline}
+%=====================================================================================================================
+
+\section{Query as a plan}
+\label{ch:plan}
+
+A query begins as a value: the area (a box, or a polygon inside it), the time window, the collection, and a few
+flags (which beam groups, whether to force a re-fetch, whether to clip to cells). Turning it into points has a
+planning half that touches only local stores and a fetching half that touches the archive. The planning half is
+worth isolating because it is cheap, deterministic given the stores, and what every inspection tool (a dry run, a
+byte-range map, a progress denominator) wants to see.
+
+\begin{Verbatim}[fontsize=\footnotesize]
+cells(query, grid)               -> tuple[int]       pure: addressing cells the area overlaps
+scan(query, coll, store)         -> rows             EFFECT (DuckDB over the manifest-named index files)
+have(coll, granules, lake)       -> set[ChunkKey]    EFFECT (the lake's key table): what is already decoded
+plan_query(query, coll, rows, have) -> QueryPlan     pure: todo = chunks with any wanted cell not in have,
+                                                           completed to whole beam groups, grouped by URL
+render(plan)                     -> dict             pure: what the chunk map and the progress bar show
+\end{Verbatim}
+
+The scan asks the index for every row whose cell is wanted, restricted to the beam group and window, reading only
+the files the manifest names. Rows arrive one per (granule, group, chunk, cell), each carrying its run. The plan
+groups them by chunk: a chunk's wanted cells, its runs, one representative row for its byte ranges. Against the
+lake's key table it splits chunks into \emph{have} (every wanted cell already decoded) and \emph{todo}
+(Figure~\ref{fig:planset}). Two refinements are forced by later chapters and are decided here, not downstream:
+
+\begin{itemize}
+\item \textbf{A beam group is fetched whole.} If any beam of a group needs chunk $k$, the group's other beams'
+  chunk $k$ join the todo set. Chapter~\ref{ch:lake} explains why the lake's file unit makes this necessary.
+\item \textbf{Writes are narrowed to the wanted cells.} A chunk is far longer than a box and decodes points in
+  cells the query never asked for. The plan records \code{want\_only}, the cells the lake may write; the rest of the
+  strip is discarded (Chapter~\ref{ch:queryruntime} has the measurement that decided this).
+\end{itemize}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % grid: chunks x cells
+  \node[hdr] at (0,44) {rows the index returned: (chunk, cell), each with a run};
+  \foreach \c/\x in {A/20, B/32, C/44, D/56} {\node[lbl] at (\x,38) {cell \c};}
+  \foreach \k/\y in {g1 k0/32, g1 k1/26, g2 k4/20, g2 k5/14, g3 k2/8} {\node[lbl, anchor=east] at (13,\y) {\k};}
+  % cells present as rows
+  \foreach \x/\y in {20/32, 32/32, 32/26, 44/26, 44/20, 56/20, 56/14, 20/8, 32/8} {\draw[draw=ink, line width=0.5pt] (\x-4,\y-2) rectangle (\x+4,\y+2);}
+  % have (lake keys) shaded
+  \foreach \x/\y in {20/32, 32/32, 32/26, 20/8} {\fill[soft!35] (\x-4,\y-2) rectangle (\x+4,\y+2);}
+  \foreach \x/\y in {20/32, 32/32, 32/26, 20/8} {\draw[draw=ink, line width=0.5pt] (\x-4,\y-2) rectangle (\x+4,\y+2);}
+  % todo chunks boxed
+  \draw[draw=idxblue, line width=0.9pt, rounded corners=1pt] (27,23) rectangle (49,29);
+  \draw[draw=idxblue, line width=0.9pt, rounded corners=1pt] (39,17) rectangle (61,23);
+  \draw[draw=idxblue, line width=0.9pt, rounded corners=1pt] (51,11) rectangle (61,17);
+  \draw[draw=idxblue, line width=0.9pt, rounded corners=1pt] (15,5) rectangle (37,11);
+  \node[note, text width=58mm, anchor=north west] at (66,40) {grey: (chunk, cell) already in the lake's key table.
+    Blue: \emph{todo}, a chunk with at least one wanted cell missing; it is fetched whole and its already-present
+    cells are excluded from the fresh points so nothing is returned twice.};
+  \node[note, text width=58mm, anchor=north west] at (66,20) {g1\,k0 is served from the lake. g1\,k1 is fetched
+    although cell B is cached: cell C is not. The by-URL grouping puts g2's two chunks into one request whose ranges
+    are coalesced together.};
+  \node[hdr] at (0,-2) {QueryPlan: want\_cells, rows, chunk\_cells, chunk\_runs, have, todo, by\_url, want\_only};
+\end{tikzpicture}}
+\caption{The plan as a set picture. The lake's key table decides \emph{have}; a chunk goes to \emph{todo} if any
+wanted cell of it is missing; todo is grouped by granule URL so one request per granule carries every range.}
+\label{fig:planset}
+\end{figure}
+
+The plan is a value and should be serialisable as one: the query, the rows as an Arrow table, the have set and the
+todo list. Chapter~\ref{ch:replay} uses that to replay an ingest without the planning half.\landed{\code{index\_atl06.plan\_bbox}
+returns this dictionary without touching the network (keys \code{want\_cells}, \code{rows}, \code{chunk\_cells},
+\code{chunk\_runs}, \code{chunk\_row}, \code{have}, \code{todo}, \code{n\_lake}, \code{by\_url}, \code{want\_only});
+\code{\_whole\_groups} completes beam groups; the ATL03 planner does the same inline in \code{planner.\_ensure}.}
+
+\begin{lstlisting}
+@dataclass(frozen=True, slots=True)
+class Query:
+    collection: str; bbox: tuple[float, float, float, float]; polygon: tuple | None
+    window: tuple[str, str] | None; res: int
+    groups: tuple[str, ...] = ("strong",)       # beam groups wanted
+    force: bool = False; clip_cells: bool = False
+
+ChunkKey = tuple[str, str, int]                 # (granule, group member, chunk index)
+
+@dataclass(frozen=True)
+class QueryPlan:
+    query: Query
+    want_cells: tuple[int, ...]
+    rows: pa.Table                              # one row per (chunk, cell), with its run
+    have: frozenset[tuple[str, str, int, int]]  # (granule, beam, chunk, cell) in the lake
+    todo: tuple[ChunkKey, ...]                  # whole beam groups
+    by_url: Mapping[str, tuple[int, ...]]       # url -> row indices
+    want_only: tuple[int, ...] | None
+\end{lstlisting}
+
+\section{Executing the plan: one chunk, step by step}
+\label{ch:execute}
+
+Execution is the same for every todo granule and, inside it, for every chunk. This chapter follows one chunk
+through it and states, for each step, what the work is proportional to (Figure~\ref{fig:chunkflow}). The
+distinction between per-point, per-chunk and per-granule work is the whole performance story of the query side:
+anything per point must be native and vectorised, anything per chunk may be Python, anything per granule may be
+a network round trip.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm, node distance=3mm]
+  \node[val, text width=30mm] (rows) at (16,100) {todo rows of one granule\\ \scriptsize 5 datasets $\times$ $m$ chunks};
+  \node[pure, text width=30mm, below=of rows] (coal) {coalesce ranges\\ \scriptsize gap $<$ 1\,MiB in-region};
+  \node[eff, text width=30mm, below=of coal] (fetch) {fetch\\ \scriptsize one request, $s$ spans};
+  \node[val, text width=30mm, below=of fetch] (raws) {raw chunks\\ \scriptsize bytes per (beam, chunk, dataset)};
+  \node[pure, text width=30mm, below=of raws] (dec) {decode\\ \scriptsize inflate, unshuffle, dtype};
+  \node[val, text width=30mm, below=of dec] (arr) {arrays\\ \scriptsize lat, lon, h, t, quality $\times$ 10\,000};
+  \node[pure, text width=30mm, below=of arr] (lab) {label cells\\ \scriptsize slice by runs, else assign};
+  \node[pure, text width=30mm, below=of lab] (keep) {keep\\ \scriptsize wanted cells, box, quality, not already in lake};
+  \node[val, text width=30mm, below=of keep] (cw) {ChunkWrite\\ \scriptsize arrays + cell label + group};
+  \node[eff, text width=30mm, below=of cw] (lake) {lake.submit\\ \scriptsize queued; the writer lands files};
+  \node[val, text width=26mm, right=8mm of keep] (pts) {points returned\\ \scriptsize from memory, not disk};
+  \foreach \a/\b in {rows/coal, coal/fetch, fetch/raws, raws/dec, dec/arr, arr/lab, lab/keep, keep/cw, cw/lake} {\draw[flow] (\a) -- (\b);}
+  \draw[flow] (keep) -- (pts);
+  \node[remote, right=34mm of fetch] (s3) {archive};
+  \draw[flowsoft, <->] (fetch) -- node[lblw, above, pos=0.45] {$s$ range GETs, $\sim$25\,ms each} (s3);
+  % cost column
+  \node[hdr] at (84,107) {cost class};
+  \node[lbl, anchor=west] at (rows.center -| 84,0) {per granule: Python, once};
+  \node[lbl, anchor=west] at (coal.center -| 84,0) {per chunk: $O(\text{ranges})$, Python};
+  \node[lbl, anchor=west] at (fetch.center -| 84,0) {per granule: network; threads overlap granules};
+  \node[lbl, anchor=west] at (dec.center -| 84,0) {per byte: zlib and numpy, native, lock released};
+  \node[lbl, anchor=west, text=idxblue!85!black] at (lab.center -| 84,0) {per cell: a slice (was per point: 59\,M lookups)};
+  \node[lbl, anchor=west] at (keep.center -| 84,0) {per point: boolean masks in numpy};
+  \node[lbl, anchor=west] at (lake.center -| 84,0) {per file: Arrow write, a few ms; off this thread};
+  \node[note, text width=62mm, anchor=north west] at ([yshift=-6mm]lake.south -| 84,0) {The label step is the one that changed class. With
+    the run columns the query writes a cell id into a slice; only an inexact or absent run brings back the
+    per-point grid lookup. Everything per point that remains is a numpy mask, and everything per byte is native.};
+\end{tikzpicture}}
+\caption{One chunk through the executor, with the cost class of each step. The returned points come from memory;
+the lake write is housekeeping for later queries and runs on other threads.}
+\label{fig:chunkflow}
+\end{figure}
+
+\paragraph{Coalesce and fetch.} The granule's todo rows name $5 \times m$ byte ranges. Adjacent ranges separated
+by less than a gap are merged into one span, because a request costs a round trip and bytes in the gap cost only
+bandwidth; the gap is tuned by measurement to where the two balance (about 128\,KiB from outside the region, 1\,MiB
+inside). One request per granule carries every span; granules are fetched on a thread pool sized for latency, not
+cores, because a thread waiting on a GET uses no CPU.
+
+\paragraph{Decode.} Each raw chunk is inflated, unshuffled and reinterpreted as its dtype. The three operations
+release the interpreter lock and run at memory speed. The decoder is the same function the build used to read
+positions, so a byte-identity test on one side covers the other.
+
+\paragraph{Label.} This is where Chapter~\ref{ch:row} pays. For each wanted cell of the chunk the run is written
+into a slice of a label array; a cell absent from the runs or with an inexact run sends the whole chunk to the
+per-point assignment. ATL03 does the same with its edge columns and assigns only edge photons and outsiders.
+
+\paragraph{Keep.} One predicate, applied once to the chunk's arrays as boolean masks: the label is a wanted cell;
+the point lies inside the box (unless clipping to cells); the quality flag passes; and the cell is not one the lake
+already returned for this chunk, so a partially cached chunk never contributes a cell twice. The kept points are the
+answer; they are returned from memory and streamed to the caller granule by granule as each fetch lands.
+
+\paragraph{Hand off.} The chunk's full arrays, the label and the beam group go into a \code{ChunkWrite} value and
+onto the lake's queue. The executor does not write files, wait for them or know their names. One predicate, one
+label, one value crossing to the writer: the five copies of this loop that exist today differ only in the
+per-collection decode and quality functions, which are the slots of Chapter~\ref{ch:descriptor}.\landed{\code{index\_atl06.fetch\_bbox}
+with its inner \code{\_ingest\_granule} and \code{\_keep}; \code{access.coalesce}, \code{decode\_chunk}, \code{unshuffle},
+\code{map\_as\_completed}; the ATL03 path in \code{planner.\_process\_group}, \code{\_decode\_photons},
+\code{\_materialize}. Five copies of the loop remain (ATL06, GLAS, GEDI, ICESSN, GPS) plus the ATL03 variant.}
+
+\section{The lake as a memo}
+\label{ch:lake}
+
+The lake is a cache of decoded points, partitioned by cell, read before any fetch and written after. Losing it costs
+time, never truth: anything missing is re-fetched. Its design is dominated by one requirement, idempotence under
+concurrency, and one measurement, the cost of a file.
+
+\paragraph{Layout.} One Parquet file per (cell, granule, chunk, beam group), under a directory per cell:
+\begin{Verbatim}[fontsize=\footnotesize]
+lake/mission=ATL06/h3_cell=599686042/<granule stem>__strong__c12.parquet
+lake/mission=ATL06/h3_cell=599686042/<granule stem>__weak__c12.parquet
+lake/mission=GEDI/h3_cell=.../<stem>__full__c3.parquet        full / coverage power
+lake/mission=ICESSN/h3_cell=.../<stem>__na__c0.parquet        beamless collections
+\end{Verbatim}
+Every point goes to the file of its \emph{own} cell, so a later query for a different sub-box of the same cell
+re-filters correctly; a partial cell is impossible by construction. The cell directory is the unit of reads
+(a query opens only the directories it asked for) and of eviction. A DuckDB table beside the lake records which
+(granule, beam, chunk, cell) keys have landed; it is the \emph{have} of Chapter~\ref{ch:plan}.
+
+\paragraph{Why a beam group.} The file count is the cost. Six files per (cell, chunk), one per beam, were 6{,}897
+files for 2{,}960 chunks in one 8-cell ingest at 3 to 6\,ms each, and merging chunks of one beam was measured to be a
+no-op because a scene box spans about one chunk per beam. Merging \emph{beams} cuts the count, but merging all six
+is unsafe: the planner asks for the strong beams by default and for all six from the extraction API, so one name
+per (cell, chunk) would be overwritten by whichever beam set came last. The group is the unit the planner requests
+(\code{strong}, \code{weak}; \code{full}, \code{coverage}), so a group's file is always a full overwrite of a
+deterministic name with the same content, whichever request produced it (Figure~\ref{fig:idem}). Six files became
+two: 3{,}225 for the same ingest.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr, anchor=west] at (0,20) {1. strong-only query};
+  \node[val, minimum width=40mm, anchor=west] at (0,13) {strong: gt1l gt2l gt3l};
+  \node[val, minimum width=40mm, anchor=west, fill=panel] at (0,5) {weak: gt1r gt2r gt3r};
+  \node[note, anchor=west] at (0,-1) {writes \code{\_\_strong\_\_c12}};
+  \node[note, anchor=west] at (0,-5) {--};
+  \node[hdr, anchor=west] at (52,20) {2. all-beams query};
+  \node[val, minimum width=40mm, anchor=west] at (52,13) {strong: gt1l gt2l gt3l};
+  \node[val, minimum width=40mm, anchor=west, fill=panel] at (52,5) {weak: gt1r gt2r gt3r};
+  \node[note, anchor=west] at (52,-1) {rewrites \code{\_\_strong\_\_c12}, identical};
+  \node[note, anchor=west] at (52,-5) {writes \code{\_\_weak\_\_c12}};
+  \node[hdr, anchor=west] at (104,20) {3. forced re-fetch of all beams};
+  \node[val, minimum width=40mm, anchor=west] at (104,13) {strong: gt1l gt2l gt3l};
+  \node[val, minimum width=40mm, anchor=west, fill=panel] at (104,5) {weak: gt1r gt2r gt3r};
+  \node[note, anchor=west] at (104,-1) {rewrites both: same names};
+  \node[note, anchor=west] at (104,-5) {same bytes};
+  \draw[draw=idxblue, line width=0.9pt] (52,0.5) rectangle (94,9.5);
+  \node[note, text width=150mm, anchor=north west] at (0,-10) {Because the file is a full overwrite of a deterministic
+    name, the planner must fetch a group whole: if one beam of a group were re-fetched alone, its file would be
+    rewritten with that beam's points only while its siblings stayed marked as present. Chapter~\ref{ch:plan}'s
+    whole-group rule is this file's correctness condition.};
+\end{tikzpicture}}
+\caption{Idempotence across the two beam sets the planner can ask for. Each group's file has one name and one
+content; nothing merges, nothing locks, nothing lists a directory.}
+\label{fig:idem}
+\end{figure}
+
+\paragraph{One primitive.} Every lake file lands through one function: write to a temporary name in the same
+directory, then rename. The rename is atomic, so a concurrent reader never sees a partial file; it creates or
+replaces a directory entry, which is what the cell-statistics cache keys on; and it is the single place a test can
+block, slow or fail to exercise ordering.
+
+\paragraph{The writer.} Files are written by a small pool of threads fed by a bounded queue
+(Figure~\ref{fig:writer}). The executor's threads block when the queue is full, so the fetch rate is throttled to
+the write rate and memory stays bounded; this is why the writer is not made ``pure'' by handing writes back to the
+caller as values, which would lose the backpressure. Two ordering rules are the contract: a key is marked present
+only \emph{after} its file is on disk, so a crash loses cache and never truth; and a barrier exists that waits until
+every queued write over a set of cells is on disk and marked, which the planner calls before reading \emph{have},
+so a second query over the same area never reads a half-written lake. Marks are batched into one database
+transaction per flush because opening the key table costs 150\,ms.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[lane, minimum width=44mm, minimum height=8mm] (f1) at (22,30) {}; \node[lbl] at (22,30) {fetch thread: submit(ChunkWrites)};
+  \node[lane, minimum width=44mm, minimum height=8mm] (f2) at (22,19) {}; \node[lbl] at (22,19) {fetch thread: submit(ChunkWrites)};
+  \node[val, minimum height=22mm, minimum width=14mm] (q) at (58,24.5) {queue\\ \scriptsize bounded};
+  \draw[flow] (f1.east) -- (q.west |- f1.east); \draw[flow] (f2.east) -- (q.west |- f2.east);
+  \node[lbl, anchor=north] at (49,14.5) {blocks when full};
+  \node[lane, minimum width=48mm, minimum height=8mm] (w1) at (96,30) {}; \node[lbl] at (96,30) {writer thread: group by (chunk, group)};
+  \node[lane, minimum width=48mm, minimum height=8mm] (w2) at (96,19) {}; \node[lbl] at (96,19) {writer thread};
+  \draw[flow] (q.east |- w1.west) -- (w1.west); \draw[flow] (q.east |- w2.west) -- (w2.west);
+  \node[eff] (file) at (134,30) {write\_cell\_file\\ \scriptsize tmp + rename};
+  \draw[flow] (w1.east) -- (file);
+  \node[store] (meta) at (134,12) {key table};
+  \draw[flow] (file) -- node[lblw, right] {then mark, batched} (meta);
+  \node[pure] (drain) at (66,4) {drain(cells)};
+  \draw[flowsoft, dashed] (meta.west) -- node[lblw, below, pos=0.3] {settled} (drain.east);
+  \node[note, text width=44mm, anchor=north west] at (0,10) {The planner calls \emph{drain} over its wanted cells
+    before reading the key table, so \emph{have} and the files on disk agree even while an earlier query is still
+    landing files.};
+\end{tikzpicture}}
+\caption{The writer. A bounded queue gives backpressure; marking after landing gives crash safety; the drain barrier
+gives read-after-write consistency to the next plan.}
+\label{fig:writer}
+\end{figure}
+
+\paragraph{Failure unit.} A group's chunk may touch several cells, and one cell's file may fail. The write returns,
+per cell, whether its file landed; the writer marks every beam of the group present in the cells that landed and in
+none of the cells that failed, so the chunk is re-fetched there rather than believed. Cells with no valid points are
+marked too, or an all-fill cell would be re-fetched forever.
+
+\paragraph{Eviction.} The lake has a byte budget per mission and globally. Eviction is by cell directory, least
+recently used, protecting the cells of the query in flight, and runs off the request thread. The cell statistics it
+needs are cached per directory and invalidated by the directory's modification time, which the rename
+updates.\landed{\code{lake.write\_cell\_file}, \code{write\_chunk\_group} (returns \code{\{cell: landed\}}),
+\code{ChunkWrite.group}, \code{\_Writer} with \code{submit}/\code{drain}/\code{\_flush}, \code{mark\_ingested\_many},
+\code{ingested\_chunk\_cells}; \code{meta.duckdb} beside the index. ATL03 photons still write inline from their
+worker processes via \code{write\_photons}.}
+
+\section{The query at runtime}
+\label{ch:queryruntime}
+
+Four kinds of thread and one kind of process take part in a query (Figure~\ref{fig:lanes}). The request thread
+plans, reads the lake, and streams results to the caller as they arrive. A pool of fetch threads runs the executor
+of Chapter~\ref{ch:execute}, one granule per task; it is sized for latency (up to 16) because its threads wait.
+The writer threads land files. For ATL03 only, decoding and the co-registration of 100{,}000 photons per chunk is
+CPU work heavy enough to be sent to spawned worker processes, one per (granule, beam) group, which fetch, decode,
+assign and write their own files and return the key set for the parent to mark.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \draw[draw=soft, line width=0.4pt] (30,46) -- (160,46);
+  \foreach \t in {0,4,...,16} {\draw[draw=soft, line width=0.4pt] ({30+\t*7.5},45) -- ({30+\t*7.5},47); \node[lbl, anchor=south] at ({30+\t*7.5},47.5) {\t\,s};}
+  \node[lbl, anchor=east] at (28,40) {request thread};
+  \fill[ink!80] (30,38) rectangle (36,42); \node[lbl, anchor=west, text=white] at (30,40) {};
+  \fill[soft!50] (36,38) rectangle (41,42);
+  \fill[ink!80] (41,38) rectangle (43,42);
+  \draw[draw=soft, line width=0.4pt] (43,40) -- (152,40);
+  \fill[ink!80] (152,38) rectangle (155,42);
+  \node[lbl, anchor=west] at (30,35.5) {plan 0.7\,s \quad lake read \quad stream on\_granule as fetches land \quad concat};
+  \foreach \i in {0,...,3} {
+    \node[lbl, anchor=east] at (28,{30-4.5*\i}) {fetch thread \i};
+    \fill[soft!40] ({43+\i*2},{28-4.5*\i}) rectangle ({60+\i*5},{32-4.5*\i});
+    \fill[ink!80] ({60+\i*5},{28-4.5*\i}) rectangle ({74+\i*5},{32-4.5*\i});
+    \fill[soft!40] ({74+\i*5},{28-4.5*\i}) rectangle ({92+\i*3},{32-4.5*\i});
+    \fill[ink!80] ({92+\i*3},{28-4.5*\i}) rectangle ({108+\i*4},{32-4.5*\i});
+  }
+  \node[lbl, anchor=west] at (122,31) {grey: waiting on GETs};
+  \node[lbl, anchor=west] at (122,27) {black: decode, label, keep};
+  \node[lbl, anchor=west] at (122,23) {fetch wall $\approx$ 3\,s};
+  \foreach \i in {0,1} {
+    \node[lbl, anchor=east] at (28,{10-4.5*\i}) {writer thread \i};
+    \foreach \x in {50,56,...,140} {\fill[idxblue!55] ({\x+\i*3},{8-4.5*\i}) rectangle ({\x+4+\i*3},{12-4.5*\i});}
+  }
+  \node[lbl, anchor=west] at (30,-1) {writer: 3\,225 files, 25 thread-s, trailing the fetch by a few seconds};
+  \node[note, text width=128mm, anchor=north west] at (30,-5) {8-cell ATL06 ingest, 2\,948 chunks, after batch 2:
+    wall 16.6\,s, CPU 32\,s. CPU-s / wall-s is 2.45 on a machine with two physical cores, so the interpreter lock is
+    not the ceiling; the cores are. The same ingest was 25.4\,s before the fetch client change and 20.1\,s before the
+    write-path work.};
+\end{tikzpicture}}
+\caption{One query's threads over time. Fetch threads alternate between waiting and decoding; the writer trails;
+the request thread streams each granule's points as its fetch lands rather than after the slowest.}
+\label{fig:lanes}
+\end{figure}
+
+\paragraph{Where the time goes, and what it rules out.} Fetch wall is about 3\,s for a scene: the archive client
+sustains 670 to 840\,MB/s in-region and the request count is set by coalescing. The rest is CPU: decode, the
+remaining per-point masks, Arrow writes. The ratio of CPU-seconds to wall-seconds is 2.45 on two physical cores,
+which answers the question that always comes next. A process pool for decode and write would only help if the
+interpreter lock were serialising the threads, which would show as a ratio near 1.0 with wall well above fetch; at
+2.45 the threads already overlap and the machine is simply out of cores. The ATL03 process pool is justified by its
+heavier per-chunk CPU, and it is spawned, not forked, because it runs inside a web server that holds a live archive
+client, an event loop and the writer's threads, none of which survive a fork intact.
+
+\paragraph{What was measured not to help.} Pre-caching the cells adjacent to the request (writing the whole decoded
+strip rather than the wanted cells) was tested twice. It made the first query 1.9 to 2.1 times slower and the
+neighbouring query slower too, because a chunk is re-fetched if \emph{any} wanted cell is missing and the strip only
+brushes the neighbour. Raising the archive client's connection pool did nothing: the throughput cap is the machine's.
+Both results are recorded where the knobs live so the hypotheses are not re-tested by
+accident.\landed{\code{access.map\_as\_completed} (completion-order streaming), \code{FETCH\_WORKER\_CAP = 16},
+\code{lake.\_Writer}, \code{planner.\_ensure} with a spawn \code{ProcessPoolExecutor}; the measurements in the
+\code{precache\_adjacent} and \code{open\_granule} docstrings and in \code{scripts/bench\_ingest\_phases.py}.}
+
+%=====================================================================================================================
+\clearpage
+\part{The framework}
+%=====================================================================================================================
+
+\section{The collection descriptor}
+\label{ch:descriptor}
+
+Parts III and IV described one build and one query. Today there are six of each, and they differ in exactly the
+ways Table~\ref{tab:collections} listed: how a file's structure maps to element intervals, where positions come
+from, how a chunk is decoded into points, what quality means, which group a beam belongs to. Everything else (the
+driver, the pool, the resume set, the claim, the plan, the executor's loop, the keep predicate, the writer) is the
+same sequence written several times with those differences inlined. The framework is the step of making the
+differences a \emph{value}, the \code{Collection} descriptor, and the sequence a single implementation that reads
+the value where it needs to (Figure~\ref{fig:plugboard}).
+
+\begin{lstlisting}
+@dataclass(frozen=True, slots=True)
+class Dataset:
+    key: str            # index-row and points column name
+    path: str           # HDF5 path relative to the group, or a CSV field index
+    role: str = ""      # "lat" | "lon" | "h" | "t" | "quality" | ""
+
+@dataclass(frozen=True, slots=True)
+class HDF5Chunked:      # ATL03, ATL06, GLAS: one chunk map per group
+    groups: tuple[str, ...]          # beams; ("",) for GLAS
+    reference: str                   # the dataset whose chunking is the group's
+    positions: Callable              # (group, datasets, fetch) -> Positions
+    group_scalars: Callable | None   # (file) -> {"sc_orient", "sdp_epoch"}
+
+@dataclass(frozen=True, slots=True)
+class HDF5Spans:        # GEDI: rows are spans at the union of boundaries
+    groups: tuple[str, ...]; positions: Callable; quality_field: Callable
+
+@dataclass(frozen=True, slots=True)
+class TextLines:        # ICESSN, GPS: rows are line byte spans per cell
+    scan: Callable      # (bytes) -> LineScan(lat, lon, start, end)
+    header_in_rows: bool
+
+@dataclass(frozen=True, slots=True)
+class Collection:
+    key: str; mission: str; short_name: str; version: str
+    res: int; schema: str
+    window: tuple[str, str] | None
+    layout: HDF5Chunked | HDF5Spans | TextLines
+    datasets: tuple[Dataset, ...]
+    parse_name: Callable[[str], dict]           # orbit numbers and dates from the name
+    date_of: Callable[[str, dict], str]         # "YYYYMMDD" for window and manifest
+    decode: Callable                            # (raws, row) -> Points, pre-mask
+    quality: Callable | None                    # (Points) -> bool mask
+    groups_of: Callable[[dict], Mapping[str, str]]   # beam -> "strong" | "weak" ...
+    row_extras: tuple[str, ...] = ()            # extra index columns (GPS geometry)
+    point_extras: tuple[str, ...] = ()          # extra lake columns ("quality", ...)
+    job_params: Callable | None = None          # (record, io) -> (params, sha); GPS
+\end{lstlisting}
+
+Every function-valued field is a module-level function, so the descriptor pickles across a spawn boundary as a
+name and a worker looks it up in a registry. Presentation (labels, colours, default selection) is not in the
+descriptor; it is an application table keyed by \code{Collection.key}, because the framework never draws anything.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,74) {the one pipeline};
+  \foreach \n/\y/\t in {plan/68/plan, search/61/search, structure/54/structure $\to$ element intervals, rows/47/rows from positions, scan/40/scan rows, exec/33/decode, keep/26/keep, write/19/ChunkWrite $\to$ lake} {
+    \node[pure, anchor=west, minimum width=44mm] (\n) at (0,\y) {\t};
+  }
+  \draw[draw=soft, line width=0.4pt] (-2,44) -- (46,44); \node[note, anchor=east] at (-3,46) {build};
+  \node[note, anchor=east] at (-3,42) {query};
+  \node[hdr] at (84,74) {the descriptor's slots};
+  \foreach \n/\y/\t in {sn/68/\code{short\_name}\, \code{version}\, \code{window}, res/61/\code{res}\, \code{schema}, lay/54/\code{layout}: chunked / spans / lines, pos/47/\code{layout.positions} or \code{scan}, ds/40/\code{datasets} (paths and roles), dec/33/\code{decode}, q/26/\code{quality}\, \code{groups\_of}, ex/19/\code{point\_extras}\, \code{row\_extras}} {
+    \node[val, anchor=west, minimum width=52mm] (\n) at (84,\y) {\t};
+  }
+  \draw[flowsoft] (plan.east) -- (res.west);
+  \draw[flowsoft] (search.east) -- (sn.west);
+  \draw[flowsoft] (structure.east) -- (lay.west);
+  \draw[flowsoft] (structure.east) -- (ds.west);
+  \draw[flowsoft] (rows.east) -- (pos.west);
+  \draw[flowsoft] (rows.east) -- (res.west);
+  \draw[flowsoft] (scan.east) -- (ds.west);
+  \draw[flowsoft] (scan.east) -- (q.west);
+  \draw[flowsoft] (exec.east) -- (dec.west);
+  \draw[flowsoft] (keep.east) -- (q.west);
+  \draw[flowsoft] (write.east) -- (ex.west);
+  \draw[flowsoft] (write.east) -- (q.west);
+  \node[note, text width=150mm, anchor=north west] at (0,13) {An edge means ``this stage reads this slot''. The
+    stages on the left exist once. Adding a collection adds a column of values on the right and, at most, two small
+    functions (\code{positions} or \code{scan}, and \code{decode}). No driver, no ingest loop, no resume set.};
+\end{tikzpicture}}
+\caption{The plug board: which stage of the one pipeline consults which slot of a collection's descriptor. This is
+the structural meaning of ``pluggable''.}
+\label{fig:plugboard}
+\end{figure}
+
+\paragraph{Two descriptors, written out.} ATL06, the reference HDF5 collection:
+
+\begin{lstlisting}
+ATL06 = Collection(
+    key="ATL06", mission="ATL06", short_name="ATL06", version="007", res=5, schema="atl06-3",
+    window=("2018-10-01", "2027-01-01"),
+    layout=HDF5Chunked(groups=("gt1l","gt1r","gt2l","gt2r","gt3l","gt3r"), reference="latitude",
+        positions=slots.positions_identity,      # lat/lon per element
+        group_scalars=slots.icesat2_scalars),    # sc_orient, sdp epoch
+    datasets=(Dataset("latitude", "land_ice_segments/latitude", "lat"),
+              Dataset("longitude", "land_ice_segments/longitude", "lon"),
+              Dataset("h_li", "land_ice_segments/h_li", "h"),
+              Dataset("delta_time", "land_ice_segments/delta_time", "t"),
+              Dataset("atl06_quality_summary", "land_ice_segments/atl06_quality_summary",
+                      "quality")),
+    parse_name=slots.parse_icesat2_name, date_of=slots.date_from_name,
+    decode=slots.decode_shared_chunk, quality=slots.quality_equals_zero,
+    groups_of=slots.icesat2_strong_weak, point_extras=("quality",),
+)
+\end{lstlisting}
+
+ICESSN, a text collection:
+
+\begin{lstlisting}
+ICESSN = Collection(
+    key="ICESSN", mission="ICESSN", short_name="ILATM2", version="2", res=5, schema="icessn-4",
+    window=None, layout=TextLines(scan=icessn.scan_lines, header_in_rows=False),
+    datasets=(), parse_name=icessn.parse_name, date_of=slots.date_from_name,
+    row_extras=("itrf_year",), decode=icessn.parse_span_points, quality=None,
+    groups_of=slots.no_groups,
+    point_extras=("sn_slope", "we_slope", "itrf_year"),
+)
+\end{lstlisting}
+
+GPS differs from ICESSN in four fields: \code{header\_in\_rows=True}, five row extras carrying the sled geometry,
+a \code{job\_params} that reads the traverse-metadata granule once in the parent and hashes it, and its own
+\code{decode}. The same pattern that stamps a parameter hash into a job key (Chapter~\ref{ch:buildvalues}) is what
+makes a metadata change invalidate the right files.
+
+\paragraph{Where today's code goes.} The per-collection functions that exist today become the slots; nothing is
+rewritten, only moved and given a signature (Table~\ref{tab:slots}).\landed{\code{build.BuildCollection} is the
+build half of this descriptor (key, short name, version, resolution, index directory, resume set, timeout,
+workers, prepare); \code{coverage.collections()} holds the presentation half. The query half and the layout kinds
+are proposed.}
+
+\begin{table}[h]
+\footnotesize
+\begin{tabular}{@{}lp{70mm}@{}}
+\toprule
+slot & existing code \\
+\midrule
+\code{positions} (ATL03) & the segment-to-photon mapping in the ATL03 builder \\
+\code{positions\_identity} & ATL06 and GLAS position reads via \code{read\_via\_chunks} \\
+\code{HDF5Spans} cutting & \code{index\_gedi.chunk\_spans}, \code{chunk\_of}, \code{span\_offset} (already pure) \\
+\code{TextLines.scan} & \code{index\_icessn.\_parse\_fields} and its loop; the GPS equivalents \\
+\code{decode} & \code{index\_atl06.\_decode\_chunk}, \code{index\_glas.\_decode\_chunk}, \code{index\_gedi.\_decode\_span}, \code{planner.\_decode\_photons}, the two CSV parsers \\
+\code{quality} & the \code{quality==0} masks, \code{index\_gedi.quality\_field}, GLAS's saturation cap \\
+\code{groups\_of} & \code{index.strong\_beams} and GEDI's power flag \\
+\code{job\_params} & \code{build.\_gps\_prepare}, \code{resolve\_geometry} \\
+row emission & the per-(chunk, cell) loops in every builder, written once \\
+\bottomrule
+\end{tabular}
+\caption{Existing functions that become descriptor slots.}
+\label{tab:slots}
+\end{table}
+
+\section{Configuration as a value}
+\label{ch:config}
+
+The pipeline has about two dozen tunables: fetch mechanism, coalescing gap, thread and worker counts, lake
+writers, byte budgets, data directory, token location. Today they are read from the environment at about thirty
+sites, some at import time, which means a test, a bench and a worker process each discover the configuration by
+accident. The design makes configuration a frozen value built once at each \emph{door} of the process and passed
+down (Figure~\ref{fig:doors}).
+
+\begin{lstlisting}
+@dataclass(frozen=True, slots=True)
+class Config:
+    data_dir: Path
+    in_region: bool; s3_mechanism: str; coalesce_gap: int; crt_gbps: int
+    fetch_workers: int; fetch_threads: int
+    index_workers: int; job_timeout_s: int; start_method: str = "spawn"
+    whole_object_max_bytes: int = 256 << 20
+    lake_writers: int; lake_async: bool; lake_max_bytes: int
+    precache_adjacent: bool
+    token: str | None; edl_file: Path
+    per_collection: Mapping[str, Overrides]   # e.g. GEDI job_timeout_s=600
+    now: Callable[[], datetime] = utcnow                  # an injected clock
+
+Config.from_sources(env, cli, file) -> Config   # cli > env > file > defaults
+\end{lstlisting}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,40) {today: the environment is read wherever it is needed};
+  \foreach \x/\t in {0/access, 18/auth, 36/lake, 54/index\_atl06, 72/cache, 90/server} {
+    \node[pure, anchor=west, font=\scriptsize] at (\x,32) {\t};
+    \draw[flowsoft, dashed] ({\x+7},29.5) -- ({\x+7},22);
+  }
+  \node[eff, minimum width=108mm, anchor=west] at (0,18) {\code{os.environ}, read at import or call time, $\sim$30 sites};
+  \node[hdr] at (0,8) {the design: one value, built at the door, passed down};
+  \foreach \x/\t in {0/script \code{main()}, 30/\code{server.main}, 60/\code{tui.main}, 90/pool initializer, 120/pytest fixture} {
+    \node[eff, anchor=west, font=\scriptsize] (d\x) at (\x,0) {\t};
+    \draw[flow] ({\x+10},-2.5) -- ({\x+10},-9);
+  }
+  \node[val, minimum width=150mm, anchor=west] at (0,-12) {\code{Config} (frozen): every stage takes \code{cfg}; functions below the door never read the environment};
+  \node[note, text width=150mm, anchor=north west] at (0,-18) {Names, not functions, cross a spawn boundary:
+    \code{s3\_mechanism="crt"} is resolved through a registry in the worker. In-process callers (tests, benches)
+    inject functions directly as arguments: \code{execute(plan, coll, cfg, fetcher=FakeFetcher(blobs))}.};
+\end{tikzpicture}}
+\caption{Configuration moves from scattered environment reads to one value built at each process door. A
+transitional process-wide accessor lets old modules read it until they take \code{cfg} explicitly.}
+\label{fig:doors}
+\end{figure}
+
+The environment variable names stay as they are, so deployment files are unchanged; what changes is that below
+the door nothing reads them. Customisation is by argument, not by subclass or monkeypatch: a different lake layout
+is a different \code{Layout} value passed to the lake; a different coalescing policy is a different function passed
+to the fetcher; a test's fake archive is a \code{fetcher} argument to the executor. The one transitional concession
+is a process-wide accessor returning the config set at the door, which old modules call until they are converted,
+and which an AST test forbids in the new packages.
+
+\section{The grid as a parameter}
+\label{ch:grid}
+
+Chapter~\ref{ch:cells} introduced cells through H3 and promised to say what the design needs from a grid. The
+honest list is short, and the performance contract decides what may be abstracted at all.
+
+\begin{lstlisting}
+@dataclass(frozen=True, slots=True)
+class Grid:                       # one value per implementation
+    name: str                     # "h3" | "s2" | "rhealpix"
+    resolutions: range
+    convex_cells: bool            # may the exact-run shortcut be trusted?
+    cell_area_km2: Callable[[int], float]
+    cells_vectorized: Callable[[Arr, Arr, int], Arr]       # lat, lon -> ids: THE hot kernel
+    cells_for_area: Callable[[Ring, int], Sequence[int]]   # polyfill, overlap semantics
+    parent: Callable[[int, int], int]
+    children: Callable[[int, int], Sequence[int]]
+    compact: Callable[[Sequence[int]], Sequence[int]]      # the claim's representation
+    boundary: Callable[[int], Sequence[tuple[float, float]]]
+    neighbors: Callable[[int, int], Sequence[int]]
+    to_text: Callable[[int], str]; from_text: Callable[[str], int]
+\end{lstlisting}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[proc, minimum width=112mm, minimum height=56mm, anchor=north west, fill=panel!50] (f) at (0,56) {};
+  \node[hdr, anchor=north west] at (2,54) {per file and per row: 64-bit integer ids, always};
+  \node[note, anchor=north west, text width=104mm] at (2,49.5) {DuckDB pushdown, Parquet statistics and partition
+    names need a sortable scalar; a grid with string ids packs them in its own module.};
+  \node[proc, minimum width=100mm, minimum height=34mm, anchor=north west, fill=white] (c) at (6,40) {};
+  \node[hdr, anchor=north west] at (8,38) {per cell: plain Python is fine};
+  \node[note, anchor=north west, text width=92mm] at (8,33.5) {polyfill, compact, parent, children, boundary,
+    neighbours: hundreds of calls per query or build, never per point.};
+  \node[proc, minimum width=88mm, minimum height=16mm, anchor=north west, fill=idxblue!8, draw=idxblue] (p) at (12,24) {};
+  \node[hdr, anchor=north west, text=idxblue!85!black] at (14,22) {per point: a native vectorised kernel, or not at all};
+  \node[note, anchor=north west, text width=80mm] at (14,17.5) {59\,M assignments in one query; a pure-Python binding is
+    100--1000$\times$ slower, and the grid is unusable rather than merely slower.};
+\end{tikzpicture}
+\caption{The three cost tiers of grid operations. Only the innermost is performance-critical, and it is the one
+operation a grid implementation must provide natively; a descriptor validates it against a time budget on
+$10^5$ points at import.}
+\label{fig:tiers}
+\end{figure}
+
+Three rules follow (Figure~\ref{fig:tiers}). The per-point kernel must be native; a grid without one is rejected,
+not tolerated. Per-cell operations run hundreds of times per query and may be plain Python. Storage ids are
+64-bit integers whatever the grid's native form, because the index scan, the lake partitions and the manifest all
+rely on a sortable scalar; a grid whose ids are strings (rHEALPix's \code{"N2345"}) packs them into 64 bits in its
+module and exposes the text form for pages and the API.
+
+The exact-run shortcut of Chapter~\ref{ch:row} rests on one geometric fact, that a straight track meets a cell in
+one contiguous stretch, which holds for convex cells. H3 hexagons, S2 cells and rHEALPix cells are convex; a
+grid that is not sets \code{convex\_cells} false, which disables the fast path and keeps the per-point fallback.
+
+The grid is part of the store's identity: an index and a lake built under one grid are never read under another,
+so the grid's name is recorded beside them and carried in job keys and plans. Column and partition names drop the
+grid's name (\code{h3\_cell} becomes \code{cell}), a one-time rename that rides with a schema bump. The addressing
+resolution becomes per grid in the descriptor, chosen by the same rule as today, a cell about the footprint of a
+chunk: H3 5, S2 9, rHEALPix 4 for ATL06.\side{Adding S2 is a module plus the C++ bindings' vectorised kernel.
+rHEALPix has no vectorised kernel in the ecosystem; it is the case that would justify a small Rust extension, which
+this structure makes a 200-line package rather than a change to the framework.}
+
+\section{Replay}
+\label{ch:replay}
+
+Three values make the system replayable, and each pays for itself in a different place.
+
+\begin{figure}[h]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[eff] (live) at (0,0) {live: catalogue, archive};
+  \node[val] (rec) at (46,0) {recorded value};
+  \node[pure] (rep) at (92,0) {replayed, offline};
+  \draw[flow] (live) -- node[lblw, above] {once} (rec);
+  \draw[flow] (rec) -- node[lblw, above] {as often as needed} (rep);
+  \node[note, text width=100mm, anchor=north west] at (0,-6) {\code{SearchRecord}: the job list recomputed without
+    the catalogue. \code{QueryPlan}: an ingest re-executed without planning. Recorded bytes: decode and planner
+    tests on real chunks without the archive.};
+\end{tikzpicture}}
+\caption{Record once, replay without the effect.}
+\label{fig:replay}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{Build.} A stored \code{SearchRecord} plus the current descriptor and the store's keys recomputes the
+  job list exactly. A failed build is re-run from its record; a staleness policy on the record's timestamp decides
+  when to search again. The build map that an explainer page reconstructs by hand becomes \code{render(record)}.
+\item \textbf{Query.} A \code{QueryPlan} serialises to a directory (the query as JSON, the rows as Arrow) and
+  \code{execute(load(plan))} replays it. The ingest benchmark becomes ``record once, execute $N$ times with a
+  different writer count'', which is the honest form of the measurement Chapter~\ref{ch:queryruntime} relied on.
+\item \textbf{Bytes.} A recording fetcher wraps any fetcher and writes each (url, offset, size) request's bytes to
+  a fixture directory. One small granule per collection, recorded once in-region, lets decode and planner tests run
+  on real bytes instead of synthetic blobs.
+\end{itemize}
+
+\section{Packages and the structural view}
+\label{ch:packages}
+
+The code today is one package of 13{,}000 lines whose index, lake, planner, coverage and collection modules form a
+single strongly connected import component of thirteen modules. The design splits it along the two seams the
+application crosses without the framework (grid geometry and the point cache) and keeps the rest as layers inside
+one framework package, separated by import contracts rather than by packaging (Figure~\ref{fig:dag}).
+
+\begin{table}[h]
+\footnotesize
+\wide{\begin{tabular}{@{}llp{52mm}p{40mm}@{}}
+\toprule
+package & lines & responsibility & who else would use it \\
+\midrule
+\code{dggs} & $\sim$400 & grid geometry over areas and cell sets; \code{Grid} values for H3 (and later S2) & anyone indexing by a global grid \\
+\code{edcloud} & $\sim$900 & Earthdata mechanisms: login, catalogue search to \code{SearchRecord}, range and whole-object GETs, HDF5 chunk maps, decode & any project reading archive granules by byte range \\
+\code{pointlake} & $\sim$900 & cell-partitioned Parquet memo, key table, writer, eviction & any cell-keyed point cache \\
+\code{cellindex} & $\sim$2\,500 & the framework: descriptor, values, build and query pipelines, store, claim, manifest & another altimetry or lidar project with its own descriptor \\
+\code{aicesat} & the rest & scenes, analysis, API, server, TUI, browser, deploy & not reused \\
+\bottomrule
+\end{tabular}}
+\caption{The packages. One repository, one uv workspace; separate repositories only when an external consumer
+needs a different release cadence.}
+\label{tab:packages}
+\end{table}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,40) {today: one component};
+  \node[proc, minimum width=50mm, minimum height=30mm, anchor=north west] (scc) at (0,36) {};
+  \foreach \n/\x/\y/\t in {index/8/30/index, ixs/26/30/index\_*, lake/42/30/lake, planner/8/20/planner, coverage/26/20/coverage, scene/42/20/scene, coreg/8/10/coreg, gpstruth/26/10/gpstruth, icessn/42/10/icessn} {
+    \node[val, font=\scriptsize] (\n) at (\x,\y) {\t};
+  }
+  \foreach \a/\b in {index/lake, lake/index, index/planner, planner/coverage, coverage/index, ixs/coverage, coverage/ixs, scene/planner, planner/scene, coreg/scene, gpstruth/index, icessn/index} {
+    \draw[flowsoft] (\a) -- (\b);
+  }
+  \node[note, text width=50mm, anchor=north west] at (0,3) {thirteen modules import each other in cycles; a hex
+    outline for the browser drags in the catalogue client};
+  \node[hdr] at (70,40) {the design: a DAG with contracts};
+  \node[val, minimum width=22mm] (app) at (110,32) {\code{aicesat} (app)};
+  \node[val, minimum width=22mm] (ci) at (110,18) {\code{cellindex}};
+  \node[val, minimum width=22mm] (pl) at (82,6) {\code{pointlake}};
+  \node[val, minimum width=22mm] (ed) at (138,6) {\code{edcloud}};
+  \node[val, minimum width=22mm] (dg) at (82,-8) {\code{dggs}};
+  \draw[flow] (app) -- (ci); \draw[flow] (app.west) -| (pl.north); \draw[flow] (app.west) -| ([xshift=-4mm]dg.north);
+  \draw[flow] (ci) -- (pl); \draw[flow] (ci) -- (ed); \draw[flow] (pl) -- (dg); \draw[flow] (ci.south) |- (dg.east);
+  \node[note, text width=60mm, anchor=north west] at (70,-14) {arrows are the only permitted imports. Inside
+    \code{cellindex}: values $<$ collection $<$ build, query (pure) $<$ run, execute, store; the pure layers may not
+    import the catalogue, the mechanisms, h5py or DuckDB.};
+\end{tikzpicture}}
+\caption{Before and after. The cycles of today's single component become a four-package DAG under the
+application, with layer contracts inside the framework package.}
+\label{fig:dag}
+\end{figure}
+
+The mapping from today's modules is direct: \code{access} becomes \code{edcloud} (with the pure parts, coalescing
+and decode, separated from the mechanisms); \code{lake} becomes \code{pointlake}; \code{planner}'s geometry
+becomes \code{dggs}; \code{index}, \code{index\_*}, \code{build}, \code{pool}, the rest of \code{planner} and the
+non-presentation half of \code{coverage} become \code{cellindex}; the analysis modules (co-registration, time
+series, lake levels, DEM and imagery readers) stay in the application, already pure at the function level, until a
+second consumer appears.
+
+\section{Purity in Python, and what not to do}
+\label{ch:discipline}
+
+Python enforces none of the above. The design is kept honest by tools that run in the one check target, since
+there is no continuous integration today:
+
+\begin{enumerate}
+\item \textbf{Import contracts} (import-linter): the layer order inside \code{cellindex} and the forbidden
+  imports listed under Figure~\ref{fig:dag}; the application may not import the build runner from request
+  handlers.
+\item \textbf{An AST purity test} over the pure module list, failing on environment reads, file opens, clocks,
+  randomness, caches, threading and any module-level mutable assignment. The test that today forbids the query
+  path from reaching the catalogue is this test's ancestor and is already parsed, not grepped.
+\item \textbf{Types}: strict checking on the value modules and the grid package from day one, ratcheted elsewhere.
+\item \textbf{Lint rules} that catch the usual leaks: naive clocks, prints in libraries, mutable defaults.
+\item \textbf{Frozen, slotted values} with validation in \code{\_\_post\_init\_\_} rather than defensive code
+  downstream.
+\item \textbf{Coverage floors} per package, and the golden suite (nine numbers against a cloned data directory) as
+  the behavioural floor for the application at every migration step.
+\end{enumerate}
+
+And the list of things the design deliberately does not do, each of which was considered:
+
+\begin{itemize}
+\item No effect system. Values are used in the four places replay or parallelism pays (\code{SearchRecord},
+  \code{Job}, \code{QueryPlan}, \code{ChunkWrite}); everywhere else a function that takes \code{cfg} and
+  \code{io} arguments is the whole pattern.
+\item No class hierarchy and no plugin entry points for collections. A frozen dataclass with function-valued
+  fields, one module per collection, pickles across spawn and is all that is needed.
+\item No storage interfaces over DuckDB, Parquet or the grid kernel. They \emph{are} the performance; the
+  pluggable points are the fetch mechanism, the layout value, the cell kernel and the coalescing policy, each a
+  plain argument.
+\item No repository split, package index or independent versioning before a second consumer exists.
+\item No ``pure'' writer. The queue's backpressure is what bounds memory.
+\item No refactoring of the leaf kernels (decode, coalesce, span cutting, the parsers). They are the parts that
+  are already right.
+\item No trust in purity by convention. Hence the list above.
+\end{itemize}
+
+\appendix
+\clearpage
+\part*{Appendices}
+\addcontentsline{toc}{part}{Appendices}
+
+\section{Migration path}
+\label{app:migration}
+
+Each step lands on the main branch, passes the full suite and the golden suite, and deploys. Steps are ordered so
+that each removes a hazard on its own.
+
+\begin{center}
+\footnotesize
+\wide{\begin{tabular}{@{}lp{52mm}p{38mm}cp{34mm}@{}}
+\toprule
+step & what & retires & effort & status \\
+\midrule
+A & \code{Config} at the doors; \code{from\_sources}; \code{cfg} threaded through the fetcher, lake and planner; transitional accessor & environment reads below the doors & 2\,d & \\
+B & \code{GranuleRef} and \code{Job}; one \code{run\_build}; spawn pool with deadline and retry; resolution guard in every builder & five drivers, five fork pools, per-task pickling of the cell set & 3\,d & partly landed 2026-10-17; \code{SearchRecord} and the pool initializer remain \\
+C & \code{SearchRecord} stored; the claim as a fold writing today's file shape & claim mutation, claim invalidation, the catalogue pickle & 2\,d & \\
+D & content-addressed index store; manifest rows carry keys; glob fallbacks deleted; explicit conservative GC; one-shot rename on the box & six resume sets, footer provenance reads, the sidecars (the sha is in the key) & 4\,d & highest risk: 120k files renamed; rehearse on the clone \\
+E & \code{Collection} descriptor and one \code{build\_job} with three layouts; \code{Grid} enters here & six builder bodies, per-collection version constants & 3\,d & \\
+F & \code{QueryPlan}, one \code{execute}, one \code{keep}; the lake takes a cell column & five fetch loops, five keep predicates, the ATL03 variant & 5\,d & seeds landed: one cell pass, group files, runs \\
+G & extract packages; uv workspace; import contracts; delete the accessor & module singletons as cross-package state & 3\,d & \\
+H & application split: scenes, analysis, admin; presentation registry; TUI over the public API & duplicated mission tables & 4\,d & \\
+\bottomrule
+\end{tabular}}
+\captionof{table}{About 26 days of focused work; D and F carry the least trustworthy estimates.}
+\label{tab:migration}
+\end{center}
+
+\section{Test strategy}
+\label{app:tests}
+
+\begin{center}
+\footnotesize
+\wide{\begin{tabular}{@{}lp{44mm}p{44mm}p{36mm}c@{}}
+\toprule
+package & pure-core tests & interpreter tests & property tests & floor \\
+\midrule
+\code{dggs} & literal geometry; claim compaction & none & compact and membership preserve every cell; polyfill covers centre-contained cells; the kernel agrees with the scalar API and meets the time budget & 100\,\% \\
+\code{edcloud} & coalesce, decode, span cutting on literals and recorded blobs & mechanisms behind a fake archive; catalogue with fixtures; token parsing & coalesce covers every input and respects the gap; decode$\circ$encode identity with shuffle and gzip & 95 / 80\,\% \\
+\code{pointlake} & cell tables with a cell column; dtype preservation & writer ordering, eviction, stats, query scoping under a temporary config & write then query returns the same multiset & 90\,\% \\
+\code{cellindex} & jobs from literal records; rows from positions; plan on Arrow literals (todo$\,\cap\,$have $= \emptyset$, every wanted cell is in lake or todo); keep; claim fold & \code{build\_job} with a fake io (in-memory HDF5 plus recorded blobs); \code{run\_build} with an inline pool; \code{execute} with a fake fetcher, byte-identical to the direct fetch for all six collections & job key stable under field order; plan idempotent & 95 / 85\,\% \\
+\code{aicesat} & science modules as they are & API, server, stream, TUI as they are; golden suite unchanged at every step & & 85\,\% \\
+\bottomrule
+\end{tabular}}
+\captionof{table}{Per-package test shape and coverage floors. Of today's $\sim$10\,500 test lines, about 1\,900 move with
+their modules, about 1\,200 retire with what they tested, and the rest stay in the application.}
+\label{tab:tests}
+\end{center}
+
+\section{Measurements the design leans on}
+\label{app:numbers}
+
+\begin{center}
+\footnotesize
+\wide{\begin{tabular}{@{}p{66mm}rrp{44mm}@{}}
+\toprule
+measurement & before & after & instrument \\
+\midrule
+ATL06 build, 100 granules, 8 workers & 44.7\,s & 21.3\,s & \code{bench\_build\_io.py} \\
+ATL06 build, workers 4 / 8 / 16 / 32 (before whole object) & \multicolumn{2}{c}{81 / 42 / 26 / 26\,s} & \code{bench\_build\_io.py} \\
+ATL06 per granule, serial reads through the block cache & \multicolumn{2}{c}{66 reads, 2.0\,s} & profile \\
+ATL06 full regional rebuild, 33\,484 granules & 3.9\,h & 62\,min & staging rebuild \\
+GLAS full rebuild, 4\,799 granules & 10\,min & 3.5\,min & staging rebuild \\
+ATL03 structure reads per granule at 1 / 4 / 16\,MiB blocks & \multicolumn{2}{c}{114 / 7 / 4} & \code{bench\_build\_io.py} \\
+ATL03 full regional rebuild, 48\,838 granules, 16 workers & 12\,h & $\approx$7.3\,h & staging rebuild \\
+16 spawned workers, peak memory & & 3.4\,GB & \code{free -m} \\
+8-cell ATL06 ingest, wall & 25.4\,s & 16.6\,s & \code{bench\_ingest\_fresh.py} \\
+same, CPU-seconds & 40.7 & 32.4 & idem \\
+same, CPU-s / wall-s (2 physical cores) & & 2.45 & idem \\
+same, lake files written & 6\,897 & 3\,225 & idem \\
+same, cell assignment thread-seconds & 24--31 & 0 & idem; 2\,948 of 2\,948 chunks from runs \\
+exact runs on real ATL06 rows (12 granules) & & 99.3\,\% & \code{tests/test\_index\_cell\_runs.py} \\
+ATL03 plan for a 0.3$^\circ$ box & 36\,s & 0.66\,s & query trace \\
+index store with sidecar provenance & 7.5\,GB & 4.7\,GB & \code{migrate\_index\_footers.py} \\
+in-region fetch throughput, CRT client & 300--400 & 670--840\,MB/s & \code{bench\_coalesce.py} \\
+precache-adjacent, first box / neighbour (on vs off) & 16.8 / 13.9\,s & 31.9 / 21.7\,s & \code{bench\_ingest\_fresh.py} \\
+\bottomrule
+\end{tabular}}
+\captionof{table}{Measurements on the deployed instance (m6i.xlarge, 4 vCPU, 15\,GB, us-west-2), 2026-10-16 and 17.}
+\label{tab:numbers}
+\end{center}
+
+\section{Glossary}
+\label{app:glossary}
+
+\begin{description}\setlength{\itemsep}{1pt}
+\item[granule] one archive file: an orbit segment, a flight, a survey.
+\item[chunk] a fixed-size, separately compressed piece of an HDF5 dataset; the unit of a byte range.
+\item[chunk map] (offset, size, filters) for every chunk of a dataset, read from the file's B-tree once at build.
+\item[span] GEDI's row unit: an element interval inside one chunk of every dataset.
+\item[cell] a grid cell at some resolution; addressing cells key rows and lake files, claim cells record coverage.
+\item[run] the element interval of one cell inside one chunk, and whether it is pure.
+\item[index] one Parquet file per granule of (chunk, cell) rows carrying byte ranges and runs.
+\item[claim] the compacted cell set a collection's index is known to cover; consulted before every query.
+\item[manifest] the fold of an index into distinct (cell, granule, month) rows; names the files a query opens.
+\item[provenance] the filter set a granule's file was built against, recorded in its footer by hash.
+\item[lake] the cell-partitioned Parquet memo of decoded points, read before and written after a fetch.
+\item[beam group] the set of beams the planner requests together and the lake files together.
+\item[have, todo] the chunks a plan serves from the lake and the chunks it fetches.
+\item[door] a process entry point where configuration is built once: a script's main, the server, the TUI, a
+  pool initializer, a test fixture.
+\item[slot] a function-valued field of a collection descriptor that a pipeline stage calls.
+\item[value] immutable data; a frozen dataclass here.
+\item[effect] a function that touches the network, the disk, a clock or a pool.
+\end{description}
+
+\end{document}
