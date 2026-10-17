@@ -54,7 +54,7 @@ def cells_for_bbox(bbox, res: int = index.H3_RES, dilate: int = 1, polygon=None)
 
 def _decode_photons(refs_rows: list[dict], raws: dict[tuple[str, int], bytes], sdp_epoch: float) -> dict:
     """Decode one beam's fetched chunks into photon arrays (all photons of each chunk; partitioned by cell later)."""
-    parts = {k: [] for k in ("lon", "lat", "h", "conf", "delta_time", "photon_index", "chunk_index")}
+    parts = {k: [] for k in ("lon", "lat", "h", "conf", "delta_time", "photon_index", "chunk_index", "_labels", "_assign")}
     for r in refs_rows:
         k = r["chunk_index"]
         dec = lambda d, ncols=1: decode_chunk(raws[(d, k)], r[f"{d}_dtype"], r[f"{d}_filters"], ncols, r[f"{d}_mask"])
@@ -64,6 +64,10 @@ def _decode_photons(refs_rows: list[dict], raws: dict[tuple[str, int], bytes], s
         parts["lon"].append(lon[:n].astype("f8")); parts["lat"].append(lat[:n].astype("f8")); parts["h"].append(hp[:n].astype("f8"))
         parts["conf"].append(conf[:n].astype("i1")); parts["delta_time"].append(dt[:n].astype("f8"))
         parts["photon_index"].append(np.arange(r["ph_start"], r["ph_end"], dtype="i8")); parts["chunk_index"].append(np.full(n, k, dtype="i4"))
+        # cell labels from the index's photon runs where they are exact; otherwise every photon is assigned below
+        lab = index.labels_from_photon_runs(n, r.get("_runs"), r.get("_wanted", ())) if r.get("_runs") else None
+        labels, assign = lab if lab is not None else (np.zeros(n, "u8"), np.ones(n, bool))
+        parts["_labels"].append(labels); parts["_assign"].append(assign)
     out = {k: np.concatenate(v) for k, v in parts.items()}
     out["t"] = GPS_EPOCH_MS + ((out["delta_time"] + sdp_epoch) * 1000).astype("timedelta64[ms]")
     return out
@@ -78,10 +82,20 @@ def _cells_vectorized(lat: np.ndarray, lon: np.ndarray, res: int) -> np.ndarray:
 
 
 def _materialize(out: dict) -> dict:
-    """Assign each photon its own H3 cell and materialize coreg coordinates at the common epoch (§7.4)."""
+    """Give each photon its H3 cell and materialize coreg coordinates at the common epoch (§7.4).
+
+    Photons inside a wanted, exact run take the run's cell (labels from the index); the run's edge segments and every
+    photon outside the wanted runs are assigned individually, so the result is photon-exact and byte-identical to
+    assigning them all -- at a fraction of the lookups (100,000 photons per chunk)."""
     good_ll = np.isfinite(out["lat"]) & np.isfinite(out["lon"])
-    out["h3_cell"] = np.zeros(out["lat"].size, dtype="u8")
-    out["h3_cell"][good_ll] = _cells_vectorized(out["lat"][good_ll], out["lon"][good_ll], index.H3_RES)
+    labels, assign = out.pop("_labels", None), out.pop("_assign", None)
+    if labels is None:
+        labels, assign = np.zeros(out["lat"].size, "u8"), np.ones(out["lat"].size, bool)
+    need = good_ll & assign
+    out["h3_cell"] = labels.astype("u8", copy=True)
+    out["h3_cell"][need] = _cells_vectorized(out["lat"][need], out["lon"][need], index.H3_RES)
+    out["h3_cell"][~good_ll] = 0
+    out["_assigned"] = int(need.sum())
     good = good_ll & np.isfinite(out["h"])
     out["coreg_lon"], out["coreg_lat"] = np.full_like(out["lon"], np.nan), np.full_like(out["lat"], np.nan)
     if good.any():
@@ -107,10 +121,12 @@ def _process_group(item) -> dict:
     t_fetch = time.time() - t0
     t1 = time.time()
     ph = _materialize(_decode_photons(rs, raws, rs[0]["sdp_epoch"]))
+    assigned = ph.pop("_assigned", int(ph["lon"].size))
     written = lake.write_photons("ICESAT2", gname, beam, ph)
     chunk_cells = {r["chunk_index"]: sorted({int(c) for c in np.unique(ph["h3_cell"][ph["chunk_index"] == r["chunk_index"]])}) for r in rs}
     st = reader.stats.as_dict()
-    st.update({"fetch_seconds": t_fetch, "materialize_seconds": time.time() - t1, "n_photons": int(ph["lon"].size), "cells_written": written})
+    st.update({"fetch_seconds": t_fetch, "materialize_seconds": time.time() - t1, "n_photons": int(ph["lon"].size),
+               "photons_assigned": assigned, "cells_written": written})
     return {"granule": gname, "beam": beam, "chunk_cells": chunk_cells, "stats": st, "n_chunks": len(rs)}
 
 
@@ -267,7 +283,7 @@ def cells_bbox(cells) -> tuple:
 
 
 # chunk_refs columns that address the index, not the bytes: dropped from the rows handed to the fetch workers
-_ROW_ONLY_KEYS = frozenset({"h3_cell", "lat_min", "lat_max", "lon_min", "lon_max"})
+_ROW_ONLY_KEYS = frozenset({"h3_cell", "lat_min", "lat_max", "lon_min", "lon_max", *index.PHOTON_RUN_COLS})
 
 
 def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fine_cells=None) -> dict:
@@ -304,11 +320,24 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
     # cell-aware: a chunk is fetched if ANY requested cell it touches is not materialized (partial evictions re-fetch)
     todo_keys = {(r["granule"], r["beam"], r["chunk_index"]) for r in ref_rows
                  if (r["granule"], r["beam"], r["chunk_index"], int(r["h3_cell"])) not in have}
+    # One row per chunk for the workers, carrying the chunk's WANTED cells and (from a v6 index) their photon runs, so
+    # the worker labels photons by slicing and assigns H3 only to the runs' edge segments and to photons outside every
+    # wanted run (index.labels_from_photon_runs). Pre-v6 rows have no runs: every photon is assigned, as before.
+    wanted_by_k: dict[tuple, set] = {}
+    runs_by_k: dict[tuple, dict] = {}
+    for r in ref_rows:
+        k = (r["granule"], r["beam"], r["chunk_index"])
+        wanted_by_k.setdefault(k, set()).add(int(r["h3_cell"]))
+        if r.get("run_lo") is not None:
+            runs_by_k.setdefault(k, {})[int(r["h3_cell"])] = (int(r["run_lo"]), int(r["run_hi"]), bool(r["run_exact"]),
+                                                              int(r["edge_lo_end"]), int(r["edge_hi_start"]))
     seen = set(); rows = []
     for r in ref_rows:
         k = (r["granule"], r["beam"], r["chunk_index"])
         if k not in seen:
-            seen.add(k); rows.append({kk: v for kk, v in r.items() if kk not in _ROW_ONLY_KEYS})
+            seen.add(k)
+            rows.append({**{kk: v for kk, v in r.items() if kk not in _ROW_ONLY_KEYS},
+                         "_wanted": sorted(wanted_by_k[k]), "_runs": runs_by_k.get(k, {})})
     todo = [r for r in rows if (r["granule"], r["beam"], r["chunk_index"]) in todo_keys]
     by_gb: dict[tuple[str, str], list[dict]] = {}
     for r in todo:
@@ -345,8 +374,9 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
     lake.mark_ingested_many("ICESAT2", [(r["granule"], r["beam"], r["chunk_cells"]) for r in results])
     for res in results:
         n_written_cells += len(res["stats"]["cells_written"])
-        for k in ("requests", "bytes", "chunks", "spans", "gap_bytes", "seconds", "fetch_seconds", "materialize_seconds"):
-            agg[k] += res["stats"].get(k, 0) or 0
+        for k in ("requests", "bytes", "chunks", "spans", "gap_bytes", "seconds", "fetch_seconds", "materialize_seconds",
+                  "n_photons", "photons_assigned"):
+            agg[k] = agg.get(k, 0) + (res["stats"].get(k, 0) or 0)
         log.info("%s %s: %d chunks -> %d photons -> %d cell files (fetch %.1fs, materialize %.1fs)", res["granule"], res["beam"],
                  res["n_chunks"], res["stats"]["n_photons"], len(res["stats"]["cells_written"]), res["stats"]["fetch_seconds"], res["stats"]["materialize_seconds"])
     evicted = lake.enforce_limit(protect=cells) if results else []
@@ -359,6 +389,7 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
                "presign_seconds": round(t_presign, 1), "group_phase_seconds": round(t_groups, 1), "group_parallel": group_parallel,
                "fetch_seconds": round(agg["fetch_seconds"], 1), "decode_materialize_seconds": round(agg["materialize_seconds"], 1),
                "chunks_skipped_already_materialized": len(rows) - len(todo), "cell_files_written": n_written_cells,
+               "photons": agg.get("n_photons", 0), "photons_assigned": agg.get("photons_assigned", 0),
                "evicted_for_limit": evicted,
                "wall_seconds": round(time.time() - t0, 1), "h3_res": index.H3_RES})
     return {"cells": cells, "granules": names, "stats": st}

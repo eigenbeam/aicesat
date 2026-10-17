@@ -26,7 +26,7 @@ from . import auth, cache
 log = logging.getLogger(__name__)
 
 H3_RES = 6
-INDEX_SCHEMA_VERSION = "5"  # v5: rows are filtered to the cells a build was ASKED for (v4 held a granule's whole
+INDEX_SCHEMA_VERSION = "6"  # v6: photon runs per (chunk, cell) row (photon_cell_runs). v5: rows are filtered to the cells a build was ASKED for (v4 held a granule's whole
                             # track). Bump when the columns OR the row semantics change; older files are rebuilt,
                             # never read — without a bump a re-run would skip them and keep the old rows.
 DATASETS = ("lat_ph", "lon_ph", "h_ph", "signal_conf_ph", "delta_time")
@@ -166,6 +166,50 @@ def cells_from_runs(n: int, runs: dict | None, wanted) -> np.ndarray | None:
     return out
 
 
+PHOTON_RUN_COLS = (*RUN_COLS, "edge_lo_end", "edge_hi_start")
+
+
+def photon_cell_runs(rel_s: np.ndarray, rel_e: np.ndarray, cells: np.ndarray) -> dict[int, tuple[int, int, bool, int, int]]:
+    """ATL03: {cell: (lo, hi, exact, edge_lo_end, edge_hi_start)} for one chunk, in PHOTON index space.
+
+    A segment's cell is that of its reference photon, and its photons occupy [rel_s, rel_e) of the chunk (clipped to
+    the chunk). The run of a cell is [min rel_s, max rel_e) over its segments; exact means no other cell's segment has
+    photons inside it. The two EDGE segments of a run (first and last) may straddle the cell boundary, so the ingest
+    assigns their photons individually: [lo, edge_lo_end) and [edge_hi_start, hi). Interior photons take the cell."""
+    out: dict[int, tuple[int, int, bool, int, int]] = {}
+    rel_s, rel_e, cells = np.asarray(rel_s), np.asarray(rel_e), np.asarray(cells)
+    for cell in np.unique(cells):
+        m = cells == cell
+        lo, hi = int(rel_s[m].min()), int(rel_e[m].max())
+        others = ~m
+        exact = not bool(np.any((rel_s[others] < hi) & (rel_e[others] > lo)))
+        first, last = int(np.argmin(np.where(m, rel_s, np.iinfo("i8").max))), int(np.argmax(np.where(m, rel_e, -1)))
+        out[int(cell)] = (lo, hi, exact, min(int(rel_e[first]), hi), max(int(rel_s[last]), lo))
+    return out
+
+
+def labels_from_photon_runs(n: int, runs: dict | None, wanted) -> tuple[np.ndarray, np.ndarray] | None:
+    """ATL03: (labels, assign) for a chunk's n photons from its runs, or None when the fast path does not apply.
+    `labels` holds the cell of every photon inside a wanted exact run; `assign` marks the photons that still need a
+    per-photon H3 lookup: the edge segments of each run, and everything outside every wanted run (which ATL03 writes
+    too -- its lake holds every cell a chunk touches)."""
+    if not runs:
+        return None
+    labels = np.zeros(int(n), "u8")
+    assign = np.ones(int(n), bool)
+    for cell in wanted:
+        r = runs.get(int(cell))
+        if r is None or not r[2]:
+            return None
+        lo, hi, _, el, eh = r
+        lo, hi = max(0, lo), min(int(n), hi)
+        labels[lo:hi] = int(cell)
+        assign[lo:hi] = False
+        assign[lo:min(el, hi)] = True
+        assign[max(eh, lo):hi] = True
+    return labels, assign
+
+
 def index_has_runs(d, files) -> bool:
     """Does this index carry the run columns? One footer read of the first file the query will open."""
     import pathlib as _pl
@@ -217,7 +261,8 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
     s3 = (granule.data_links(access="direct") or [""])[0]
     t0 = time.time()
     rows = {k: [] for k in ("granule", "url", "s3url", "revision", "sc_orient", "sdp_epoch", "beam", "strong", "cycle", "rgt",
-                            "chunk_index", "ph_start", "ph_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max")}
+                            "chunk_index", "ph_start", "ph_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max",
+                            *PHOTON_RUN_COLS)}
     for ds in DATASETS:
         for k in ("offset", "size", "filters", "dtype", "ncols", "mask"):
             rows[f"{ds}_{k}"] = []
@@ -268,6 +313,13 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
             k_lo, k_hi = s // C, np.maximum(s, e - 1) // C
             ks = np.concatenate([k_lo, k_hi[k_hi > k_lo]]).astype("i8")
             cs = np.concatenate([cell_ids, cell_ids[k_hi > k_lo]]).astype("u8")
+            # photon runs per (chunk, cell): where each cell's segments put their photons inside the chunk
+            ss = np.concatenate([s, s[k_hi > k_lo]]); es = np.concatenate([e, e[k_hi > k_lo]])
+            runs = {}
+            for k in np.unique(ks):
+                m = ks == k
+                base_ph = int(k) * C
+                runs[int(k)] = photon_cell_runs(np.clip(ss[m] - base_ph, 0, C), np.clip(es[m] - base_ph, 0, C), cs[m])
             # per-chunk bounding box of its segments (fetch-selection precision; cells stay the partition key)
             seg_lat_ok, seg_lon_ok = seg_lat[ok], seg_lon[ok]
             lat_all = np.concatenate([seg_lat_ok, seg_lat_ok[k_hi > k_lo]]); lon_all = np.concatenate([seg_lon_ok, seg_lon_ok[k_hi > k_lo]])
@@ -289,6 +341,9 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
                 rows["h3_cell"].append(int(cell))
                 b = box[int(k)]
                 rows["lat_min"].append(b[0]); rows["lat_max"].append(b[1]); rows["lon_min"].append(b[2]); rows["lon_max"].append(b[3])
+                lo, hi, exact, el, eh = runs[int(k)][int(cell)]
+                rows["run_lo"].append(int(lo)); rows["run_hi"].append(int(hi)); rows["run_exact"].append(bool(exact))
+                rows["edge_lo_end"].append(int(el)); rows["edge_hi_start"].append(int(eh))
                 for d in DATASETS:
                     ci = manifests[d][k]
                     fl, dt, nc = meta[d]
@@ -747,8 +802,10 @@ def chunk_refs(cells: list[int], granules: list[str] | None = None, strong_only:
         cond.append(f"lat_max >= {s_} AND lat_min <= {n} AND lon_max >= {w} AND lon_min <= {e}")
     cols = ", ".join(f"{d}_{k}" for d in DATASETS for k in ("offset", "size", "filters", "dtype", "ncols", "mask"))
     cell_col = "h3_cell, " if per_cell else ""
+    # per-cell rows from a v6 index also carry the photon runs the ingest slices by (photon_cell_runs)
+    run_cols = (", ".join(PHOTON_RUN_COLS) + ", ") if (per_cell and index_has_runs(ATL03_INDEX_DIR, files)) else ""
     # The box columns are constant per chunk, so adding them leaves the DISTINCT cardinality unchanged.
-    q = f"""SELECT DISTINCT granule, url, s3url, beam, sdp_epoch, cycle, chunk_index, {cell_col}ph_start, ph_end,
+    q = f"""SELECT DISTINCT granule, url, s3url, beam, sdp_epoch, cycle, chunk_index, {cell_col}{run_cols}ph_start, ph_end,
                    lat_min, lat_max, lon_min, lon_max, {cols}
             FROM {coverage.read_parquet_src(ATL03_INDEX_DIR, files)} WHERE {' AND '.join(cond)} ORDER BY granule, beam, chunk_index"""
     return con.execute(q).to_arrow_table()
