@@ -173,7 +173,7 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
     """Parse one GEDI granule's structure into addressing rows (the only time its HDF5 b-trees are read)."""
     auth.login()
     keep = index_mod.cells_filter(cells, res)
-    from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
+    from .access import RangeReader, open_granule
     from .coverage import granule_name
 
     url = granule.data_links()[0]
@@ -190,7 +190,9 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
             rows[f"{key}_{suf}"] = []
 
     reader = RangeReader()
-    with h5py.File(cloud_hdf5_file(url, s3, reader=reader), "r") as f:
+    # whole_object=False until GEDI granule sizes are measured (scripts/bench_build_io.py prints them); see index_atl06.
+    src = open_granule(url, s3, whole_object=False, reader=reader)
+    with h5py.File(src.open(), "r") as f:
         for beam in BEAMS:
             if beam not in f or "lat_lowestmode" not in f[beam]:
                 continue
@@ -209,15 +211,8 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
                 if bad:
                     raise ValueError(f"{beam}/{names[k]}: unsupported HDF5 filters {bad}")
 
-            def read_all(ds):
-                infos = _chunk_manifest(ds)
-                fl = _filters(ds)
-                raws = reader.fetch(access_url(url, s3), [(int(ci.byte_offset), int(ci.size)) for ci in infos])
-                parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
-                return np.concatenate(parts)[:ds.shape[0]]
-
-            lat = _nan_fill(read_all(dsets["lat"]), _fill(dsets["lat"]))
-            lon = _nan_fill(read_all(dsets["lon"]), _fill(dsets["lon"]))
+            lat = _nan_fill(index_mod.read_via_chunks(dsets["lat"], src), _fill(dsets["lat"]))
+            lon = _nan_fill(index_mod.read_via_chunks(dsets["lon"], src), _fill(dsets["lon"]))
             lon = np.where(lon > 180, lon - 360, lon)
             sizes = {k: int(ds.chunks[0]) for k, ds in dsets.items() if ds.chunks}
             spans = chunk_spans(sizes, n)

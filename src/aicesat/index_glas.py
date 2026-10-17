@@ -122,7 +122,11 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
         for suf in ("offset", "size", "filters", "dtype", "mask", "fill"):
             rows[f"{key}_{suf}"] = []
 
-    with h5py.File(access.cloud_hdf5_file(url, s3), "r") as f:   # in-region: s3fs direct; else one presign to CloudFront
+    # In-region a GLAH06 granule is read WHOLE through the CRT when under the cap and its structure walked in memory;
+    # the position arrays are sliced from the same buffer. Elsewhere the block cache, with a RangeReader built lazily
+    # only if a position read needs one (see access.GranuleSource).
+    src = access.open_granule(url, s3, whole_object=True)
+    with h5py.File(src.open(), "r") as f:
         dsets = {key: f[path] for key, path in GLAS_DATASETS}
         C = int(dsets["lat"].chunks[0])
         nchunks = dsets["lat"].id.get_num_chunks()
@@ -136,10 +140,12 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
         manifests = {key: _chunk_manifest(ds) for key, ds in dsets.items()}
         meta = {key: (_filters(ds), str(ds.dtype)) for key, ds in dsets.items()}
 
-        lat = _nan_fill(dsets["lat"][:], fills["lat"])
-        lon = _nan_fill(dsets["lon"][:], fills["lon"])
+        # Through the chunk map (index_mod.read_via_chunks), as ATL06 does, not dsets[...][:] through the block cache:
+        # the same bytes, counted, and free when the object is in memory.
+        lat = _nan_fill(index_mod.read_via_chunks(dsets["lat"], src), fills["lat"])
+        lon = _nan_fill(index_mod.read_via_chunks(dsets["lon"], src), fills["lon"])
         lon = np.where(lon > 180, lon - 360, lon)   # GLAS delivers 0..360 E
-        tsec = _nan_fill(dsets["time"][:1], fills["time"])   # first shot -> granule date (names carry no date)
+        tsec = _nan_fill(index_mod.read_via_chunks(dsets["time"], src, first_n=1), fills["time"])   # first shot -> granule date
         gdate = "00000000"
         if tsec.size and np.isfinite(tsec[0]):
             gdate = str((J2000 + int(tsec[0] * 1000) * np.timedelta64(1, "ms")).astype("datetime64[D]")).replace("-", "")
@@ -195,8 +201,9 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     tmp = d / f".{name}.parquet.tmp"
     pq.write_table(tbl, tmp)
     tmp.replace(d / f"{name}.parquet")
-    log.info("indexed GLAS %s: %d (chunk,cell) rows, %.1fs (%d GETs, %.1f MB)",
-             name, tbl.num_rows, time.time() - t0, 0, 0.0)
+    log.info("indexed GLAS %s: %d (chunk,cell) rows, %.1fs (%d GETs, %.1f MB%s)",
+             name, tbl.num_rows, time.time() - t0, src.stats.requests, src.stats.bytes / 1e6,
+             ", whole object" if src.whole_object else "")
     return tbl
 
 

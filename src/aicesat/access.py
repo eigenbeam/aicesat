@@ -7,6 +7,7 @@ decode is zlib (stdlib) + the HDF5 byte-shuffle transpose in numpy, validated by
 from __future__ import annotations
 
 import logging
+import io
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ class AccessStats:
     granules_touched: set = field(default_factory=set)
     hdf5_opens: int = 0          # always 0 on this path; the number the comparison is about
     structure_parses: int = 0    # idem
+    from_buffer: int = 0         # build-time: chunk ranges sliced from a whole-object buffer instead of fetched
 
     def as_dict(self) -> dict:
         return {"requests": self.requests, "bytes": self.bytes, "seconds": round(self.seconds, 2), "chunks": self.chunks,
@@ -778,9 +780,10 @@ class _CrtS3:
         self._client = s3.S3Client(bootstrap=bootstrap, region=region, credential_provider=provider,
                                    throughput_target_gbps=float(_env_int(CRT_GBPS_ENV) or 100))
 
-    def _start(self, bucket: str, key: str, off: int, size: int):
+    def _start(self, bucket: str, key: str, off: int, size: int, want_headers: bool = False):
         """Issue one ranged GET; returns (future, chunks, state). state collects the S3 error body so an expired-token
-        403 surfaces as text _s3_with_refresh can recognise (the CRT's own exception only names the status)."""
+        403 surfaces as text _s3_with_refresh can recognise (the CRT's own exception only names the status). With
+        `want_headers` the response headers land in state["headers"] (read_whole_object reads Content-Range)."""
         from awscrt import http, s3
         chunks: list[bytes] = []
         state: dict = {}
@@ -791,9 +794,24 @@ class _CrtS3:
         def on_done(error=None, error_headers=None, error_body=None, status_code=None, **_kw):
             state.update(error=error, status=status_code, body=error_body)
 
+        extra = {}
+        if want_headers:
+            def on_headers(status_code=None, headers=None, **_kw):
+                state.update(status=status_code, headers=list(headers or []))
+            extra["on_headers"] = on_headers
         req = self._client.make_request(type=s3.S3RequestType.DEFAULT, operation_name="GetObject", request=request,
-                                        on_body=lambda chunk, **kw: chunks.append(bytes(chunk)), on_done=on_done)
+                                        on_body=lambda chunk, **kw: chunks.append(bytes(chunk)), on_done=on_done, **extra)
         return req, chunks, state
+
+    def get_range_with_headers(self, bucket: str, key: str, off: int, size: int) -> tuple[bytes, dict]:
+        """One ranged GET and its response headers, lower-cased: Content-Range carries the object's total size."""
+        req, chunks, state = self._start(bucket, key, off, size, want_headers=True)
+        try:
+            req.finished_future.result()
+        except Exception as e:
+            body = (state.get("body") or b"").decode("utf-8", "replace") if isinstance(state.get("body"), (bytes, bytearray)) else str(state.get("body") or "")
+            raise IOError(f"S3 range GET failed (status {state.get('status')}): {e} {body[:300]}") from e
+        return b"".join(chunks), {str(k).lower(): str(v) for k, v in state.get("headers") or []}
 
     def get_ranges(self, bucket: str, key: str, spans, timings=None) -> list[bytes]:
         t0 = time.perf_counter()
@@ -859,6 +877,140 @@ def cloud_hdf5_file(url: str, s3url: str | None = None, block_size: int = 1 << 2
     purl = (reader or RangeReader()).presigned(url)
     fs = fsspec.filesystem("https", block_size=block_size)
     return fs.open(purl)
+
+
+# --- whole-object reads for small granules at build time -------------------------------------------------------------
+# h5py walks a granule's structure (superblock, groups, object headers, chunk B-trees) through the fsspec block cache:
+# ~66 serial 1 MiB reads per ATL06 granule at ~31 ms each, 2.0 s of a 3.3 s build (scripts/bench_build_io.py,
+# 2026-10-17). An ATL06 granule is 32-128 MB; read whole through the CRT in 8 MiB spans it takes 0.2-0.25 s, and h5py
+# over the in-memory bytes walks the same structure in milliseconds, then the position chunks are SLICED from the same
+# buffer instead of fetched. A builder opts in per collection (ATL03 never does: 0.2-6.7 GB); the cap below decides per
+# object, and out-of-region nothing changes.
+WHOLE_OBJECT_MAX_ENV = "AICESAT_WHOLE_OBJECT_MAX_BYTES"
+WHOLE_OBJECT_MAX_BYTES = 256 << 20      # per worker the peak is 2-3x the object (join + BytesIO); 16 workers x 128 MB fits
+WHOLE_OBJECT_SPAN = 8 << 20
+
+
+def whole_object_max_bytes() -> int:
+    """The size cap for a whole-object read; 0 disables it (the bench's --whole-object off)."""
+    v = os.environ.get(WHOLE_OBJECT_MAX_ENV)
+    if v is None or v == "":
+        return WHOLE_OBJECT_MAX_BYTES
+    try:
+        return max(0, int(v))
+    except ValueError:
+        return WHOLE_OBJECT_MAX_BYTES
+
+
+def slice_ranges(buf, ranges) -> list[bytes]:
+    """The wanted (offset, size) slices of one in-memory object, in order; IOError if a range runs off the end."""
+    n = len(buf)
+    out = []
+    for off, size in ranges:
+        if off < 0 or off + size > n:
+            raise IOError(f"range ({off}, {size}) runs off the end of a {n}-byte object")
+        out.append(bytes(buf[off:off + size]))
+    return out
+
+
+def _content_range_total(headers: dict) -> int | None:
+    cr = headers.get("content-range", "")
+    if "/" not in cr:
+        return None
+    total = cr.rsplit("/", 1)[1].strip()
+    return int(total) if total.isdigit() else None
+
+
+def read_whole_object(reader: "RangeReader", s3url: str, max_bytes: int | None = None) -> bytes | None:
+    """The whole object behind an s3:// URL through the CRT, or None when it is larger than the cap.
+
+    The first 8 MiB span goes out alone and the object's size is read from its Content-Range -- no HEAD, no extra
+    round trip -- then the remaining spans go out in one submission. Over the cap, that first span is the only cost
+    and the caller falls back to the block cache. Counted on reader.stats like any fetch."""
+    cap = whole_object_max_bytes() if max_bytes is None else max_bytes
+    if cap <= 0:
+        return None
+    bucket, key = _split_s3(s3url)
+    t0 = time.time()
+
+    def go():
+        crt = reader._crt_client()
+        first, hdrs = crt.get_range_with_headers(bucket, key, 0, WHOLE_OBJECT_SPAN)
+        total = _content_range_total(hdrs)
+        if total is None and len(first) < WHOLE_OBJECT_SPAN:
+            total = len(first)                      # the whole object fit in the first span
+        if total is None:
+            raise IOError("no Content-Range on the first span; cannot size the object")
+        if total > cap:
+            return None, 1, len(first)
+        spans = [(o, min(WHOLE_OBJECT_SPAN, total - o)) for o in range(WHOLE_OBJECT_SPAN, total, WHOLE_OBJECT_SPAN)]
+        rest = _check_span_sizes(crt.get_ranges(bucket, key, spans), spans) if spans else []
+        buf = b"".join([first[:total], *rest])
+        if len(buf) != total:
+            raise IOError(f"whole-object read short: {len(buf)} of {total} bytes")
+        return buf, 1 + len(spans), total
+
+    try:
+        buf, n_req, n_bytes = reader._s3_with_refresh(go)
+    except IOError as e:
+        log.warning("whole-object read of %s failed (%s); falling back to the block cache", s3url, e)
+        return None
+    with reader._lock:
+        reader.stats.requests += n_req
+        reader.stats.spans += n_req
+        reader.stats.bytes += n_bytes
+        reader.stats.seconds += time.time() - t0
+        reader.stats.granules_touched.add(s3url)
+    return buf
+
+
+class GranuleSource:
+    """One granule for a builder: the object h5py opens, and ranged reads that come from the SAME bytes.
+
+    With a whole-object buffer, `open()` is an in-memory file and `fetch()` slices; without one, `open()` is
+    cloud_hdf5_file (the block cache) and `fetch()` goes through a RangeReader, built lazily if none was given."""
+
+    def __init__(self, url: str, s3url: str | None = None, reader: "RangeReader | None" = None, buf: bytes | None = None):
+        self.url, self.s3url, self.reader, self.buf = url, s3url or "", reader, buf
+        self._stats = AccessStats()
+
+    @property
+    def whole_object(self) -> bool:
+        return self.buf is not None
+
+    @property
+    def stats(self) -> AccessStats:
+        return self.reader.stats if self.reader is not None else self._stats
+
+    def open(self):
+        if self.buf is not None:
+            return io.BytesIO(self.buf)
+        return cloud_hdf5_file(self.url, self.s3url or None, reader=self.reader)
+
+    def fetch(self, ranges: list[tuple[int, int]]) -> list[bytes]:
+        if self.buf is not None:
+            self.stats.from_buffer += len(ranges)
+            return slice_ranges(self.buf, ranges)
+        if self.reader is None:
+            self.reader = RangeReader()
+        return self.reader.fetch(access_url(self.url, self.s3url or None), ranges)
+
+
+def open_granule(url: str, s3url: str | None = None, *, whole_object: bool = False, max_bytes: int | None = None,
+                 reader: "RangeReader | None" = None) -> GranuleSource:
+    """A GranuleSource for a builder. `whole_object` is honoured only in-region, with an s3:// URL, through the CRT,
+    and under the size cap; everywhere else this is exactly the block-cache path of before.
+
+    Measured (scripts/bench_build_io.py, box, 2026-10-17, 4 ATL06 granules of 34-101 MB): block cache 3.08 s per
+    granule, whole object 0.82 s with the positions still fetched remotely, ~0.3 s with them sliced from the buffer."""
+    cap = whole_object_max_bytes() if max_bytes is None else max_bytes
+    buf = None
+    if whole_object and s3url and cap > 0 and in_region():
+        r = reader if reader is not None else RangeReader()
+        if (getattr(r, "s3_fetch", None) or default_s3_mechanism()) == "crt":
+            buf = read_whole_object(r, s3url, cap)
+            reader = r
+    return GranuleSource(url, s3url, reader=reader, buf=buf)
 
 
 def unshuffle(buf: bytes, itemsize: int) -> bytes:

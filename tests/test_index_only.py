@@ -506,7 +506,7 @@ def test_glas_empty_granule_is_stamped_so_resume_converges(tmp_path, monkeypatch
 
     h5 = _synthetic_glah06(tmp_path / "GLAH06_634_2131_002_0045_1_01_0001.H5")
     monkeypatch.setattr(auth, "login", lambda *a, **k: None)
-    monkeypatch.setattr(access, "cloud_hdf5_file", lambda url, s3: str(h5))
+    monkeypatch.setattr(access, "open_granule", lambda url, s3=None, **kw: access.GranuleSource(url, s3, buf=h5.read_bytes()))
     monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "idx")
     d = index_glas._index_dir(index_glas.GLAS_RES)
 

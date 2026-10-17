@@ -82,7 +82,7 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     index.build_granule_index for why indexing a granule's whole track made "indexed" mean less than it looked."""
     auth.login()
     keep = index_mod.cells_filter(cells, res)      # raises on a filter at another resolution (see cells_filter)
-    from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
+    from .access import RangeReader, open_granule
     from .coverage import granule_name
 
     url = granule.data_links()[0]
@@ -98,17 +98,13 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
             rows[f"{ds}_{k}"] = []
 
     reader = RangeReader()
-    with h5py.File(cloud_hdf5_file(url, s3, reader=reader), "r") as f:   # in-region: s3fs; else one shared presign
+    # In-region a 32-128 MB ATL06 granule is read WHOLE through the CRT (0.2 s) and h5py walks its structure in
+    # memory; the position chunks below are then sliced from the same buffer. Elsewhere: the block cache + range GETs.
+    src = open_granule(url, s3, whole_object=True, reader=reader)
+    with h5py.File(src.open(), "r") as f:
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
         strong = strong_beams(sc_orient)
-
-        def read_via_chunks(ds: h5py.Dataset) -> np.ndarray:
-            infos = _chunk_manifest(ds)
-            fl = _filters(ds)
-            raws = reader.fetch(access_url(url, s3), [(int(ci.byte_offset), int(ci.size)) for ci in infos])
-            parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
-            return np.concatenate(parts)[: ds.shape[0]]
 
         for beam in BEAMS:
             base = f"{beam}/land_ice_segments"
@@ -126,8 +122,8 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
                 bad = [x for x in _filters(ds).split(",") if x and x not in ("gzip", "shuffle")]
                 if bad:
                     raise ValueError(f"{beam}/{d}: unsupported HDF5 filters {bad}")
-            lat = read_via_chunks(dsets["latitude"])
-            lon = read_via_chunks(dsets["longitude"])
+            lat = index_mod.read_via_chunks(dsets["latitude"], src)
+            lon = index_mod.read_via_chunks(dsets["longitude"], src)
             n = int(lat.shape[0])
             manifests = {d: _chunk_manifest(ds) for d, ds in dsets.items()}
             meta = {d: (_filters(ds), str(ds.dtype), 1) for d, ds in dsets.items()}
@@ -173,8 +169,9 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     tmp = d / f".{name}.parquet.tmp"
     pq.write_table(tbl, tmp)
     tmp.replace(d / f"{name}.parquet")   # atomic rename: a concurrent reader never sees a partial file
-    log.info("indexed ATL06 %s: %d (chunk,cell) rows, %d beams, %.1fs (%d GETs, %.1f MB)",
-             name, tbl.num_rows, len({*rows["beam"]}), time.time() - t0, reader.stats.requests, reader.stats.bytes / 1e6)
+    log.info("indexed ATL06 %s: %d (chunk,cell) rows, %d beams, %.1fs (%d GETs, %.1f MB%s)",
+             name, tbl.num_rows, len({*rows["beam"]}), time.time() - t0, src.stats.requests, src.stats.bytes / 1e6,
+             ", whole object" if src.whole_object else "")
     return tbl
 
 

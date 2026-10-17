@@ -124,6 +124,21 @@ def _chunk_manifest(ds: h5py.Dataset) -> list:
     return infos
 
 
+def read_via_chunks(ds: h5py.Dataset, src, first_n: int | None = None) -> np.ndarray:
+    """A chunked 1-D dataset read through its chunk map: (offset, size) per chunk from the B-tree, the bytes from `src`
+    (an access.GranuleSource: sliced from the whole-object buffer when the builder has one, else range GETs), decoded
+    with the same decode_chunk the query path uses. `first_n` reads only the leading chunks that cover n elements."""
+    from .access import decode_chunk
+    infos = _chunk_manifest(ds)
+    if first_n is not None and ds.chunks:
+        infos = infos[: max(1, -(-first_n // int(ds.chunks[0])))]
+    fl = _filters(ds)
+    raws = src.fetch([(int(ci.byte_offset), int(ci.size)) for ci in infos])
+    parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
+    out = np.concatenate(parts) if parts else np.zeros(0, ds.dtype)
+    return out[: ds.shape[0]] if first_n is None else out[:first_n]
+
+
 def strong_beams(sc_orient: int) -> set[str]:
     return {"gt1l", "gt2l", "gt3l"} if sc_orient == 0 else ({"gt1r", "gt2r", "gt3r"} if sc_orient == 1 else set())
 
@@ -151,27 +166,22 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
     # Open with 1 MB blocks: the metadata walk (superblock, groups, ~900 datasets, chunk B-trees) is many small reads,
     # and earthaccess' default 16 MB blocks pull ~10x the bytes. The bulk geolocation arrays are then read through
     # their own chunk map with coalesced range GETs (the NSIDC spike's technique), not through the block cache.
-    from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
+    from .access import RangeReader, open_granule
 
     reader = RangeReader()
-    with h5py.File(cloud_hdf5_file(url, s3, reader=reader), "r") as f:   # in-region: s3fs; else one shared presign
+    # whole_object=False: ATL03 granules are 0.2-6.7 GB (median 1.3 GB over Summit); the block cache stays.
+    src = open_granule(url, s3, whole_object=False, reader=reader)
+    with h5py.File(src.open(), "r") as f:   # in-region: s3fs; else one shared presign
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
         strong = strong_beams(sc_orient)
-
-        def read_via_chunks(ds: h5py.Dataset) -> np.ndarray:
-            infos = _chunk_manifest(ds)
-            fl = _filters(ds)
-            raws = reader.fetch(access_url(url, s3), [(int(ci.byte_offset), int(ci.size)) for ci in infos])
-            parts = [decode_chunk(raw, str(ds.dtype), fl, 1, int(ci.filter_mask)) for raw, ci in zip(raws, infos)]
-            return np.concatenate(parts)[: ds.shape[0]]
 
         for beam in BEAMS:
             if beam not in f or f"{beam}/heights/h_ph" not in f:
                 continue
             geo = f[f"{beam}/geolocation"]
-            seg_lat, seg_lon = read_via_chunks(geo["reference_photon_lat"]), read_via_chunks(geo["reference_photon_lon"])
-            ph_beg, ph_cnt = read_via_chunks(geo["ph_index_beg"]), read_via_chunks(geo["segment_ph_cnt"])
+            seg_lat, seg_lon = read_via_chunks(geo["reference_photon_lat"], src), read_via_chunks(geo["reference_photon_lon"], src)
+            ph_beg, ph_cnt = read_via_chunks(geo["ph_index_beg"], src), read_via_chunks(geo["segment_ph_cnt"], src)
             dsets = {d: f[f"{beam}/heights/{d}"] for d in DATASETS}
             C = dsets["h_ph"].chunks[0]
             n_ph = dsets["h_ph"].shape[0]

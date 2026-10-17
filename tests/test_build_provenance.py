@@ -114,7 +114,7 @@ def test_glas_footer_records_the_filter_set_not_the_touched_cells(tmp_path, monk
     z = h3.str_to_int(h3.latlng_to_cell(-75.0, 0.0, index_glas.GLAS_RES))        # far away: never touched
     h5 = _synthetic_glah06(tmp_path / "GLAH06_634_2131_002_0045_1_01_0001.H5", lat, lon)
     monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "idx")
-    monkeypatch.setattr(access, "cloud_hdf5_file", lambda url, s3=None, **k: str(h5))
+    monkeypatch.setattr(access, "open_granule", lambda url, s3=None, **k: access.GranuleSource(url, s3, buf=h5.read_bytes()))
     tbl = index_glas.build_glas_index(_Granule(h5.name), cells=[x, y, z])
     assert set(tbl.column("h3_cell").to_pylist()) == {x, y}
     path = tmp_path / "idx" / "res5" / f"{h5.name}.parquet"

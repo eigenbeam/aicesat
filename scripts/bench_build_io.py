@@ -102,6 +102,16 @@ def _patch_io(block_size_mib: int | None) -> None:
         return out
 
     access.RangeReader.fetch = counted_fetch
+    orig_whole = access.read_whole_object
+
+    def counted_whole(reader, s3url, max_bytes=None):
+        before = (reader.stats.requests, reader.stats.bytes)
+        out = orig_whole(reader, s3url, max_bytes)
+        _IO["range_gets"] += reader.stats.requests - before[0]
+        _IO["range_bytes"] += reader.stats.bytes - before[1]
+        return out
+
+    access.read_whole_object = counted_whole
     if block_size_mib:
         orig_open = access.cloud_hdf5_file
         access.cloud_hdf5_file = functools.partial(orig_open, block_size=block_size_mib << 20)
