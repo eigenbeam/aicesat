@@ -149,21 +149,24 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
         ok = np.isfinite(lat) & np.isfinite(lon) & (np.abs(lat) <= 90)
         ks = (seg[ok] // C).astype("i8")
         latok, lonok = lat[ok].astype("f8"), lon[ok].astype("f8")
+        # `cell_ids`, NOT `cells`: that name is the build's filter set, recorded in the footer below. Shadowing it here
+        # recorded the cells this granule touched, so every GLAS file carried its own provenance set (4,220 sidecars
+        # for 4,799 files on the box) and an enlarging build rebuilt granules that already covered the new ground.
         try:
             from h3ronpy.vector import coordinates_to_cells
-            cells = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
+            cell_ids = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
         except Exception:
-            cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
+            cell_ids = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
         if keep_arr is not None:                  # regional index: keep whole cells, never part of one
-            m = np.isin(cells, keep_arr)
-            ks, latok, lonok, cells = ks[m], latok[m], lonok[m], cells[m]   # empty -> the emit loop below runs zero times
+            m = np.isin(cell_ids, keep_arr)
+            ks, latok, lonok, cell_ids = ks[m], latok[m], lonok[m], cell_ids[m]   # empty -> the emit loop below runs zero times
 
         box = {}
         for k in np.unique(ks):
             m = ks == k
             box[int(k)] = (float(latok[m].min()), float(latok[m].max()), float(lonok[m].min()), float(lonok[m].max()))
 
-        for k, cell in sorted(set(zip(ks.tolist(), cells.tolist()))):
+        for k, cell in sorted(set(zip(ks.tolist(), cell_ids.tolist()))):
             assert h3.is_valid_cell(h3.int_to_str(int(cell))), cell
             rows["granule"].append(name); rows["url"].append(url); rows["s3url"].append(s3)
             rows["revision"].append(str(granule["meta"].get("revision-id", ""))); rows["gdate"].append(gdate)

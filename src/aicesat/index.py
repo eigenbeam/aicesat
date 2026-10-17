@@ -189,14 +189,17 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
             ok = ph_beg > 0
             s = ph_beg[ok] - 1
             e = s + ph_cnt[ok]
+            # `cell_ids`, NOT `cells`: that name is the build's filter set, recorded in the footer below. Shadowing it
+            # here recorded the granule's TOUCHED cells instead, so granule_proves answered True for ground whose rows
+            # this filter had dropped, and an enlarging build skipped the granule (the silent-short-scene class).
             try:
                 from h3ronpy.vector import coordinates_to_cells
-                cells = np.asarray(coordinates_to_cells(seg_lat[ok].astype("f8"), seg_lon[ok].astype("f8"), res), dtype="u8")
+                cell_ids = np.asarray(coordinates_to_cells(seg_lat[ok].astype("f8"), seg_lon[ok].astype("f8"), res), dtype="u8")
             except Exception:
-                cells = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), res)) for la, lo in zip(seg_lat[ok], seg_lon[ok])], dtype="u8")
+                cell_ids = np.array([h3.str_to_int(h3.latlng_to_cell(float(la), float(lo), res)) for la, lo in zip(seg_lat[ok], seg_lon[ok])], dtype="u8")
             k_lo, k_hi = s // C, np.maximum(s, e - 1) // C
             ks = np.concatenate([k_lo, k_hi[k_hi > k_lo]]).astype("i8")
-            cs = np.concatenate([cells, cells[k_hi > k_lo]]).astype("u8")
+            cs = np.concatenate([cell_ids, cell_ids[k_hi > k_lo]]).astype("u8")
             # per-chunk bounding box of its segments (fetch-selection precision; cells stay the partition key)
             seg_lat_ok, seg_lon_ok = seg_lat[ok], seg_lon[ok]
             lat_all = np.concatenate([seg_lat_ok, seg_lat_ok[k_hi > k_lo]]); lon_all = np.concatenate([seg_lon_ok, seg_lon_ok[k_hi > k_lo]])
