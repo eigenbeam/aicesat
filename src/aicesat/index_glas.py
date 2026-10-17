@@ -326,7 +326,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
             lon, lat = mats["lon"], mats["lat"]
             if lon.size == 0:
                 return np.zeros(0, bool)
-            pcell = planner._cells_vectorized(lat, lon, res)
+            pcell = mats["h3_cell"]                   # assigned once in _ingest_granule; the lake writer reuses it
             keep = np.isin(pcell, want_arr)
             if dup_cells:
                 keep &= ~np.isin(pcell, np.asarray(sorted(dup_cells), dtype="u8"))
@@ -349,6 +349,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
                 dec = _decode_chunk(raws, r); v = dec["valid"]
                 mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
                         "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
+                mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["chunk_index"])
                 # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
                 writes.append(lake.ChunkWrite(r["granule"], BEAM, r["chunk_index"], mats,

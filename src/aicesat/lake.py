@@ -51,14 +51,14 @@ def write_photons(mission: str, granule: str, beam: str, ph: dict[str, np.ndarra
         tbl = pa.table({
             "row_id": pa.array(row_ids(granule, beam, ph["photon_index"][m]), type=pa.uint64()),
             "native_lon": ph["lon"][m], "native_lat": ph["lat"][m], "native_height": ph["h"][m].astype("f8"),
-            "height_ref": pa.array(["WGS84 ellipsoid"] * int(m.sum())).dictionary_encode(),
-            "native_frame": pa.array(["ITRF2014"] * int(m.sum())).dictionary_encode(),
+            "height_ref": _const_dict("WGS84 ellipsoid", int(m.sum())),
+            "native_frame": _const_dict("ITRF2014", int(m.sum())),
             "t": pa.array(ph["t"][m].astype("datetime64[ms]")),
             "coreg_lon": ph["coreg_lon"][m], "coreg_lat": ph["coreg_lat"][m],
             "coreg_epoch": pa.array(np.full(int(m.sum()), COMMON_EPOCH)),
             "signal_conf_landice": ph["conf"][m].astype("i1"),
-            "source_granule": pa.array([granule] * int(m.sum())).dictionary_encode(),
-            "beam": pa.array([beam] * int(m.sum())).dictionary_encode(),
+            "source_granule": _const_dict(granule, int(m.sum())),
+            "beam": _const_dict(beam, int(m.sum())),
             "photon_index": ph["photon_index"][m].astype("i8"),
             "source_chunk_index": ph["chunk_index"][m].astype("i4"),
         })
@@ -100,28 +100,48 @@ def write_point_chunk(mission: str, granule: str, beam: str, chunk_index: int, a
     return {int(chunk_index): sorted(tables)}
 
 
+def _const_dict(value: str, n: int) -> "pa.DictionaryArray":
+    """A dictionary<int32, string> column of one repeated value, without building a Python list of n strings.
+    Same type as pa.array([value] * n).dictionary_encode(), which is what the lake wrote before."""
+    return pa.DictionaryArray.from_arrays(pa.array(np.zeros(n, "i4")), pa.array([value]))
+
+
 def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: int,
                  extras: tuple[str, ...], only_cells) -> dict[int, "pa.Table"]:
-    """One chunk's points split into {cell: Arrow table}, one table per H3 cell the chunk touches."""
-    from . import planner
+    """One chunk's points split into {cell: Arrow table}, one table per H3 cell the chunk touches.
 
+    The cell of each point comes with the arrays (`h3_cell`; the CSV parsers call it `cell`): the ingest has already
+    assigned it to decide what to keep, and assigning it again here was 24-31 thread-seconds of an 8-cell ATL06 ingest
+    (59 M points, 2026-10-17). Recomputing is kept only as a fallback for callers that bring none."""
     lon = np.asarray(arrays["lon"], "f8"); lat = np.asarray(arrays["lat"], "f8")
     h = np.asarray(arrays["h"], "f8"); t = np.asarray(arrays["t"]).astype("datetime64[ms]")
     ok = np.isfinite(lon) & np.isfinite(lat)          # a point with no valid position cannot be placed in a cell
     if not ok.any():
         return {}
-    cells = np.zeros(lon.size, "u8")
-    cells[ok] = planner._cells_vectorized(lat[ok], lon[ok], res)
+    given = arrays.get("h3_cell", arrays.get("cell"))
+    if given is not None and len(given) == lon.size:
+        cells = np.where(ok, np.asarray(given, "u8"), 0)
+    else:
+        from . import planner
+        log.debug("lake writer: %s/%s chunk %s arrived without cells; assigning", granule, beam, chunk_index)
+        cells = np.zeros(lon.size, "u8")
+        cells[ok] = planner._cells_vectorized(lat[ok], lon[ok], res)
     keep_cells = None if only_cells is None else {int(c) for c in only_cells}
+    # One sort splits the chunk into its cells; the per-cell boolean masks it replaces were k passes over n points.
+    idx = np.flatnonzero(ok)
+    order = idx[np.argsort(cells[idx], kind="stable")]
+    sorted_cells = cells[order]
+    uniq, starts = np.unique(sorted_cells, return_index=True)
+    ends = np.append(starts[1:], sorted_cells.size)
     out: dict[int, pa.Table] = {}
-    for cell in np.unique(cells[ok]):
+    for cell, lo, hi in zip(uniq.tolist(), starts.tolist(), ends.tolist()):
         if keep_cells is not None and int(cell) not in keep_cells:
             continue
-        m = ok & (cells == cell)
-        nn = int(m.sum())
+        m = order[lo:hi]
+        nn = m.size
         cols = {"native_lon": lon[m], "native_lat": lat[m], "native_height": h[m], "t": pa.array(t[m]),
-                "source_granule": pa.array([granule] * nn).dictionary_encode(),
-                "beam": pa.array([beam or "na"] * nn).dictionary_encode(),
+                "source_granule": _const_dict(granule, nn),
+                "beam": _const_dict(beam or "na", nn),
                 "source_chunk_index": np.full(nn, int(chunk_index), "i4")}
         for ex in extras:
             cols[ex] = np.asarray(arrays[ex])[m]
@@ -264,8 +284,8 @@ def write_points(mission: str, arrays: dict, meta: dict) -> list[int]:
             m = gm & (cells == cell)
             nn = int(m.sum())
             tbl = pa.table({"native_lon": lon[m], "native_lat": lat[m], "native_height": h[m],
-                            "t": pa.array(t[m]), "height_ref": pa.array([ref] * nn).dictionary_encode(),
-                            "source_granule": pa.array([gname] * nn).dictionary_encode()})
+                            "t": pa.array(t[m]), "height_ref": _const_dict(ref, nn),
+                            "source_granule": _const_dict(gname, nn)})
             d = cell_dir(mission, int(cell)); d.mkdir(parents=True, exist_ok=True)
             pq.write_table(tbl, d / f"{gname}__pts.parquet", compression="zstd", row_group_size=ROW_GROUP_ROWS)
             written.add(int(cell))

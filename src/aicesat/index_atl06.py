@@ -379,7 +379,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
             lon, lat = mats["lon"], mats["lat"]
             if lon.size == 0:
                 return np.zeros(0, bool)
-            pcell = planner._cells_vectorized(lat, lon, res)
+            pcell = mats["h3_cell"]                   # assigned once in _ingest_granule; the lake writer reuses it
             keep = np.isin(pcell, want_arr)
             if dup_cells:
                 keep &= ~np.isin(pcell, np.asarray(sorted(dup_cells), dtype="u8"))
@@ -406,6 +406,8 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 valid = np.isfinite(h) & (h < 3.0e38) & np.isfinite(lat) & np.isfinite(lon)   # data-validity (bbox-independent)
                 mats = {"lon": lon[valid].astype("f8"), "lat": lat[valid].astype("f8"), "h": h[valid].astype("f8"),
                         "t": _atlas_epoch_years(dt[valid], r["sdp_epoch"]), "quality": q[valid]}
+                # The ONE H3 assignment of these points: _keep reads it, and the lake writer splits files by it.
+                mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["beam"], r["chunk_index"])
                 # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is
                 # not re-fetched forever; write_point_chunk adds any extra cell its points materialise.

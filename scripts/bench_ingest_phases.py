@@ -55,18 +55,21 @@ def main(bbox) -> None:
     index_atl06._index_rows = _timed("index_rows", index_atl06._index_rows)
     lake.ingested_chunk_cells = _timed("ingested", lake.ingested_chunk_cells)
     lake.mark_ingested_many = _timed("mark_many", lake.mark_ingested_many)
-    # H3 assignment is the main untimed CPU step inside the per-granule work. NOTE it is called from BOTH the
-    # ingest path and write_point_chunk, so "cells" partly double-counts "write" — read it as "how much H3", not
-    # as a disjoint slice.
+    # H3 assignment: ONE pass per chunk, in the ingest; the lake writer reuses the column it is handed. If the writer
+    # ever assigns again (a ChunkWrite without h3_cell), that shows here as calls beyond chunks_fetched.
     from aicesat import planner
     planner._cells_vectorized = _timed("cells", planner._cells_vectorized)
     lake.query_points = _timed("query_points", lake.query_points)
     lake.enforce_global_limit = _timed("evict", lake.enforce_global_limit)
     cache.save = _timed("cache_save", cache.save)
 
+    import resource
+    ru0 = resource.getrusage(resource.RUSAGE_SELF)
     t = time.time()
     arrays, meta = atl06.extract(bbox, regions.DEFAULT_ATL06_WINDOW)
     wall = time.time() - t
+    ru1 = resource.getrusage(resource.RUSAGE_SELF)
+    cpu_s = (ru1.ru_utime - ru0.ru_utime) + (ru1.ru_stime - ru0.ru_stime)
     # The lake write is now queued to a background writer, so WALL is what the user waits for and this tail is what is
     # still outstanding when they get their answer. Report both: the point of the change is to move the write, not to
     # make it disappear, and a growing tail would mean the writer cannot keep up with the fetch.
@@ -93,6 +96,9 @@ def main(bbox) -> None:
     print(f"  lake wrote    {WROTE['files']:,} files in {len(WROTE['cells']):,} cells  "
           f"({WROTE['files']/nch:.1f} files/chunk, {st.get('cells')} cells wanted)")
     print(f"\n  WALL          {wall:7.1f}s   (what the request waits for)")
+    # CPU-s / wall-s over the leg, all threads of this process: ~1.0 while wall >> fetch means the GIL is the ceiling
+    # (a process pool would pay); >= 2.5 on 4 vCPU means it is not.
+    print(f"  CPU           {cpu_s:7.1f}s   = {cpu_s / wall:.2f} CPU-s per wall-s (all threads)")
     print(f"  writer tail   {tail:7.1f}s   (background lake writes still outstanding at that point)")
     for k in PHASES:
         print(f"  {k:13s} {TOT[k]:7.1f}s  (thread-seconds over {CNT[k]} calls)")
