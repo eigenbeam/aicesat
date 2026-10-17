@@ -325,6 +325,82 @@ Enforcement that works in Python:
 5. **`frozen=True, slots=True`** on every value; `__post_init__` validation instead of defensive code downstream.
 6. **Coverage floors** per package via `--cov-fail-under`, and the golden suite as the behavioural floor for the app.
 
+## 6. A sixth axis: the grid is a parameter (H3, S2, rHEALPix, …)
+
+Added 2026-10-17 at Kevin's request. Today H3 is not a dependency, it is an assumption: the cell id is an H3 `uint64`
+in the index rows (`h3_cell`), the lake partitions (`h3_cell=<int>/`), the coverage table and the manifest; the claim is
+`h3.compact_cells` and membership walks `h3.cell_to_parent`; the planner polyfills with `h3shape_to_cells_experimental`;
+the per-point kernel is `h3ronpy.coordinates_to_cells`; `claim_res` reasons with `average_hexagon_area`; the browser
+draws `cell_to_boundary` hexagons; and the names say so everywhere (`H3_RES`, `h3_cell`, `h3geo`). Making the grid a
+parameter is one more descriptor, and the performance contract decides what it may and may not abstract.
+
+### 6.1 What a grid must provide
+
+```python
+@dataclass(frozen=True, slots=True)
+class Grid:                       # dggs.Grid: one value per implementation, chosen once per deployment
+    name: str                     # "h3" | "s2" | "rhealpix" | ...
+    id_dtype: str                 # "u8" for H3 and S2 (64-bit ids); "str" for rHEALPix ("N2345") -> see 6.3
+    resolutions: range            # the levels this grid offers (H3 0-15, S2 0-30, rHEALPix 0-..)
+    cell_area_km2: Callable[[int], float]                      # mean cell area at a level (claim_res, cell-size tables)
+    cells_vectorized: Callable[[np.ndarray, np.ndarray, int], np.ndarray]   # lat, lon -> ids; THE hot kernel
+    cells_for_area: Callable[[Ring, int], Sequence]            # polyfill with overlap semantics (planner.cells_for_bbox)
+    parent: Callable[[Cell, int], Cell]; children: Callable[[Cell, int], Sequence[Cell]]
+    compact: Callable[[Sequence[Cell]], Sequence[Cell]]        # the claim's representation
+    boundary: Callable[[Cell], Sequence[tuple[float, float]]]  # (lat, lon) ring, for pages, the UI and cells_bbox
+    neighbors: Callable[[Cell, int], Sequence[Cell]]           # grid_disk(k): precache-adjacent, hex-reset
+    to_text: Callable[[Cell], str]; from_text: Callable[[str], Cell]
+```
+
+Everything in `h3geo` becomes `dggs` with `dggs.h3 = Grid(...)` as the reference implementation; `s2` and `rhealpix`
+are further modules with the same shape. The framework imports `Grid`, never `h3`. The grid is part of the store's
+identity: `index/<coll>/_grid.json` and the lake root record `{name, version}`, and a `Job.key`/`QueryPlan` carries
+the grid name so a store built under one grid is never read under another. One grid per deployment; mixing grids in
+one lake is out of scope.
+
+### 6.2 What may be abstracted and what may not (the performance contract)
+
+| Operation | Per what | Abstract? | Why |
+|---|---|---|---|
+| point → cell | per point (59 M in one 8-cell ingest) | **only through a vectorised native kernel** | h3ronpy is Rust at ~2 M points/s/core; a pure-Python S2 or rHEALPix binding is 100-1000× slower and would make the grid unusable, not merely slower. A `Grid` without a vectorised `cells_vectorized` is rejected at import (the descriptor validates it on an array of 10⁵ points under a time budget) |
+| cells for an area, compact, parent, children, boundary, neighbors | per cell (hundreds to thousands) | yes, plain Python is fine | these run once per query or build, not per point |
+| cell id storage and comparison | per row and per file | fixed to a 64-bit integer column | DuckDB pushdown (`cell IN (…)`), Parquet statistics and hive partition names all assume a sortable scalar; strings are 5-10× slower to filter and partition. Grids whose native id is a string are packed (6.3) |
+| convex cells | per (chunk, cell) run (item 6 of the performance plan) | an attribute of the grid: `Grid.convex_cells: bool` | the "one run per cell per chunk" shortcut holds for H3 hexagons, S2 cells (spherical quadrilaterals) and rHEALPix cells (quadrilaterals); a grid with non-convex cells disables the exact-run path and keeps the per-point fallback |
+
+### 6.3 Ids, names and partitions
+
+- Column and partition names drop the grid: `h3_cell` → `cell`, `h3_cell=<int>/` → `cell=<int>/`, `H3_RES` →
+  `Collection.res` (a level in `Grid.resolutions`). This is a one-time rename across index schemas, lake layout, the
+  coverage table, the manifest and the UI, which is why it rides with the schema bump and lake wipe already planned
+  (performance batch items 5-6) rather than being a step of its own.
+- Every grid gets a 64-bit integer id in storage. H3 and S2 have one natively. rHEALPix's `"N2345"` packs into 64 bits
+  as (face: 3 bits, level: 5 bits, digits: 4 bits each up to level 14) with `Grid.to_text/from_text` as the human form;
+  the pages and the API show the text form. The packing is the grid module's business; the framework sees integers.
+- The claim is `Grid.compact(cells)` at the claim level and membership is an ancestor walk through `Grid.parent`, exactly
+  as today, so `cells_within`, `unclaimed_cells` and the enlarging-build logic are unchanged in shape. `claim_res` uses
+  `cell_area_km2` to pick the finest level under the cell cap, which is where H3's res-9 "~200 m" and S2's level 16
+  "~150 m" become comparable numbers rather than magic constants.
+- The per-collection addressing level is chosen per grid by the same rule as today (a cell about the size of a chunk's
+  footprint): H3 5 ≈ S2 9 ≈ rHEALPix 4 for ATL06's 200 km chunks. The descriptor stores it per grid:
+  `Collection.res: Mapping[grid_name, int]`.
+
+### 6.4 Where the grid enters the migration
+
+Step **E** (the collection descriptor) is where `Grid` lands: `plan`, `rows_from_positions`, `keep` and `assign_cells`
+take `grid` from the config, and `dggs.h3` is the only implementation. Adding S2 afterwards is a new module plus a
+vectorised kernel (the `s2geometry` C++ bindings or a small Rust extension over the `s2` crate; `s2sphere` is pure Python
+and fails the import-time budget). rHEALPix has no vectorised kernel in the ecosystem today; it is the case that would
+justify a PyO3 extension, which the restructuring makes a 200-line package instead of a change to the framework.
+
+Tests: the `Grid` contract gets one conformance suite run against every implementation (ids round-trip through text;
+`parent(children(c))` is `c`; `compact` then membership preserves every cell; `cells_for_area` covers the centre-contained
+cells of a box; `cells_vectorized` agrees with the scalar API on 10⁴ random points and meets the time budget on 10⁵).
+The framework's own tests run under `dggs.h3` only; a second grid runs the conformance suite and the six-collection
+golden ingest once, since the framework is grid-agnostic by construction.
+
+What not to do: no grid-neutral geometry library, no `GridCell` objects per point, no runtime grid detection from ids.
+A grid is a value chosen once; everything per point stays a NumPy array of 64-bit integers.
+
 ### Critical files
 
 - `src/aicesat/index_atl06.py` — the reference builder (`build_atl06_index:78`) and ingest loop (`plan_bbox:270`, `fetch_bbox:323`) that become the generic `build_job`/`plan_query`/`execute`
