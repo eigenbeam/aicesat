@@ -88,7 +88,8 @@ def main(bbox) -> None:
     print(f"  config        s3_direct={in_region()}  async_write={lake.async_writes_enabled()}  "
           f"writers={lake._writer_threads()}  fetch_workers={nw} (cap {FETCH_WORKER_CAP})")
     print(f"  points        {arrays['lon'].size:,}")
-    print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake")
+    print(f"  chunks        {st.get('chunks_fetched')} from NASA, {st.get('chunks_from_lake')} from the lake, "
+          f"{st.get('chunks_cells_from_runs', 0)} labelled from index runs (no per-point H3)")
     gap = st.get("gap_bytes", 0)
     print(f"  bytes         {st.get('bytes', 0)/1e6:.1f} MB in {st.get('requests')} GETs (presigns={st.get('presigns')})")
     print(f"                {(st.get('bytes', 0)-gap)/1e6:.1f} MB WANTED + {gap/1e6:.1f} MB over-fetch from coalescing")
