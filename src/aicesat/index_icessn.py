@@ -119,7 +119,7 @@ def build_icessn_index(granule, res: int = ICESSN_RES, cells=None) -> pa.Table:
     # No special case for "nothing here": an empty granule falls through the normal path and writes a TYPED empty
     # parquet (so it counts as done on a re-run). The old branch copied a schema off a sibling file and gave up
     # entirely when it was the first granule of a fresh index.
-    keep = index_mod.cells_filter(cells)
+    keep = index_mod.cells_filter(cells, res)      # raises on a filter at another resolution (see cells_filter)
     lat_a = np.asarray(lats, "f8"); lon_a = np.asarray(lons, "f8")
     st_a = np.asarray(starts, "i8"); en_a = np.asarray(ends, "i8")
     if lat_a.size == 0:

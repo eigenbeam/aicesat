@@ -123,7 +123,7 @@ def build_gpstruth_index(granule, geometry: tuple[float, float, bool, str], meta
         starts.append(start); ends.append(min(pos, size))
     gdate = _gdate(first) if first else ""
 
-    keep = index_mod.cells_filter(cells)
+    keep = index_mod.cells_filter(cells, res)      # raises on a filter at another resolution (see cells_filter)
     lat_a = np.asarray(lats, "f8"); lon_a = np.asarray(lons, "f8")
     st_a = np.asarray(starts, "i8"); en_a = np.asarray(ends, "i8")
     if lat_a.size == 0:

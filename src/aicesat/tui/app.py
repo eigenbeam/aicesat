@@ -494,9 +494,9 @@ class App:
 
     def cmd_build(self, args) -> None:
         _, fl = _flags(args, n_valued=("workers",))
-        workers = fl.get("workers", 8)
+        workers = fl.get("workers")           # None -> the collection's default (build.BuildCollection)
         self.c.print(f"building [bold]{ops.COLLECTION}[/bold] over {self._bbox_str()} "
-                     f"(res {self.res}, {workers} workers) — this hits NASA")
+                     f"(res {self.res}, {workers or 'default'} workers) — this hits NASA")
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(),
                       MofNCompleteColumn(), TimeElapsedColumn(), console=self.c, transient=True) as prog:
             task = prog.add_task("planning", total=None)

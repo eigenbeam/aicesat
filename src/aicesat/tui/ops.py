@@ -313,7 +313,7 @@ def query(bbox, window=None, res: int = 5, force: bool = False,
     return {"arrays": arrays, "stats": stats, "points": n}, t.stop()
 
 
-def build(bbox, res: int = 5, workers: int = 8, window=None, on_plan=None, on_granule=None) -> tuple[dict, Timing]:
+def build(bbox, res: int = 5, workers: int | None = None, window=None, on_plan=None, on_granule=None) -> tuple[dict, Timing]:
     """Build the index over the box. Resumable: a re-run indexes only what is missing or cannot prove it covers
     newly claimed ground."""
     from .. import build_atl06

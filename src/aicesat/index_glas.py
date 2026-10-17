@@ -108,7 +108,7 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     auth.login()
     from .coverage import granule_name
 
-    _keep = index_mod.cells_filter(cells)
+    _keep = index_mod.cells_filter(cells, res)     # raises on a filter at another resolution (see cells_filter)
     keep_arr = None if _keep is None else np.fromiter(sorted(_keep), dtype="u8", count=len(_keep))
 
     url = granule.data_links()[0]

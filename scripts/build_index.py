@@ -22,7 +22,9 @@ if __name__ == "__main__":  # guard: index workers are spawned processes that re
     fine = planner.coverage_cells(bbox)                  # the ground this build claims, at the claim resolution
     ring = planner.search_polygon(fine)                  # densified convex hull of that ground -> the CMR shape
     cells = planner.addressing_cells(fine, index.H3_RES)  # coarse partition keys the rows are filtered to
-    granules = coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window, polygon=ring)
+    from aicesat import build
+    # GranuleRefs, not earthaccess objects, cross into the (spawned) workers: four strings per granule.
+    granules = [build.granule_ref(g) for g in coverage.search(coverage.ATL03_SHORT_NAME, coverage.ATL03_VERSION, bbox, window, polygon=ring)]
     t0 = time.time()
     # ADDRESSING cells for the row filter (rows are keyed at index.H3_RES); the CLAIM stays at `fine` below.
     # Passing `fine` here matched nothing whenever the claim resolution differed from H3_RES, i.e. on any

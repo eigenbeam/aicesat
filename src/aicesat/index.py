@@ -271,7 +271,9 @@ def indexed_granules() -> set[str]:
 
 
 INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out and retry once
-INDEX_WORKERS = 8      # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes)
+INDEX_WORKERS = 16     # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes).
+                       # 16 because the ATL03 build is latency-bound (scripts/bench_build_io.py, 2026-10-17: 8 -> 16 workers
+                       # is 1.6x on a 4-vCPU box; the knee is where CPU saturates).
 
 
 def _index_granule_job(granule, res: int, cells) -> int:
@@ -289,48 +291,21 @@ def ensure_index(granules, workers: int = INDEX_WORKERS, cells=None, needed=None
 
     Granules are keyed by coverage.granule_name, which is also what names the file on disk. Keying the skip by the
     CMR native-id re-indexed every granule whose native-id is a concept-id ('SC:ATL03.007:NNN') on every run."""
-    import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutTimeout
+    from . import pool
     from .coverage import granule_name
 
     have = indexed_granules()
     todo = [g for g in granules
             if granule_name(g) not in have or not granule_proves(ATL03_INDEX_DIR / f"{granule_name(g)}.parquet", needed)]
-    built, t0 = [], time.time()
-    for attempt in (1, 2):
-        if not todo:
-            break
-        failed = []
-        # SPAWN, not Linux's default fork: a forked worker starts as a copy of this process, which holds the whole CMR
-        # result (~3 GB for all of Greenland); reference counting un-shares those pages and used memory climbs towards
-        # (workers + 1) x 3 GB. Spawned workers get only their task. (macOS already spawns.)
-        ex = ProcessPoolExecutor(max_workers=min(workers, len(todo)), mp_context=multiprocessing.get_context("spawn"))
-        futs = {ex.submit(_index_granule_job, g, H3_RES, cells): g for g in todo}
-        # MONOTONIC, not wall clock. A laptop that sleeps mid-build advances time.time() by the whole nap, so every
-        # remaining future would blow its deadline the moment the machine woke and a healthy build would report
-        # itself failed. On macOS time.monotonic() is mach_absolute_time and stops during sleep; on Linux
-        # CLOCK_MONOTONIC likewise excludes suspend. (This is what a 95-minute "hang" turned out to be: the lid.)
-        deadline = time.monotonic() + INDEX_TIMEOUT_S * (len(todo) / max(1, min(workers, len(todo))) + 1)
-        for f, g in futs.items():
-            name = granule_name(g)
-            try:
-                f.result(timeout=max(1.0, deadline - time.monotonic()))
-                built.append(name)
-            except FutTimeout:
-                log.warning("index build of %s timed out (attempt %d)", name, attempt)
-                failed.append(g)
-            except Exception as e:
-                # EVERY worker failure is retryable, not just a timeout. A transient CDN error (503) killed a whole
-                # 120-granule build at granule 101 because only FutTimeout was caught — and it surfaced as
-                # "can't pickle multidict.CIMultiDictProxy", not as the 503 it was: aiohttp's ClientResponseError
-                # carries response headers that ProcessPoolExecutor cannot pickle back to the parent, so the real
-                # cause is destroyed in transit. Never let one flaky granule discard the other 119.
-                log.warning("index build of %s failed (attempt %d): %s: %s", name, attempt, type(e).__name__, e)
-                failed.append(g)
-        ex.shutdown(wait=False, cancel_futures=True)
-        todo = failed
+    t0 = time.time()
+    # The pool policy (spawn, a monotonic deadline per future, every failure retried once) lives in pool.run_pool,
+    # shared with build.run_build; its docstring records the three incidents that shaped it.
+    done, failed = pool.run_pool(_index_granule_job, todo, args=(H3_RES, cells), workers=workers,
+                                 timeout_s=INDEX_TIMEOUT_S, name_of=granule_name)
+    built = [granule_name(g) for g, _ in done]
     out = {"built": built, "skipped": len(granules) - len(built), "seconds": round(time.time() - t0, 1),
-           "failed": [granule_name(g) for g in todo]}
+           "failed": [granule_name(g) for g, _ in failed]}
+    todo = [g for g, _ in failed]
     if todo:
         # Not raised: the granules that DID index are on disk and the caller still needs to stamp the coverage
         # manifest for them. The caller reports the failures and exits non-zero; a re-run picks up only these.

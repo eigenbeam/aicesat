@@ -50,7 +50,7 @@ def test_planner_refuses_an_unindexed_area(monkeypatch, tmp_path):
 # src/ is on the query path, where a CMR search would hide an unbuilt index behind a slow success.
 # Index BUILDERS pay discovery once, at build time; that is the whole point of the split (see build_atl06's
 # docstring). Query-path modules -- index_*.py, the extract wrappers -- may never appear here.
-_MAY_SEARCH_CMR = {"coverage.py", "build_atl06.py", "build_gedi.py"}
+_MAY_SEARCH_CMR = {"coverage.py", "build.py", "build_atl06.py", "build_gedi.py"}
 
 
 def test_no_cmr_search_and_no_granule_download_in_the_package():
@@ -85,7 +85,7 @@ def test_the_builder_exemption_stays_one_way():
         for node in ast.walk(ast.parse(path.read_text())):
             names = ([a.name for a in node.names] if isinstance(node, ast.Import) else
                      [a.name for a in node.names] + [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
-            if any(n.split(".")[-1] == "build_atl06" for n in names):
+            if any(n.split(".")[-1] in {"build", "build_atl06", "build_gedi"} for n in names):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert not offenders, ("a query-path module imports the ATL06 builder, putting CMR one call away:\n  "
                            + "\n  ".join(offenders))
@@ -442,20 +442,16 @@ def test_builders_claim_coverage_only_after_the_ground_is_indexed():
     import inspect
     import pathlib as _pl
 
-    from aicesat import build_atl06
+    from aicesat import build
 
-    for name in ("build_glas_index", "build_icessn_index"):
-        src = _pl.Path(f"scripts/{name}.py").read_text()
-        stamp = src.index("if err == 0 and ok == len(todo):")
-        pool = src.index("ProcessPoolExecutor")
-        assert stamp > pool, f"{name}: the claim is stamped before the build runs"
-        assert "NOT claiming coverage" in src, f"{name}: an incomplete build must say it did not claim"
-    # ATL06's build moved into the library so the TUI and the script run one implementation; the ordering
-    # invariant moved with it and is checked where it now lives.
-    src = inspect.getsource(build_atl06.build_bbox)
-    assert src.index("if err == 0 and ok == len(todo):") > src.index("ProcessPoolExecutor"), \
-        "build_bbox: the claim is stamped before the build runs"
-    assert "NOT claiming coverage" in src, "build_bbox: an incomplete build must say it did not claim"
+    # Every collection but ATL03 builds through ONE driver, so the ordering invariant is checked once, where it lives:
+    # the claim is stamped after the pool has run, and only when every granule landed.
+    src = inspect.getsource(build.run_build)
+    assert src.index("if err == 0 and ok == len(todo):") > src.index("run_pool("), \
+        "run_build: the claim is stamped before the build runs"
+    assert "NOT claiming coverage" in src, "run_build: an incomplete build must say it did not claim"
+    for name in ("build_atl06_index", "build_gedi_index", "build_glas_index", "build_icessn_index", "build_gpstruth_index"):
+        assert "build.cli_main(" in _pl.Path(f"scripts/{name}.py").read_text(), f"{name}: not on the shared driver"
     src = _pl.Path("scripts/build_index.py").read_text()
     assert src.index("write_build_manifest") > src.index("ensure_index"), "ATL03 claims before it builds"
     assert "NOT claiming coverage" in src

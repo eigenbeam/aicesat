@@ -46,7 +46,7 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         from . import coverage as _cov, index_gedi as _ix
         why = _cov.coverage_gap(_ix._index_dir(_ix.GEDI_RES), bbox, polygon) or "the coverage gate refused it"
         raise RuntimeError(f"GEDI not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
-                           f"Build with: uv run scripts/build_gedi_index.py <W> <S> <E> <N> 5 8")
+                           f"Build with: uv run scripts/build_gedi_index.py <W> <S> <E> <N> 5")
     arr, st = index_gedi.fetch_bbox(bbox, window=window, res=index_gedi.GEDI_RES, polygon=polygon,
                                     clip_cells=True, on_granule=on_granule, on_plan=on_plan)
     if polygon is not None:

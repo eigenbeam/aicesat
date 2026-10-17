@@ -87,12 +87,27 @@ def test_plan_bbox_settle_false_does_not_wait_on_the_writer(monkeypatch, rows):
 
 # --- build_bbox -----------------------------------------------------------------------------------------------
 
+class _Done:
+    def __init__(self, fn, args):
+        try:
+            self._v, self._e = fn(*args), None
+        except Exception as e:  # noqa: BLE001 - delivered through result(), as a real future would
+            self._v, self._e = None, e
+
+    def result(self, timeout=None):
+        if self._e is not None:
+            raise self._e
+        return self._v
+
+
 class _SerialPool:
     """ProcessPoolExecutor's interface, run in-process, so the build sequence is testable without spawning."""
     def __init__(self, *a, **k): pass
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def map(self, fn, items, **k): return (fn(i) for i in items)
+    def submit(self, fn, *args): return _Done(fn, args)
+    def shutdown(self, wait=True, cancel_futures=False): pass
 
 
 def _patch_build(monkeypatch, tmp_path, granules, done=(), unclaimed=(), proves=True):

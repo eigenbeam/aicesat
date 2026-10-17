@@ -81,7 +81,7 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     `cells` (opt-in): keep only rows whose H3 cell is in the set this build was asked for — see
     index.build_granule_index for why indexing a granule's whole track made "indexed" mean less than it looked."""
     auth.login()
-    keep = index_mod.cells_filter(cells)
+    keep = index_mod.cells_filter(cells, res)      # raises on a filter at another resolution (see cells_filter)
     from .access import RangeReader, access_url, cloud_hdf5_file, decode_chunk
     from .coverage import granule_name
 

@@ -311,7 +311,7 @@ def extract(bbox, window, polygon=None, on_granule=None, on_plan=None) -> tuple[
         why = coverage.coverage_gap(index_gpstruth._index_dir(index_gpstruth.GPSTRUTH_RES), bbox, polygon) \
             or "the coverage gate refused it"
         raise RuntimeError(f"GPSTRUTH not usable over {tuple(round(float(v), 4) for v in bbox)}: {why}. "
-                           f"Build with: uv run scripts/build_gpstruth_index.py <W> <S> <E> <N> 5 8")
+                           f"Build with: uv run scripts/build_gpstruth_index.py <W> <S> <E> <N> 5")
     arr, st = index_gpstruth.fetch_bbox(bbox, window=window, res=index_gpstruth.GPSTRUTH_RES, polygon=polygon,
                                         clip_cells=True, on_granule=on_granule, on_plan=on_plan)
     if polygon is not None:

@@ -326,11 +326,16 @@ def _ensure(cells, bbox, window, force, threads, group_parallel, prune_bbox, fin
         items = [(gb, rs, rs[0]["url"], presigned[rs[0]["url"]], threads) for gb, rs in by_gb.items()]
     t_presign = time.time() - t_p0
     n_granules = len({rs[0]["url"] for rs in by_gb.values()})
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
     t_f0 = time.time()
     results = []
     if items:
-        with ProcessPoolExecutor(max_workers=min(group_parallel, len(items))) as ex:
+        # SPAWN, as index.ensure_index does. This pool runs inside the web server while other legs hold a live CRT
+        # client, an aiobotocore loop and the lake writer's threads; a forked child inherits their locks and none of
+        # their threads. (Linux forks by default; macOS spawns, which is why no laptop run ever showed it.)
+        with ProcessPoolExecutor(max_workers=min(group_parallel, len(items)),
+                                 mp_context=multiprocessing.get_context("spawn")) as ex:
             results = list(ex.map(_process_group, items))
     t_groups = time.time() - t_f0
     n_written_cells = 0

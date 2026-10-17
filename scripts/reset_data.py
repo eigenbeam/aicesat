@@ -96,7 +96,7 @@ def main() -> None:
     for coll, b in params.items():
         bb = b.get("bbox")
         if bb and b.get("res") is not None:
-            print(f"  uv run python {b['script']} {' '.join(str(x) for x in bb)} {b['res']} 8")
+            print(f"  uv run python {b['script']} {' '.join(str(x) for x in bb)} {b['res']}")
         else:
             print(f"  # {coll}: no usable bbox/res recorded — pick the region by hand")
     print("  # each build now rolls up its coverage manifest when it finishes (coverage.build_manifest)")
