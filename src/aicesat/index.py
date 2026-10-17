@@ -170,7 +170,7 @@ def build_granule_index(granule, res: int = H3_RES, cells=None) -> pa.Table:
 
     reader = RangeReader()
     # whole_object=False: ATL03 granules are 0.2-6.7 GB (median 1.3 GB over Summit); the block cache stays.
-    src = open_granule(url, s3, whole_object=False, reader=reader)
+    src = open_granule(url, s3, whole_object=False, reader=reader, block_size=ATL03_BLOCK_SIZE)
     with h5py.File(src.open(), "r") as f:   # in-region: s3fs; else one shared presign
         sc_orient = int(f["orbit_info/sc_orient"][0])
         sdp = float(f["ancillary_data/atlas_sdp_gps_epoch"][0])
@@ -281,6 +281,15 @@ def indexed_granules() -> set[str]:
 
 
 INDEX_TIMEOUT_S = 240  # a stalled remote open must not wedge a job: time out and retry once
+# The fsspec block h5py reads an ATL03 granule's structure through. ATL03 granules are 0.2-6.7 GB, so they are never
+# read whole (index_atl06 is); the block size is the lever instead. Measured (scripts/bench_build_io.py, m6i.xlarge,
+# 2026-10-17, 20 Summit granules, 8 workers):
+#
+#     block   block-cache GETs / granule   MB read   wall
+#     1 MiB            114                   120     23.4 s
+#     4 MiB              7                    29     11.1 s     <- the metadata is clustered: 7 reads cover it
+#    16 MiB              4                    67     11.9 s
+ATL03_BLOCK_SIZE = 4 << 20
 INDEX_WORKERS = 16     # h5py holds a global lock: processes, not threads (spike measured 0x from threads, 5-8x from processes).
                        # 16 because the ATL03 build is latency-bound (scripts/bench_build_io.py, 2026-10-17: 8 -> 16 workers
                        # is 1.6x on a 4-vCPU box; the knee is where CPU saturates).

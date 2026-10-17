@@ -970,8 +970,9 @@ class GranuleSource:
     With a whole-object buffer, `open()` is an in-memory file and `fetch()` slices; without one, `open()` is
     cloud_hdf5_file (the block cache) and `fetch()` goes through a RangeReader, built lazily if none was given."""
 
-    def __init__(self, url: str, s3url: str | None = None, reader: "RangeReader | None" = None, buf: bytes | None = None):
-        self.url, self.s3url, self.reader, self.buf = url, s3url or "", reader, buf
+    def __init__(self, url: str, s3url: str | None = None, reader: "RangeReader | None" = None, buf: bytes | None = None,
+                 block_size: int = 1 << 20):
+        self.url, self.s3url, self.reader, self.buf, self.block_size = url, s3url or "", reader, buf, block_size
         self._stats = AccessStats()
 
     @property
@@ -985,7 +986,7 @@ class GranuleSource:
     def open(self):
         if self.buf is not None:
             return io.BytesIO(self.buf)
-        return cloud_hdf5_file(self.url, self.s3url or None, reader=self.reader)
+        return cloud_hdf5_file(self.url, self.s3url or None, block_size=self.block_size, reader=self.reader)
 
     def fetch(self, ranges: list[tuple[int, int]]) -> list[bytes]:
         if self.buf is not None:
@@ -997,9 +998,10 @@ class GranuleSource:
 
 
 def open_granule(url: str, s3url: str | None = None, *, whole_object: bool = False, max_bytes: int | None = None,
-                 reader: "RangeReader | None" = None) -> GranuleSource:
+                 reader: "RangeReader | None" = None, block_size: int = 1 << 20) -> GranuleSource:
     """A GranuleSource for a builder. `whole_object` is honoured only in-region, with an s3:// URL, through the CRT,
-    and under the size cap; everywhere else this is exactly the block-cache path of before.
+    and under the size cap; everywhere else this is exactly the block-cache path of before, reading `block_size` per
+    miss (1 MiB; ATL03 passes index.ATL03_BLOCK_SIZE).
 
     Measured (scripts/bench_build_io.py, m6i.xlarge, 2026-10-17):
 
@@ -1019,7 +1021,7 @@ def open_granule(url: str, s3url: str | None = None, *, whole_object: bool = Fal
         if (getattr(r, "s3_fetch", None) or default_s3_mechanism()) == "crt":
             buf = read_whole_object(r, s3url, cap)
             reader = r
-    return GranuleSource(url, s3url, reader=reader, buf=buf)
+    return GranuleSource(url, s3url, reader=reader, buf=buf, block_size=block_size)
 
 
 def unshuffle(buf: bytes, itemsize: int) -> bytes:

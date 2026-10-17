@@ -104,8 +104,10 @@ def test_open_granule_out_of_region_is_the_block_cache_path(monkeypatch):
     src = access.open_granule("https://x/g.h5", "s3://b/g.h5", whole_object=True)
     assert not src.whole_object and src.reader is None
     opened = []
-    monkeypatch.setattr(access, "cloud_hdf5_file", lambda url, s3url=None, reader=None, **k: opened.append((url, s3url)) or "f")
-    assert src.open() == "f" and opened == [("https://x/g.h5", "s3://b/g.h5")]
+    monkeypatch.setattr(access, "cloud_hdf5_file", lambda url, s3url=None, reader=None, **k: opened.append((url, s3url, k.get("block_size"))) or "f")
+    assert src.open() == "f" and opened == [("https://x/g.h5", "s3://b/g.h5", 1 << 20)]
+    big = access.open_granule("https://x/g.h5", "s3://b/g.h5", block_size=4 << 20)
+    assert big.open() == "f" and opened[-1][2] == 4 << 20
 
 
 def test_open_granule_in_region_reads_whole_through_the_reader_it_was_given(monkeypatch):
