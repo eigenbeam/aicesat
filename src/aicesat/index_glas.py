@@ -29,7 +29,7 @@ from .index import _chunk_manifest, _filters   # reuse the ATL03/ATL06 HDF5 help
 log = logging.getLogger(__name__)
 
 GLAS_RES = 5   # match ATL06 (the two are coregistered/compared): a query cell maps to the same index cells for both.
-GLAS_INDEX_VERSION = "2"    # v2: cells filtered whole, not shots clipped to a bbox (v1 cut boundary hexes)
+GLAS_INDEX_VERSION = "3"    # v3: run_lo/run_hi/run_exact per (chunk, cell) row (index.cell_runs); v2: cells filtered whole
 GLAS_INDEX_DIR = cache.DATA_DIR / "index" / "glas"
 J2000 = np.datetime64("2000-01-01T12:00:00", "ms")
 MAX_SAT_FLAG = 2
@@ -116,7 +116,7 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
     s3 = (granule.data_links(access="direct") or [""])[0]
     t0 = time.time()
     base_cols = ["granule", "url", "s3url", "revision", "gdate", "chunk_index", "seg_start", "seg_end",
-                 "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max"]
+                 "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max", *index_mod.RUN_COLS]
     rows: dict[str, list] = {k: [] for k in base_cols}
     for key in GLAS_KEYS:
         for suf in ("offset", "size", "filters", "dtype", "mask", "fill"):
@@ -163,6 +163,10 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
             cell_ids = np.asarray(coordinates_to_cells(latok, lonok, res), dtype="u8")
         except Exception:
             cell_ids = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
+        # Where each cell sits in its chunk, over ALL positioned shots (before the cell filter, or a dropped cell's
+        # shots inside a kept cell's run would go unseen and the run would be called exact wrongly).
+        seg_ok = seg[ok]
+        runs = {int(k): index_mod.cell_runs(seg_ok[ks == k] - int(k) * C, cell_ids[ks == k]) for k in np.unique(ks)}
         if keep_arr is not None:                  # regional index: keep whole cells, never part of one
             m = np.isin(cell_ids, keep_arr)
             ks, latok, lonok, cell_ids = ks[m], latok[m], lonok[m], cell_ids[m]   # empty -> the emit loop below runs zero times
@@ -180,6 +184,8 @@ def build_glas_index(granule, res: int = GLAS_RES, cells=None) -> pa.Table:
             rows["h3_cell"].append(int(cell))
             b = box[int(k)]
             rows["lat_min"].append(b[0]); rows["lat_max"].append(b[1]); rows["lon_min"].append(b[2]); rows["lon_max"].append(b[3])
+            lo, hi, exact = runs[int(k)][int(cell)]
+            rows["run_lo"].append(lo); rows["run_hi"].append(hi); rows["run_exact"].append(bool(exact))
             for key in GLAS_KEYS:
                 ci = manifests[key][int(k)]
                 fl, dt = meta[key]
@@ -234,6 +240,8 @@ def _index_rows(bbox, window, res: int, polygon=None) -> tuple[list[int], list[d
     files = coverage.index_files_for_cells("GLAS", want_cells)   # only the granule files touching these cells
     if files is not None and not files:
         return want_cells, []
+    if index_mod.index_has_runs(d, files):                        # a v3 index: the ingest can slice by cell (cell_runs)
+        cols += list(index_mod.RUN_COLS)
     src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
@@ -298,10 +306,12 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
         bbox, want_cells, MISSION, granules=names, beams=[BEAM], extra_cols=("quality",),
         clip_cells=clip_cells, on_batch=_stream)
 
-    chunk_cells, chunk_row = {}, {}
+    chunk_cells, chunk_row, chunk_runs = {}, {}, {}
     for r in rows:
         k = (r["granule"], r["chunk_index"])
         chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+        if r.get("run_lo") is not None:
+            chunk_runs.setdefault(k, {})[int(r["h3_cell"])] = (int(r["run_lo"]), int(r["run_hi"]), bool(r["run_exact"]))
     todo = [k for k, cs in chunk_cells.items() if any((k[0], BEAM, k[1], c) not in have for c in cs)]
     n_lake = len(chunk_cells) - len(todo)
 
@@ -310,6 +320,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     # the write work on every build to save a re-fetch when the user happens to pan along the same track.
     want_only = None if index_atl06.precache_adjacent() else tuple(sorted(int(c) for c in want_cells))
     reader, fresh_parts = None, []
+    n_from_runs = [0]                 # chunks labelled from index runs rather than per-point H3 (see index_atl06)
     if todo:
         reader = RangeReader()
         by_url: dict[str, list] = {}
@@ -349,8 +360,12 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
                 dec = _decode_chunk(raws, r); v = dec["valid"]
                 mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
                         "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
-                mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["chunk_index"])
+                labels = index_mod.cells_from_runs(v.size, chunk_runs.get(k), chunk_cells[k]) if want_only is not None else None
+                if labels is not None:
+                    mats["h3_cell"] = labels[v]; n_from_runs[0] += 1
+                else:
+                    mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 # mark every wanted cell of the chunk (even an all-fill one) so it is not re-fetched forever
                 writes.append(lake.ChunkWrite(r["granule"], BEAM, r["chunk_index"], mats,
                                               only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k]))))
@@ -382,7 +397,7 @@ def fetch_bbox(bbox, window=None, res: int = GLAS_RES, force: bool = False, clip
     evicted = []
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
-               "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
+               "chunks_cells_from_runs": n_from_runs[0], "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
     return arrays, st
 
 

@@ -146,3 +146,59 @@ def test_precaching_keeps_the_per_point_path(monkeypatch):
     got, st = index_atl06.fetch_bbox(BBOX)
     assert st["chunks_cells_from_runs"] == 0 and calls, "runs cover only the wanted cells; precaching needs every cell"
     _same(index_atl06._fetch_direct(BBOX)[0], got)
+
+
+# --- GLAS records them the same way -----------------------------------------------------------------------------------------
+def test_the_glas_builder_records_exact_runs(tmp_path, monkeypatch):
+    from aicesat import index_glas
+    n = 400
+    lat = np.linspace(72.5, 72.9, n); lon = np.full(n, -38.5)
+    vals = {"lat": lat, "lon": lon % 360.0, "elev": np.full(n, 2000.0), "sat_corr": np.zeros(n), "delta_ellip": np.zeros(n),
+            "time": np.linspace(2.5e8, 2.5e8 + n, n), "elev_use": np.zeros(n, "i1"), "sat_flag": np.zeros(n, "i1")}
+    h5 = tmp_path / "GLAH06_634_2131_002_0045_1_01_0001.H5"
+    with h5py.File(h5, "w") as f:
+        for key, dpath in index_glas.GLAS_DATASETS:
+            f.create_dataset(dpath, data=vals[key], chunks=(100,), compression="gzip")
+    monkeypatch.setattr(auth, "login", lambda *a, **k: None)
+    monkeypatch.setattr(access, "in_region", lambda: False)
+    monkeypatch.setattr(access, "open_granule", lambda url, s3=None, **k: access.GranuleSource(url, s3, buf=h5.read_bytes()))
+    monkeypatch.setattr(index_glas, "GLAS_INDEX_DIR", tmp_path / "idx")
+    cells = sorted({h3.str_to_int(h3.latlng_to_cell(float(a), -38.5, 5)) for a in lat})
+    tbl = index_glas.build_glas_index(_Granule(h5.name), cells=cells)
+    rows = tbl.to_pylist()
+    assert rows and all(r["run_exact"] for r in rows)
+    for r in rows:
+        k = r["chunk_index"]
+        seg = np.arange(k * 100, min((k + 1) * 100, n))
+        idx = np.flatnonzero([h3.str_to_int(h3.latlng_to_cell(float(lat[s]), -38.5, 5)) == r["h3_cell"] for s in seg])
+        assert (r["run_lo"], r["run_hi"]) == (int(idx[0]), int(idx[-1]) + 1)
+
+
+# --- GEDI records them per span -----------------------------------------------------------------------------------------------
+def test_the_gedi_builder_records_exact_runs_per_span(tmp_path, monkeypatch):
+    """GEDI datasets of one beam are chunked at different lengths; rows are spans at the union of the chunk edges and
+    the run is relative to the span's start."""
+    from aicesat import index_gedi
+    n = 600
+    lat = np.linspace(72.5, 72.9, n); lon = np.full(n, -38.5)
+    h5 = tmp_path / "GEDI02_A_2021001000000_O12345_01_T00001_02_003_01_V002.h5"
+    with h5py.File(h5, "w") as f:
+        g = "BEAM0101"
+        f.create_dataset(f"{g}/lat_lowestmode", data=lat, chunks=(200,), compression="gzip")
+        f.create_dataset(f"{g}/lon_lowestmode", data=lon, chunks=(200,), compression="gzip")
+        f.create_dataset(f"{g}/elev_lowestmode", data=np.full(n, 3000.0, "f4"), chunks=(150,), compression="gzip")
+        f.create_dataset(f"{g}/sensitivity", data=np.full(n, 0.95, "f4"), chunks=(300,), compression="gzip")
+        f.create_dataset(f"{g}/degrade_flag", data=np.zeros(n, "i1"), chunks=(600,), compression="gzip")
+        f.create_dataset(f"{g}/l2a_quality_flag_rel3", data=np.ones(n, "i1"), chunks=(600,), compression="gzip")
+    monkeypatch.setattr(auth, "login", lambda *a, **k: None)
+    monkeypatch.setattr(access, "in_region", lambda: False)
+    monkeypatch.setattr(access, "open_granule", lambda url, s3=None, **k: access.GranuleSource(url, s3, buf=h5.read_bytes()))
+    monkeypatch.setattr(index_gedi, "GEDI_INDEX_DIR", tmp_path / "idx")
+    cells = sorted({h3.str_to_int(h3.latlng_to_cell(float(a), -38.5, 5)) for a in lat})
+    tbl = index_gedi.build_gedi_index(_Granule(h5.name), cells=cells)
+    rows = tbl.to_pylist()
+    assert rows and all(r["run_exact"] for r in rows)
+    for r in rows:
+        i0, i1 = r["seg_start"], r["seg_end"]
+        idx = np.flatnonzero([h3.str_to_int(h3.latlng_to_cell(float(lat[s]), -38.5, 5)) == r["h3_cell"] for s in range(i0, i1)])
+        assert (r["run_lo"], r["run_hi"]) == (int(idx[0]), int(idx[-1]) + 1), r

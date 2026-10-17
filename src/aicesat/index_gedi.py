@@ -56,7 +56,7 @@ from .index import _chunk_manifest, _filters
 log = logging.getLogger(__name__)
 
 GEDI_RES = 5                # scene-sized queries, same rationale as ATL06/GLAS
-GEDI_INDEX_VERSION = "1"
+GEDI_INDEX_VERSION = "2"    # v2: run_lo/run_hi/run_exact per (span, cell) row (index.cell_runs)
 GEDI_INDEX_DIR = cache.DATA_DIR / "index" / "gedi"
 MISSION = "GEDI"
 
@@ -183,7 +183,7 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
     s3 = (granule.data_links(access="direct") or [""])[0]
 
     base_cols = ["granule", "url", "s3url", "gdate", "beam", "full_power", "orbit", "track",
-                 "span_index", "seg_start", "seg_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max"]
+                 "span_index", "seg_start", "seg_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max", *index_mod.RUN_COLS]
     rows: dict[str, list] = {k: [] for k in base_cols}
     for key in GEDI_KEYS:
         for suf in ("offset", "size", "filters", "dtype", "mask", "fill"):
@@ -236,6 +236,7 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
                 if not m.any():
                     continue
                 sidx, scell = idx[m], cell_ids[m]
+                sruns = index_mod.cell_runs(sidx - i0, scell)      # where each cell sits in the span, over ALL its shots
                 for cell in sorted(set(scell.tolist())):
                     if keep is not None and int(cell) not in keep:
                         continue
@@ -249,6 +250,8 @@ def build_gedi_index(granule, res: int = GEDI_RES, cells=None) -> pa.Table:
                     rows["h3_cell"].append(int(cell))
                     rows["lat_min"].append(float(la.min())); rows["lat_max"].append(float(la.max()))
                     rows["lon_min"].append(float(lo.min())); rows["lon_max"].append(float(lo.max()))
+                    rlo, rhi, rexact = sruns[int(cell)]
+                    rows["run_lo"].append(rlo); rows["run_hi"].append(rhi); rows["run_exact"].append(bool(rexact))
                     for k in GEDI_KEYS:
                         ci = manifests[k][chunk_of((i0, i1), sizes[k])]
                         fl, dt, fv = meta[k]
@@ -295,6 +298,8 @@ def _index_rows(bbox, window, res: int, full_power_only: bool = False, polygon=N
     files = coverage.index_files_for_cells("GEDI", want_cells)
     if files is not None and not files:
         return want_cells, []
+    if index_mod.index_has_runs(d, files):                        # a v2 index: the ingest can slice by cell (cell_runs)
+        cols += list(index_mod.RUN_COLS)
     src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
@@ -342,17 +347,19 @@ def plan_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = Fa
     want_cells, rows = _index_rows(bbox, window, res, full_power_only, polygon=polygon)
     out = {"want_cells": want_cells, "rows": rows,
            "names": sorted({r["granule"] for r in rows}), "beams": sorted({r["beam"] for r in rows}),
-           "chunk_cells": {}, "chunk_row": {}, "have": set(), "todo": [], "n_lake": 0, "by_url": {},
+           "chunk_cells": {}, "chunk_runs": {}, "chunk_row": {}, "have": set(), "todo": [], "n_lake": 0, "by_url": {},
            "want_only": tuple(sorted(int(c) for c in want_cells))}
     if not rows:
         return out
     if settle:
         lake.drain_writes(MISSION, want_cells)
     have = set() if force else lake.ingested_chunk_cells(MISSION, out["names"])
-    chunk_cells, chunk_row = {}, {}
+    chunk_cells, chunk_row, chunk_runs = {}, {}, {}
     for r in rows:
         k = (r["granule"], r["beam"], r["span_index"])
         chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+        if r.get("run_lo") is not None:
+            chunk_runs.setdefault(k, {})[int(r["h3_cell"])] = (int(r["run_lo"]), int(r["run_hi"]), bool(r["run_exact"]))
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
     # a beam GROUP's span is fetched whole -- see index_atl06._whole_groups for why
     need = {(k[0], k[2], beam_group(chunk_row[k])) for k in todo}
@@ -360,7 +367,7 @@ def plan_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = Fa
     by_url: dict[str, list] = {}
     for k in todo:
         r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
-    out.update(chunk_cells=chunk_cells, chunk_row=chunk_row, have=have, todo=todo,
+    out.update(chunk_cells=chunk_cells, chunk_runs=chunk_runs, chunk_row=chunk_row, have=have, todo=todo,
                n_lake=len(chunk_cells) - len(todo), by_url=by_url)
     return out
 
@@ -386,9 +393,10 @@ def fetch_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = F
         bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",),
         quality_zero=quality_only, clip_cells=clip_cells, on_batch=_stream)
 
-    chunk_cells, chunk_row = plan["chunk_cells"], plan["chunk_row"]
+    chunk_cells, chunk_row, chunk_runs = plan["chunk_cells"], plan["chunk_row"], plan["chunk_runs"]
     todo, n_lake, want_only = plan["todo"], plan["n_lake"], plan["want_only"]
     reader, fresh_parts = None, []
+    n_from_runs = [0]                 # spans labelled from index runs rather than per-point H3 (see index_atl06)
     if todo:
         reader = RangeReader()
         by_url = plan["by_url"]
@@ -425,8 +433,12 @@ def fetch_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = F
                 v = dec["valid"]
                 mats = {"lon": dec["lon"][v].astype("f8"), "lat": dec["lat"][v].astype("f8"),
                         "h": dec["h"][v].astype("f8"), "t": dec["t"][v], "quality": dec["quality"][v]}
-                mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["beam"], r["span_index"])
+                labels = index_mod.cells_from_runs(v.size, chunk_runs.get(k), chunk_cells[k]) if want_only is not None else None
+                if labels is not None:
+                    mats["h3_cell"] = labels[v]; n_from_runs[0] += 1
+                else:
+                    mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["span_index"], mats,
                                               only_cells=want_only, mark_cells=tuple(sorted(chunk_cells[k])),
                                               group=beam_group(r)))
@@ -456,5 +468,5 @@ def fetch_bbox(bbox, window=None, res: int = GEDI_RES, full_power_only: bool = F
         lake.enforce_global_limit_async(protect=want_cells, reason="limit (GEDI fetch)")
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
-               "cells": len(want_cells), "evicted_for_limit": [], "res": res})
+               "chunks_cells_from_runs": n_from_runs[0], "cells": len(want_cells), "evicted_for_limit": [], "res": res})
     return arrays, st
