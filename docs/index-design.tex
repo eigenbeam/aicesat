@@ -343,6 +343,12 @@ Only the \textsc{address} group differs between collections:
 \noindent
 GLAS and ICESSN replace the \textsc{mission} group with \col{gdate} (\code{YYYYMMDD}), having no
 repeat-cycle number; ATL03 replaces \col{seg\_start}/\col{seg\_end} with \col{ph\_start}/\col{ph\_end}.
+Since the v3 schemas (ATL06, GLAS; GEDI v2; ATL03 v6) the \textsc{where} group also carries the cell's
+\emph{run} inside the chunk --- \col{run\_lo}, \col{run\_hi}, \col{run\_exact}: the stretch of positions that
+belong to this cell and whether no other cell's point sits inside it --- so the ingest labels a fetched chunk by
+slicing instead of assigning an H3 cell to every point (a straight track meets a convex hexagon in one run; 99.3\%
+of real ATL06 rows are exact). ATL03 adds \col{edge\_lo\_end}/\col{edge\_hi\_start}, the photon ranges of the run's
+two boundary segments, which are still assigned photon by photon.
 Row counts per granule stay small --- 18 (ATL06), 7 (ATL03), 25 (GLAS), 2 (ICESSN) --- so the whole index is
 1.1\,GB across 71{,}640 granules.
 
