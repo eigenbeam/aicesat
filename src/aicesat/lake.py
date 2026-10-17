@@ -168,6 +168,7 @@ def _cell_tables(granule: str, beam: str, chunk_index: int, arrays: dict, res: i
     given = arrays.get("h3_cell", arrays.get("cell"))
     if given is not None and len(given) == lon.size:
         cells = np.where(ok, np.asarray(given, "u8"), 0)
+        ok &= cells != 0                              # 0 = labelled "no wanted cell" by the ingest (index.cells_from_runs)
     else:
         from . import planner
         log.debug("lake writer: %s/%s chunk %s arrived without cells; assigning", granule, beam, chunk_index)

@@ -43,7 +43,7 @@ _NAME_RE = re.compile(r"ATL03_(\d{14})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})\.h5
 # granule's parquet schema-identical to a full one, which also retires the "copy the schema off a sibling file" hack
 # (which had no answer for the FIRST granule of a fresh index).
 _I64_NAMES = {"chunk_index", "ph_start", "ph_end", "seg_start", "seg_end", "cycle", "rgt", "sc_orient",
-              "byte_start", "byte_end", "n_lines", "itrf_year"}
+              "byte_start", "byte_end", "n_lines", "itrf_year", "run_lo", "run_hi", "edge_lo_end", "edge_hi_start"}
 _F64_NAMES = {"lat_min", "lat_max", "lon_min", "lon_max", "sdp_epoch", "arp_to_sled_m", "track_depth_cm"}
 
 
@@ -51,7 +51,7 @@ def col_type(name: str):
     """The declared type for a known index column, or None when we have no opinion (infer it)."""
     if name == "h3_cell":
         return pa.uint64()          # NEVER inferred: a python int infers as int64 and the cell ids need the full range
-    if name in ("strong", "track_depth_known"):
+    if name in ("strong", "track_depth_known", "run_exact"):
         return pa.bool_()
     if name in _F64_NAMES or name.endswith("_fill"):
         return pa.float64()
@@ -122,6 +122,64 @@ def _chunk_manifest(ds: h5py.Dataset) -> list:
     else:
         infos = [ds.id.get_chunk_info(i) for i in range(ds.id.get_num_chunks())]
     return infos
+
+
+# --- cell runs: where a cell's points sit inside a chunk, so the ingest can slice instead of assigning -------------------
+# A build already assigns every positioned point its cell. For each (chunk, cell) row it also records the RUN of
+# within-chunk positions that belong to the cell: [run_lo, run_hi), and whether that run is EXACT -- no other cell's
+# point inside it. A straight-ish track meets a convex hexagon in one run, so the run is exact almost always; the
+# ingest then labels the chunk's points by slicing and skips the per-point H3 assignment (59 M assignments, 16-31
+# thread-seconds, of an 8-cell ATL06 ingest on 2026-10-17). An inexact run, or a row from an index built before the
+# columns existed, falls back to assigning -- the fast path never guesses.
+RUN_COLS = ("run_lo", "run_hi", "run_exact")
+
+
+def cell_runs(pos: np.ndarray, cells: np.ndarray) -> dict[int, tuple[int, int, bool]]:
+    """{cell: (lo, hi, exact)} for one chunk. `pos` are the within-chunk positions of its POSITIONED points and
+    `cells` their cells (same length). exact: every positioned point in [lo, hi) belongs to the cell."""
+    out: dict[int, tuple[int, int, bool]] = {}
+    if pos.size == 0:
+        return out
+    order = np.argsort(pos, kind="stable")
+    pos, cells = np.asarray(pos)[order], np.asarray(cells)[order]
+    for cell in np.unique(cells):
+        idx = np.flatnonzero(cells == cell)
+        lo, hi = int(pos[idx[0]]), int(pos[idx[-1]]) + 1
+        inside = int(np.searchsorted(pos, hi, side="left") - np.searchsorted(pos, lo, side="left"))
+        out[int(cell)] = (lo, hi, inside == idx.size)
+    return out
+
+
+def cells_from_runs(n: int, runs: dict | None, wanted) -> np.ndarray | None:
+    """A chunk's n points labelled by cell from its runs, or None when the fast path does not apply: no runs (a
+    pre-run index), a wanted cell without a row, or any inexact run. Points outside every wanted run are 0 (no cell),
+    which the ingest's want filter and the lake writer both treat as 'not wanted'."""
+    if not runs:
+        return None
+    out = np.zeros(int(n), "u8")
+    for cell in wanted:
+        r = runs.get(int(cell))
+        if r is None or not r[2]:
+            return None
+        lo, hi, _ = r
+        out[max(0, lo):min(int(n), hi)] = int(cell)
+    return out
+
+
+def index_has_runs(d, files) -> bool:
+    """Does this index carry the run columns? One footer read of the first file the query will open."""
+    import pathlib as _pl
+    first = None
+    if files:
+        first = _pl.Path(files[0])
+    else:
+        first = next(iter(sorted(_pl.Path(d).glob("*.parquet"))), None)
+    if first is None:
+        return False
+    try:
+        return "run_lo" in pq.read_schema(first).names
+    except Exception:
+        return False
 
 
 def read_via_chunks(ds: h5py.Dataset, src, first_n: int | None = None) -> np.ndarray:

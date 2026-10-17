@@ -70,11 +70,15 @@ A_DTYPE = {"latitude": "f8", "longitude": "f8", "h_li": "f4", "delta_time": "f8"
 
 
 def _build_atl06(lat, lon, h, q, C=10, granule="ATL06_20200115000000_11760601_007_01.h5", url="https://x/atl06.h5",
-                 beams=None):
+                 beams=None, runs=True):
     """A synthetic ATL06 granule: one strong beam `gt1r` over (lat, lon, h, q), or several via
-    `beams=[(name, strong, lat, lon, h, q), ...]`, all chunked at C segments and served from one blob."""
+    `beams=[(name, strong, lat, lon, h, q), ...]`, all chunked at C segments and served from one blob. `runs=False`
+    writes the pre-v3 row shape (no run_lo/run_hi/run_exact), which the ingest must still read."""
+    from aicesat import index as index_mod
     beams = beams or [("gt1r", True, lat, lon, h, q)]
     base = ["granule", "url", "s3url", "sdp_epoch", "beam", "strong", "chunk_index", "seg_start", "seg_end", "h3_cell"]
+    if runs:
+        base += list(index_mod.RUN_COLS)
     rows = {k: [] for k in base}
     for ds in index_atl06.ATL06_DATASETS:
         for suf in ("offset", "size", "dtype", "filters", "mask"):
@@ -90,10 +94,14 @@ def _build_atl06(lat, lon, h, q, C=10, granule="ATL06_20200115000000_11760601_00
             refs = {}
             for ds in index_atl06.ATL06_DATASETS:
                 raw = _gz(data[ds][s0:s1], A_DTYPE[ds]); refs[ds] = (len(blob), len(raw)); blob.extend(raw)
+            cruns = index_mod.cell_runs(np.arange(s1 - s0), cells[s0:s1])
             for cell in sorted(set(cells[s0:s1].tolist())):
                 rows["granule"].append(granule); rows["url"].append(url); rows["s3url"].append("")
                 rows["sdp_epoch"].append(1.0e9); rows["beam"].append(beam); rows["strong"].append(bool(strong))
                 rows["chunk_index"].append(k); rows["seg_start"].append(s0); rows["seg_end"].append(s1); rows["h3_cell"].append(int(cell))
+                if runs:
+                    lo, hi, exact = cruns[int(cell)]
+                    rows["run_lo"].append(lo); rows["run_hi"].append(hi); rows["run_exact"].append(exact)
                 for ds in index_atl06.ATL06_DATASETS:
                     off, sz = refs[ds]
                     rows[f"{ds}_offset"].append(off); rows[f"{ds}_size"].append(sz)

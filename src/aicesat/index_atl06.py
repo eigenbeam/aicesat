@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 H3_RES = 6
 ATL06_RES = 5   # per-collection choice: ATL06's 400 km chunks make res 5 the sweet spot (finer buys ~nothing on
                 # scene-sized queries but multiplies index/scan cost) — see the resolution analysis.
-ATL06_INDEX_VERSION = "2"   # v2: rows filtered to the build's cells (v1 held the whole track)
+ATL06_INDEX_VERSION = "3"   # v3: run_lo/run_hi/run_exact per (chunk, cell) row (index.cell_runs); v2: rows filtered to the build's cells
 ATL06_DATASETS = ("latitude", "longitude", "h_li", "delta_time", "atl06_quality_summary")
 ATL06_INDEX_DIR = cache.DATA_DIR / "index" / "atl06"
 
@@ -91,7 +91,7 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
     s3 = (granule.data_links(access="direct") or [""])[0]
     t0 = time.time()
     base_cols = ["granule", "url", "s3url", "revision", "sc_orient", "sdp_epoch", "beam", "strong", "cycle", "rgt",
-                 "chunk_index", "seg_start", "seg_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max"]
+                 "chunk_index", "seg_start", "seg_end", "h3_cell", "lat_min", "lat_max", "lon_min", "lon_max", *index_mod.RUN_COLS]
     rows: dict[str, list] = {k: [] for k in base_cols}
     for ds in ATL06_DATASETS:
         for k in ("offset", "size", "filters", "dtype", "ncols", "mask"):
@@ -138,10 +138,12 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
             except Exception:
                 cell_ids = np.array([h3.str_to_int(h3.latlng_to_cell(float(a), float(o), res)) for a, o in zip(latok, lonok)], dtype="u8")
 
-            box = {}
+            box, runs = {}, {}
+            seg_ok = seg[ok]
             for k in np.unique(ks):
                 m = ks == k
                 box[int(k)] = (float(latok[m].min()), float(latok[m].max()), float(lonok[m].min()), float(lonok[m].max()))
+                runs[int(k)] = index_mod.cell_runs(seg_ok[m] - int(k) * C, cell_ids[m])   # where each cell sits in the chunk
 
             for k, cell in sorted(set(zip(ks.tolist(), cell_ids.tolist()))):
                 if keep is not None and int(cell) not in keep:
@@ -155,6 +157,8 @@ def build_atl06_index(granule, res: int = ATL06_RES, cells=None) -> pa.Table:
                 rows["h3_cell"].append(int(cell))
                 b = box[int(k)]
                 rows["lat_min"].append(b[0]); rows["lat_max"].append(b[1]); rows["lon_min"].append(b[2]); rows["lon_max"].append(b[3])
+                lo, hi, exact = runs[int(k)][int(cell)]
+                rows["run_lo"].append(lo); rows["run_hi"].append(hi); rows["run_exact"].append(bool(exact))
                 for d in ATL06_DATASETS:
                     ci = manifests[d][int(k)]
                     fl, dt, nc = meta[d]
@@ -214,6 +218,13 @@ def precache_adjacent() -> bool:
 
     The neighbour still fetches 83% of its chunks (a chunk is fetched if ANY wanted cell lacks it, and a block's strip
     only brushes the next box), and both requests are slower with it on. Off, decisively.
+
+    Re-run 2026-10-17 after the write path got cheap (one H3 pass, one file per beam group, scripts/bench_ingest_fresh.py,
+    same X and Y, 2 writers): the verdict holds. Writing the whole strip is still ~2.5x the CPU on a CPU-bound box.
+
+        precache   X wall   X CPU-s   X write-s   X files    Y wall   Y chunks NASA / lake   Y files
+           off      16.8 s    41.5      25.4       3,225     13.9 s      2,274 / 686          2,471
+           on       31.9 s    77.7      57.0      28,081     21.7 s      1,845 / 1,115       17,256
     """
     import os
     return os.environ.get(PRECACHE_ENV, "0").lower() in ("1", "true", "yes")
@@ -246,6 +257,8 @@ def _index_rows(bbox, window, res: int, strong_only: bool, polygon=None) -> tupl
     files = coverage.index_files_for_cells("ATL06", want_cells)   # name only the granule files that touch these cells
     if files is not None and not files:
         return want_cells, []                                     # manifest says no granule touches them
+    if index_mod.index_has_runs(d, files):                        # a v3 index: the ingest can slice by cell (cell_runs)
+        cols += list(index_mod.RUN_COLS)
     src = coverage.read_parquet_src(d, files)
     con = duckdb.connect()
     try:
@@ -275,6 +288,7 @@ def plan_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True,
       rows         one index row per (granule, beam, chunk, cell), carrying that chunk's byte refs
       names, beams the granules and beams those rows select
       chunk_cells  (granule, beam, chunk) -> the wanted cells it touches
+      chunk_runs   (granule, beam, chunk) -> {cell: (run_lo, run_hi, run_exact)} from a v3 index, else {} (index.cell_runs)
       chunk_row    (granule, beam, chunk) -> a representative row (byte refs are identical across a chunk's cells)
       have         the (granule, beam, chunk, cell) tuples already materialized
       todo         the chunks that must be fetched: ANY wanted cell of theirs is not yet materialized
@@ -291,7 +305,7 @@ def plan_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True,
     want_cells, rows = _index_rows(bbox, window, res, strong_only, polygon=polygon)
     out = {"want_cells": want_cells, "rows": rows,
            "names": sorted({r["granule"] for r in rows}), "beams": sorted({r["beam"] for r in rows}),
-           "chunk_cells": {}, "chunk_row": {}, "have": set(), "todo": [], "n_lake": 0, "by_url": {},
+           "chunk_cells": {}, "chunk_runs": {}, "chunk_row": {}, "have": set(), "todo": [], "n_lake": 0, "by_url": {},
            # Write only the cells the request covers, discarding the rest of the decoded strip (see
            # precache_adjacent). Coverage stays consistent: mark_cells is the chunk's WANTED cells, so we never
            # claim to hold what we dropped.
@@ -303,17 +317,19 @@ def plan_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True,
         lake.drain_writes(MISSION, want_cells)
     have = set() if force else lake.ingested_chunk_cells(MISSION, out["names"])
 
-    chunk_cells, chunk_row = {}, {}      # (granule,beam,chunk) -> wanted cells it touches / a representative index row
+    chunk_cells, chunk_row, chunk_runs = {}, {}, {}   # (granule,beam,chunk) -> wanted cells / a representative row / cell runs
     for r in rows:
         k = (r["granule"], r["beam"], r["chunk_index"])
         chunk_cells.setdefault(k, set()).add(int(r["h3_cell"])); chunk_row.setdefault(k, r)
+        if r.get("run_lo") is not None:
+            chunk_runs.setdefault(k, {})[int(r["h3_cell"])] = (int(r["run_lo"]), int(r["run_hi"]), bool(r["run_exact"]))
     # cell-aware skip (like ATL03): fetch a chunk if ANY of its wanted cells is not yet materialized
     todo = [k for k, cs in chunk_cells.items() if any((k[0], k[1], k[2], c) not in have for c in cs)]
     todo = _whole_groups(todo, chunk_cells, chunk_row)
     by_url: dict[str, list] = {}
     for k in todo:
         r = chunk_row[k]; by_url.setdefault(access_url(r["url"], r["s3url"]), []).append(r)
-    out.update(chunk_cells=chunk_cells, chunk_row=chunk_row, have=have, todo=todo,
+    out.update(chunk_cells=chunk_cells, chunk_runs=chunk_runs, chunk_row=chunk_row, have=have, todo=todo,
                n_lake=len(chunk_cells) - len(todo), by_url=by_url)
     return out
 
@@ -376,10 +392,11 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
         bbox, want_cells, MISSION, granules=names, beams=beams, extra_cols=("quality",),
         quality_zero=quality_zero, clip_cells=clip_cells, on_batch=_stream)
 
-    chunk_cells, chunk_row = plan["chunk_cells"], plan["chunk_row"]
+    chunk_cells, chunk_row, chunk_runs = plan["chunk_cells"], plan["chunk_row"], plan["chunk_runs"]
     todo, n_lake = plan["todo"], plan["n_lake"]
     want_only = plan["want_only"]
     reader, fresh_parts = None, []
+    n_from_runs = [0]                 # chunks whose cell labels came from index runs rather than per-point H3
     if todo:
         reader = RangeReader()
         by_url = plan["by_url"]
@@ -422,9 +439,15 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
                 valid = np.isfinite(h) & (h < 3.0e38) & np.isfinite(lat) & np.isfinite(lon)   # data-validity (bbox-independent)
                 mats = {"lon": lon[valid].astype("f8"), "lat": lat[valid].astype("f8"), "h": h[valid].astype("f8"),
                         "t": _atlas_epoch_years(dt[valid], r["sdp_epoch"]), "quality": q[valid]}
-                # The ONE H3 assignment of these points: _keep reads it, and the lake writer splits files by it.
-                mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 k = (r["granule"], r["beam"], r["chunk_index"])
+                # The ONE cell label of these points: _keep reads it and the lake writer splits files by it. From a v3
+                # index the chunk's wanted cells are exact runs along the track, so the label is a slice, not 59 M H3
+                # lookups; precaching (want_only None) and any inexact or absent run take the per-point assignment.
+                labels = index_mod.cells_from_runs(lat.size, chunk_runs.get(k), chunk_cells[k]) if want_only is not None else None
+                if labels is not None:
+                    mats["h3_cell"] = labels[valid]; n_from_runs[0] += 1
+                else:
+                    mats["h3_cell"] = planner._cells_vectorized(mats["lat"], mats["lon"], res) if mats["lon"].size else np.zeros(0, "u8")
                 # mark every wanted cell of the chunk (not only cells that carried valid data) so an all-fill cell is
                 # not re-fetched forever; write_point_chunk adds any extra cell its points materialise.
                 writes.append(lake.ChunkWrite(r["granule"], r["beam"], r["chunk_index"], mats,
@@ -461,7 +484,7 @@ def fetch_bbox(bbox, window=None, res: int = ATL06_RES, strong_only: bool = True
     evicted = []
     st = reader.stats.as_dict() if reader else AccessStats().as_dict()
     st.update({"chunks_from_lake": n_lake, "chunks_from_nasa": len(todo), "chunks_fetched": len(todo),
-               "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
+               "chunks_cells_from_runs": n_from_runs[0], "cells": len(want_cells), "evicted_for_limit": evicted, "res": res})
     return arrays, st
 
 
