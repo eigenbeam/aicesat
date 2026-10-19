@@ -1,5 +1,8 @@
-% The aicesat functional design, from first principles.
-% Build:  xelatex -interaction=nonstopmode -halt-on-error functional-design.tex   (twice, for references)
+% Searching and retrieving along-track altimetry: the aicesat design, from the data up.
+% Build (in docs/):  xelatex -interaction=nonstopmode -halt-on-error functional-design.tex
+%                    bibtex functional-design
+%                    xelatex -interaction=nonstopmode -halt-on-error functional-design.tex   (twice more)
+% Needs xelatex with the system fonts Palatino and Menlo (TeX Live 2026 basic + fontspec is enough).
 \documentclass[10pt,a4paper]{article}
 
 \usepackage[a4paper,textwidth=112mm,marginparwidth=46mm,marginparsep=7mm,left=22mm,top=24mm,bottom=28mm,
@@ -19,6 +22,9 @@
 \usepackage{fancyvrb}
 \usepackage{ragged2e}
 \usepackage{parskip}
+\setlength{\emergencystretch}{1.5em}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{url}
 \usepackage[hidelinks]{hyperref}
 
 % ---- colours: one ink, one soft grey, one panel, one accent, one for the remote side ---------------------------
@@ -79,12 +85,20 @@
 }
 % a full-width figure body: overflows into the margin column on purpose
 \newcommand{\wide}[1]{\noindent\makebox[\textwidth][l]{#1}}
+% requirement tags (Chapter 6) and the grid / track strokes used by the data and grid figures
+\newcommand{\req}[1]{\textbf{R#1}}
+\tikzset{
+  grid/.style  = {draw=soft!60, line width=0.4pt},
+  track/.style = {draw=idxblue, line width=0.9pt},
+  foot/.style  = {fill=idxblue!55, draw=none},
+  box/.style   = {draw=nasared, line width=0.7pt},
+}
 
-\title{\textbf{The aicesat index, from first principles}\\[4pt]
-  \large a functional design for building and querying\\
-  \large sub-granule indexes over many altimetry collections}
-\author{}
-\date{2026-10-17}
+\title{\textbf{Searching and retrieving along-track altimetry}\\[4pt]
+  \large a sub-granule index on a discrete global grid, and the engines that build and use it\\[2pt]
+  \normalsize the aicesat design, from the data up}
+\author{Kevin W. Beam}
+\date{2026-10-18}
 
 \begin{document}
 \maketitle
@@ -92,31 +106,41 @@
 
 \begin{abstract}
 \noindent
-A scientist asks for every altimetry point of several satellite and airborne missions inside a box on the ice.
-The data sit in thousands of multi-gigabyte files in a cloud archive, and the box needs a few megabytes of them.
-This document derives, from that one requirement, a system that reads exactly the bytes the box needs: a
-\emph{sub-granule index} that records where every spatial cell's points live inside every file, a \emph{build}
-pipeline that produces the index once, a \emph{query} pipeline that turns a box into byte ranges and a cache of
-decoded points, and a \emph{framework} in which each collection is a value plugged into one shared pipeline. It
-is written for a reader who has not seen the current code. Every mechanism is motivated before it is named, every
-value and stage is drawn in one visual grammar, and every number is a measurement from the deployed instance.
-The design is partly built: the margin says, chapter by chapter, which pieces exist today.
+We describe the characteristics of along-track, non-gridded altimetry data that make it difficult to search and
+retrieve: data from ICESat's GLAS, Operation IceBridge's ATM, ICESat-2's ATLAS, GEDI, and a ground traverse, as
+they are archived in the Earthdata cloud. Using a canonical set of searches and retrievals based on geospatial area,
+temporal specification, and filtering and aggregating constraints, we show where granule-level search fails on such
+data and derive, from first principles, what an efficient system must record. We build a system that transforms
+granules and their metadata into an \emph{index into the raw data}. Taking into account the logical and physical
+organisation of the files, we show how a discrete global grid system turns that index into a table that answers
+spatial searches exactly and cheaply, and whose rows are request specifications: the byte ranges that hold the
+matching points, retrievable from the granule files directly. We then describe the request engine that executes
+those specifications and builds a local data lake from which analysis and visualisation proceed, and the framework
+that lets each collection be a value plugged into one shared pipeline. Every number is a measurement on the deployed
+instance; the margin records, chapter by chapter, which parts exist today.
 \end{abstract}
 
 \vspace{0.5em}
+
 \section*{How to read this document}
 
-The text proceeds in five parts. Part~I states the problem and the two kinds of data involved: the archive's
-files and the grid of cells that addresses the Earth. Part~II derives the index as a table and fixes what a row
-means. Part~III builds the index and Part~IV answers a query from it; both parts separate the \emph{structural}
-view (which values and functions exist) from the \emph{runtime} view (which processes and threads run them) and
-the \emph{computation} (what work is done per point, per chunk, per granule). Part~V is the framework: how six
-collections share one pipeline, how configuration and the grid become parameters, how the design is enforced in a
-language that enforces nothing.
+The report proceeds in eight parts and is meant to be read in order. Part~I characterises the data: what an
+along-track product is, how the archive packages it into granules, and how the bytes lie inside a granule.
+Part~II states the problem: the queries the system is asked, where granule-level search fails on these data
+(measured), and the seven requirements that follow. Part~III is about discrete global grids: what they are, four of
+them compared, and how the chosen one is used. Part~IV derives the index as a table and fixes what a row means.
+Part~V is a functional design for the builder that writes it, Part~VI for the path from a query specification to a
+plan to its execution, and Part~VII for the retrieval engine and the lake it fills. Part~VIII is the framework: how
+six collections share one pipeline, how configuration and the grid become parameters, how the design is enforced in
+a language that enforces nothing. Each chapter from Part~IV on opens by naming the requirement it discharges.
+Parts~V--VII separate the \emph{structural} view (which values and functions exist) from the \emph{runtime} view
+(which processes and threads run them) and the \emph{computation} (what work is done per point, per chunk, per
+granule).
 
 Figures use one grammar throughout (Figure~\ref{fig:legend}). The margin carries two kinds of note: numbered
 asides, and unnumbered notes in italics saying what already exists in the code for that chapter. Names of modules
-and functions live in those notes and in the listings, so the body can stay with concepts.
+and functions live in those notes and in the listings, so the body can stay with concepts. Citations are numbered;
+every number in the text is a measurement on the deployed instance unless a citation says otherwise.
 
 \begin{figure}[h]
 \wide{%
@@ -133,7 +157,9 @@ and functions live in those notes and in the listings, so the body can stay with
   \draw[flow] (52,-16) -- node[lblw, above] {what crosses, how big} (98,-16);
   \node[note, text width=44mm, anchor=west] at (104,-6)
     {A \emph{value} is immutable data. A \emph{pure function} depends only on its arguments. An \emph{effect}
-     touches the world: network, disk, clock, a pool. The accent colour marks the one element a figure is about.};
+     touches the world: network, disk, clock, a pool. The accent colour marks the one element a figure is about;
+     red marks the archive's side. Grids are thin grey; a ground track is a blue stroke; a query area is a red
+     outline.};
 \end{tikzpicture}}
 \caption{The figure grammar. Sharp corners are data; rounded corners are code; grey dashed code has side
 effects; cylinders are stores, red when they belong to the archive. Arrows say what crosses and, where measured,
@@ -144,91 +170,239 @@ how much.}
 \tableofcontents
 
 %=====================================================================================================================
-\part{The problem and the data}
+\part{The data}
 %=====================================================================================================================
 
-\section{What the system must do}
-\label{ch:problem}
+\section{Along-track, non-gridded data}
+\label{ch:alongtrack}
 
-The request is always the same shape: \emph{every point from these missions, inside this area, in this time
-window}. The area is a few tens of kilometres across; a glacier, a transect, a study site. The missions are
-satellite laser altimeters (ICESat's GLAS, ICESat-2's ATL03 photons and ATL06 land-ice segments, GEDI's
-footprints) and airborne or ground campaigns (IceBridge ATM, a GPS traverse). The answer is a table of
-positions, heights and times, drawn on a map and fed to analysis.
+A laser altimeter measures the time of flight of a pulse from the instrument to the ground and back. Combined with
+the instrument's position and pointing, each pulse gives one \emph{footprint}: a position on the ellipsoid, a
+height, and a time. The instrument fires continuously while the platform moves, so the measurements form a
+time-ordered sequence along a \emph{ground track}. Nothing about the sequence is a grid. Consecutive footprints are
+metres to hundreds of metres apart along the track; the next track is kilometres away or, for a repeat pass, offset
+by whatever the pointing achieved that day. The position of a measurement is \emph{data stored with it}, not
+something implied by its place in an array.
 
-The data live in the Earthdata cloud: one \emph{granule} per orbit segment or flight, each a file in S3 in the
-\code{us-west-2} region, found through a catalogue (CMR) that answers spatial and temporal searches with granule
-names and URLs. There are two ways to turn a box into points.
+That one property is the source of every difficulty this report is about. In a raster, the question ``which
+elements lie inside this box'' is arithmetic on indices. In an along-track product, a point's position is known only
+after the point has been read, so the question has no answer short of reading everything, unless someone has read
+everything once and written the answer down.
+
+\paragraph{The instruments.} Five sources of along-track data enter the system (Table~\ref{tab:missions},
+Figure~\ref{fig:sampling}).
+
+\begin{itemize}
+\item \textbf{ICESat / GLAS} (2003--2009) carried a single-beam 1064\,nm altimeter firing at 40\,Hz, giving footprints
+  of roughly 70\,m every $\sim$172\,m along track~\citep{schutz2005}. Early laser failures forced operation in
+  33-day campaigns, three a year; the record is 19 campaigns, L1A through L2F, so coverage is intermittent in time by
+  design. We use the GLAH06 land-elevation product, release 34~\citep{glah06v34}.
+\item \textbf{Operation IceBridge / ATM} (2009--2019) flew the Airborne Topographic Mapper, a conically scanning
+  lidar, on survey aircraft to bridge the gap between the two satellites~\citep{krabill2002}. The Level-2
+  ``icessn'' product resamples the dense scan into platelets: a plane is fitted to blocks of points at regular
+  intervals along and across the swath; each record is an 80\,m across-track nadir platelet, three or five outer
+  platelets, and about half a second of flight~\citep{blatm2guide,ilatm2v2}. The result is a
+  short, dense, irregular set of flight lines rather than an orbit.
+\item \textbf{ICESat-2 / ATLAS} (2018--) splits a 532\,nm beam into three pairs; each pair is a strong and a weak beam
+  (energy ratio about 4:1) 90\,m apart, and the pairs are 3.3\,km apart across track~\citep{markus2017}. The
+  photon-counting detector records individual returned photons, about one every 0.7\,m along track. ATL03 is the
+  geolocated photon product~\citep{neumann2019,atl03v7}; ATL06 fits 40\,m segments to the photons, posted every
+  20\,m, and reports one land-ice height per segment~\citep{smith2019,atl06v7}. The 1\,387 reference ground tracks
+  repeat every 91 days.
+\item \textbf{GEDI} (2019--) is a lidar on the International Space Station: three lasers, one split into two
+  coverage beams, dithered into eight ground tracks about 600\,m apart, each with 25\,m footprints every
+  $\sim$60\,m~\citep{dubayah2020,gedigeometry}. The station's orbit confines it to $\pm$51.6$^\circ$, so it never
+  sees an ice sheet; it enters the system for mountain glaciers and as a test that the design is not ice-specific.
+  We use the L2A footprint product, version 3~\citep{gedi02av3}.
+\item \textbf{The Summit traverse} is ground truth rather than altimetry: a kinematic GPS antenna on a sled towed
+  monthly along a 15\,km transect west of Summit Station, Greenland, laid along ICESat-2 reference tracks 749 and
+  879~\citep{is2tgpsss}. It has the along-track shape of an altimetry product and none of its scale.
+\end{itemize}
+
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}lllllll@{}}
+\toprule
+source & product & years & footprint & along-track & beams or tracks & latitude \\
+\midrule
+ICESat GLAS & GLAH06 r34 & 2003--09 & $\sim$70\,m & $\sim$172\,m & 1 & $\pm$86$^\circ$ \\
+IceBridge ATM & ILATM2 v2 & 2009--19 & 80\,m platelet & $\sim$0.5\,s of flight & nadir + 3--5 outer & 60--90$^\circ$N, 53--90$^\circ$S \\
+ICESat-2 ATLAS & ATL03 v7 & 2018-- & $\sim$17\,m & $\sim$0.7\,m (photons) & 3 pairs, strong/weak & $\pm$88$^\circ$ \\
+ICESat-2 ATLAS & ATL06 v7 & 2018-- & 40\,m segment & 20\,m posting & 3 pairs, strong/weak & $\pm$88$^\circ$ \\
+GEDI & GEDI02\_A v3 & 2019-- & 25\,m & $\sim$60\,m & 8 tracks, full/coverage & $\pm$51.6$^\circ$ \\
+Summit GPS & IS2TGPSSS v1 & 2006-- & point & continuous & 1 transect & Summit only \\
+\bottomrule
+\end{tabular}}
+\caption{The along-track sources in the system. The latitude column is the declared footprint the system uses to
+decide whether a collection can have data over an area at all; the years are the default search windows.}
+\label{tab:missions}
+\end{table}
 
 \begin{figure}[tbp]
 \wide{%
 \begin{tikzpicture}[x=1mm,y=1mm]
-  % left: download
-  \node[hdr] at (0,42) {(a) download the granules the catalogue names};
-  \node[val, minimum width=16mm] (box1) at (8,30) {box};
-  \node[remote, minimum width=22mm, minimum height=14mm] (s3a) at (48,30) {archive\\granule files};
-  \node[store, minimum width=22mm, minimum height=12mm] (disk) at (48,8) {local copies};
-  \node[pure] (filt) at (10,8) {filter\\by box};
-  \draw[flow] (box1) -- node[lblw, above] {names} (s3a);
-  \draw[flow, draw=nasared] (s3a) -- node[lblw, right] {every byte of every file\\ \textbf{tens of GB}} (disk);
-  \draw[flow] (disk) -- node[lblw, below] {read, keep 0.1\,\%} (filt);
-  % right: ranges
-  \node[hdr] at (80,42) {(b) read only the bytes that hold the box's points};
-  \node[val, minimum width=16mm] (box2) at (88,30) {box};
-  \node[store, minimum width=20mm, minimum height=12mm] (idx) at (118,30) {index};
-  \node[remote, minimum width=22mm, minimum height=14mm] (s3b) at (152,30) {archive\\granule files};
-  \node[pure] (dec) at (118,8) {decode};
-  \node[val] (pts) at (88,8) {points};
-  \draw[flow] (box2) -- node[lblw, above] {cells} (idx);
-  \draw[flow] (idx) -- node[lblw, above] {byte ranges} (s3b);
-  \draw[flow, draw=nasared] (s3b) |- node[lblw, below, pos=0.75] {a few thousand range GETs\\ \textbf{about 1\,GB}} (dec);
-  \draw[flow] (dec) -- (pts);
+  % scale: 1 mm = 10 m along track; each panel shows one kilometre of track
+  \foreach \yy/\lab in {56/GLAS, 36/ATM icessn, 18/ATLAS pair, 6/GEDI} {
+    \node[hdr, anchor=east] at (-2,\yy) {\lab};
+    \draw[grid] (0,\yy) -- (100,\yy);
+  }
+  % GLAS: 70 m footprints every 172 m
+  \foreach \x in {5,22.2,39.4,56.6,73.8,91} { \fill[foot] (\x,56) circle (3.5); }
+  % ATM: nadir platelet 80 m across (8 mm tall), ~65 m along (6.5 mm); outer platelets dimmer, +-20 mm
+  \foreach \x in {0,6.5,...,93.5} {
+    \fill[idxblue!55] (\x,32) rectangle (\x+6.1,40);
+    \fill[idxblue!22] (\x,40.6) rectangle (\x+6.1,44.6); \fill[idxblue!22] (\x,27.4) rectangle (\x+6.1,31.4);
+    \fill[idxblue!12] (\x,45.2) rectangle (\x+6.1,48.2); \fill[idxblue!12] (\x,23.8) rectangle (\x+6.1,26.8);
+  }
+  % ATLAS: strong (y=22.3) and weak (y=17.7) 90 m apart -> 9 mm (shown at 4.6 mm from the axis each side)
+  \draw[track] (0,20.3) -- (100,20.3); \draw[track, line width=0.4pt] (0,15.7) -- (100,15.7);
+  \foreach \x in {1,3,...,99} { \fill[idxblue!55] (\x,19.2) rectangle (\x+1.6,21.4); }
+  \foreach \x in {1,3,...,99} { \fill[idxblue!30] (\x,14.9) rectangle (\x+1.6,16.5); }
+  \node[lbl, anchor=west] at (101,20.3) {strong: 40\,m segments every 20\,m};
+  \node[lbl, anchor=west] at (101,15.7) {weak: a quarter of the photons};
+  % GEDI: 25 m footprints every 60 m; a second track would be 600 m away
+  \foreach \x in {2,8,...,98} { \fill[foot] (\x,6) circle (1.25); }
+  \node[lbl, anchor=west] at (101,6) {next track 600\,m away};
+  \node[lbl, anchor=west] at (101,56) {next track km away};
+  \node[lbl, anchor=west] at (101,36) {swath a few hundred m; flight lines};
+  \draw[draw=ink, line width=0.5pt] (0,-1) -- (100,-1); \draw[draw=ink, line width=0.5pt] (0,-2) -- (0,0); \draw[draw=ink, line width=0.5pt] (100,-2) -- (100,0);
+  \node[lbl] at (50,-4.5) {1\,km along track; 1\,mm = 10\,m};
 \end{tikzpicture}}
-\caption{The same box answered two ways. Downloading keeps a tenth of a percent of what it moves. Reading by
-byte range needs something the archive does not provide: a table saying which bytes of which file hold which
-part of the Earth. That table is the index.}
-\label{fig:twoways}
+\caption{One kilometre of each instrument's sampling at one scale. The products differ by three orders of
+magnitude in along-track density and by as much across track, but all of them are sequences of positioned
+measurements along a line, and none of them is a grid.}
+\label{fig:sampling}
 \end{figure}
 
-Downloading (Figure~\ref{fig:twoways}a) is simple and wrong at this scale. An ICESat-2 ATL06 granule is 32 to
-128\,MB; an ATL03 granule is 0.2 to 6.7\,GB, median 1.3\,GB over Greenland's Summit; a few hundred granules cross
-any site, and the box wants a fraction of a percent of each. Reading by byte range (Figure~\ref{fig:twoways}b)
-moves only what the box needs, but S3 can serve a byte range only when the caller already knows the offset and
-length. Someone must have looked inside every file once and written down where each part of the Earth is.
+\paragraph{What they share.} Every source delivers positions, heights and times as parallel arrays in time order,
+with quality indicators alongside; every source is sparse across track and continuous along it; and every source
+has holes. GLAS returns from cloud tops sit kilometres above the surface; its own cloud flag is set on 99.9\,\% of
+shots and so distinguishes nothing, while about 3\,\% of shots are gross cloud returns. ATLAS loses the surface
+under thick cloud and over wet firn the 532\,nm signal penetrates the snow. GEDI's accuracy degrades with slope.
+Fill values mark where an algorithm declined to report: GLAS uses $1.798\times10^{308}$ where a reader expects NaN,
+ATL06 uses a large positive float. Any system that indexes these data must therefore record where points \emph{are}
+rather than where the track \emph{was}, and must be prepared for a granule that crosses an area to contribute
+nothing to it.
 
-That table is the \textbf{sub-granule index}, and the whole system is organised around it. It fixes the two
-costs the design must respect:
+\section{Logical organisation: the granule and the product}
+\label{ch:logical}
+
+The archive's unit is the \emph{granule}: one file, catalogued once, with a footprint and a time range. What a
+granule contains is a product decision, and it differs by mission (Figure~\ref{fig:regions}).
 
 \begin{itemize}
-\item \textbf{The build} looks inside every granule once. On the deployed machine the regional indexes hold
-  33{,}484 ATL06 granules and 48{,}838 ATL03 granules; a build is hours, so it must be resumable, parallel and
-  never silently incomplete.
-\item \textbf{The query} must be bounded below by the network and nothing else. In the archive's region a byte
-  range arrives in tens of milliseconds, and a scene's worth of ranges in about three seconds. Everything the query
-  does beyond fetching (decoding, deciding which point belongs to which cell, caching) must cost less than that or
-  it is the bottleneck.
+\item An ICESat-2 orbit is cut into 14 \emph{regions} by lines of latitude at 27$^\circ$, 59.5$^\circ$ and
+  80$^\circ$ in each hemisphere, ascending and descending halves separately~\citep{atl06v7}. An ATL03 or ATL06
+  granule is one reference ground track (RGT), one cycle, one region: for Greenland, regions 03 and 05
+  (59.5--80$^\circ$N, ascending and descending) and 04 (the arc above 80$^\circ$N). Its name carries the start
+  time, RGT, cycle, region, version and release:
+  \code{ATL06\_20181014050737\_02380104\_007\_01.h5} is RGT 0238, cycle 01, region 04.
+\item A GLAH06 granule is a long orbit arc, pole to pole; the file name has no date, so the first shot's time is
+  the only clock.
+\item An ILATM2 granule is a few minutes of one flight (about four minutes in the deployed index); a flight
+  day yields dozens, a campaign thousands. Its name carries the date and the start time of the slice.
+\item A GEDI L2A granule is a quarter orbit, about fifteen minutes and $\sim$170\,000 shots per beam, named by
+  day-of-year, orbit and track.
+\item A traverse survey is one CSV file per monthly survey.
 \end{itemize}
 
-Two more requirements come from use rather than scale. The same area is asked for again and again with small
-changes, so decoded points are worth keeping in a local \emph{lake} that later queries read first. And the
-collections differ in file format, chunking and quality semantics while asking the same question, so adding a
-collection must mean describing it, not re-implementing the pipeline.\side{Six collections exist today, built and
-queried by six copies of nearly the same code. Part~V is about the seventh.}
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % lon/lat frame: 140 mm = 360 deg lon, 50 mm = 180 deg lat
+  \draw[grid] (0,-25) rectangle (140,25);
+  \foreach \la/\t in {27/27, -27/-27, 59.5/59.5, -59.5/-59.5, 80/80, -80/-80} {
+    \draw[grid, dashed] (0,{\la*50/180}) -- (140,{\la*50/180});
+    \node[lbl, anchor=east] at (-1,{\la*50/180}) {$\t^\circ$};
+  }
+  \node[lbl, anchor=east] at (-1,0) {0$^\circ$};
+  % one orbit: ground track of a 92 deg inclination orbit as a sinusoid-like curve (schematic), ascending then descending
+  \draw[track] plot[domain=0:140, samples=120] (\x, {24.4*sin(deg(\x/140*2*pi))});
+  % region boundaries along the curve: mark where the curve crosses the latitude lines on the ascending half
+  % labels of regions along the ascending and descending halves (schematic positions)
+  \foreach \x/\n in {4/01, 12/02, 22/03, 35/04, 48/05, 58/06, 66/07, 74/08, 82/09, 92/10, 105/11, 118/12, 128/13, 136/14} {
+    \node[lbl, text=idxblue!85!black] at (\x, {24.4*sin(deg(\x/140*2*pi)) + (\x<70 ? 4 : -4)}) {\n};
+  }
+  % Greenland regions highlighted
+  \draw[draw=idxblue, line width=2.2pt, opacity=0.35] plot[domain=16:54, samples=60] (\x, {24.4*sin(deg(\x/140*2*pi))});
+  \node[note, anchor=north west, text width=70mm] at (0,-27) {One ICESat-2 orbit, unrolled. Granule regions 03,
+    04 and 05 (heavier stroke) are the ones that cross Greenland; a 30\,km study site meets a few seconds of each.};
+\end{tikzpicture}}
+\caption{The granule is a product decision, not a geographic one. An ICESat-2 granule is one fourteenth of an
+orbit cut by latitude; a GLAS granule is a longer arc; an IceBridge granule is a few minutes of a flight. In every
+case the granule is hundreds to thousands of kilometres long and a study site needs a sliver of it.}
+\label{fig:regions}
+\end{figure}
 
-\section{What a granule is}
-\label{ch:granule}
+\paragraph{Inside a granule.} The HDF5 products are trees of groups that hold datasets. ATL03 and ATL06 have one
+group per beam (\code{gt1l} \ldots\ \code{gt3r}); which of the pair is the strong beam depends on the spacecraft's
+yaw orientation, a scalar stored once per file, and a yaw flip in progress leaves the question unanswerable for
+that granule. Within a beam, ATL06's \code{land\_ice\_segments} holds parallel arrays, one element per segment:
+latitude, longitude, height, time, a quality summary, and many more we do not read. ATL03's \code{heights} group
+holds one element per \emph{photon}, and its \code{geolocation} group holds one element per 20\,m
+\emph{segment}, with each segment recording the index of its first photon and its photon count; a photon's
+position is thus available both directly and, far more cheaply, through its segment. GLAH06 has no beams: one
+\code{Data\_40HZ} group with one element per shot. GEDI has eight beam groups, each with per-shot arrays whose
+elevation is the lowest detected mode. The text products are one record per line: ILATM2 has eleven
+comma-separated fields per platelet (time of day, position, elevation, slopes, fit RMS, point counts, a distance,
+and the across-track \emph{track} number, zero for nadir); the traverse file has twelve (position, antenna height,
+time, satellite geometry, and 95\,\% uncertainties).
 
-Four of the six collections are HDF5 files; two are CSV text. The design needs only a small part of HDF5, but
-that part has to be exact, because the index will address bytes inside files it never opens again.
+\paragraph{Time is encoded five ways.} ATLAS stores seconds since an epoch that is itself stored in the file, in GPS
+seconds since 1980, which differ from UTC by 18 leap seconds. GLAS stores seconds since J2000, noon on
+2000-01-01. ILATM2 stores seconds of day, with the day in the file name. The traverse stores decimal hours with
+day-of-year and year in separate columns. GEDI's time we do not read: the date comes from its file name. A system
+that wants a temporal predicate has to normalise all five before it can compare anything, and the cheapest reliable
+clock is usually the file name.
 
-\paragraph{Groups, datasets, chunks.} An HDF5 file is a tree of \emph{groups} holding \emph{datasets}. An ATL06
-file has six beam groups (\code{gt1l}, \code{gt1r}, \ldots, \code{gt3r}); each holds a group
-\code{land\_ice\_segments} with one dataset per variable: latitude, longitude, height, time, a quality flag. A dataset is stored in
-\emph{chunks}, fixed-size pieces of the array, each compressed on its own (gzip, usually after a byte-shuffle filter)
-and written wherever the file had room. The file keeps a B-tree per dataset mapping chunk number to (offset, size).
-Reading element $i$ means finding chunk $i\,\mathrm{div}\,C$ in that tree, fetching its bytes, decompressing
-them, and taking element $i \bmod C$.
+\paragraph{Frames and heights.} Heights are above an ellipsoid, but not the same one in the same frame. ATL06 is
+WGS84 in ITRF2014, with ocean tide and dynamic atmosphere corrections deliberately not applied. GLAH06 reports
+heights above the TOPEX/Poseidon ellipsoid in ITRF2008; the published conversion to WGS84 subtracts about 0.70\,m.
+ILATM2's frame is whichever ITRF realisation the campaign used, read per granule from the header. The traverse is
+GRS80 in ITRF2020, and its surface height is the antenna height minus a sled geometry that changed in 2014. None of
+this concerns the index, which records where bytes are; all of it concerns the analyses that read the lake, which is
+why the lake stores each source's native height and the conversion lives in the source's descriptor
+(Chapter~\ref{ch:descriptor}).
 
+\paragraph{Quality.} Each product has its own notion: ATL06's quality summary (zero is good); ATL03's per-photon
+signal confidence, a five-column array of which one column is the land-ice classification; GLAH06's elevation-use
+and saturation-correction flags; ILATM2's plane-fit RMS; GEDI's quality and degrade flags (which together keep
+41\,\% of shots over Langtang); the traverse's height uncertainty. These are filters on \emph{points}, applied after
+retrieval, and the only one the design asks the index to know about is the one that changes which bytes are needed:
+none of them do. Table~\ref{tab:logical} collects the per-collection facts the rest of the report relies on.
+
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}llp{30mm}p{27mm}p{24mm}p{28mm}@{}}
+\toprule
+collection & granule is & positions & height & time & quality \\
+\midrule
+ATL03 & RGT$\times$cycle$\times$region & \code{lat\_ph}, \code{lon\_ph} per photon; segments carry a reference photon & \code{h\_ph} & \code{delta\_time} + SDP epoch (GPS) & \code{signal\_conf\_ph[:,3]} $\ge$ 3 \\
+ATL06 & RGT$\times$cycle$\times$region & \code{latitude}, \code{longitude} per segment & \code{h\_li} & \code{delta\_time} + SDP epoch (GPS) & \code{atl06\_quality\_summary} = 0 \\
+GLAH06 & orbit arc & \code{d\_lat}, \code{d\_lon} (0--360) per shot & \code{d\_elev} + sat.\ corr.\ $-$ T/P offset & \code{DS\_UTCTime\_40} (J2000) & \code{elev\_use\_flg} = 0, \code{sat\_corr\_flg} $\le$ 2 \\
+GEDI L2A & quarter orbit & \code{lat/lon\_lowestmode} per shot & \code{elev\_lowestmode} & file name (day of year) & \code{quality\_flag} = 1, \code{degrade\_flag} = 0 \\
+ILATM2 & minutes of flight & columns 2--3 per platelet (0--360) & column 4 & seconds of day + file date & \code{track} = 0, RMS $<$ 50\,cm \\
+IS2TGPSSS & one survey & columns 1--2 per fix & antenna HAE $-$ sled + track depth & decimal hour, DOY, year & \code{SDHGT\_95} $<$ 0.5\,m \\
+\bottomrule
+\end{tabular}}
+\caption{The logical facts per collection. Everything in this table becomes a field of the collection descriptor
+in Part~\ref{part:framework}; nothing in it is known to the shared pipeline.}
+\label{tab:logical}
+\end{table}
+
+\section{Physical organisation: how the bytes lie}
+\label{ch:physical}
+
+Four of the six collections are HDF5 files; two are CSV text. The design needs only a small part of HDF5, but that
+part has to be exact, because the system will address bytes inside files it never opens again.
+
+\paragraph{Chunks.} An HDF5 dataset is stored in \emph{chunks}: fixed-size pieces of the array, each compressed
+on its own (gzip, usually after a byte-shuffle filter that groups the bytes of each element's position to compress
+better) and written wherever the file had room at the time~\citep{hdf5format}. A B-tree per dataset maps chunk
+number to (offset, size) in the file. Reading element $i$ means finding chunk $i\,\mathrm{div}\,C$ in that tree,
+fetching its bytes, decompressing them, and taking element $i \bmod C$. The chunk is therefore three things at
+once: the unit of compression, the unit of I/O, and the smallest thing a byte-range request can usefully ask for
+(Figure~\ref{fig:chunkmap}).
 \begin{figure}[tbp]
 \wide{%
 \begin{tikzpicture}[x=1mm,y=1mm]
@@ -327,10 +501,11 @@ time, and their positions are stored twice: every photon has its own latitude an
 reads the segment positions and maps each segment's photon range (\code{ph\_index\_beg}, \code{segment\_ph\_cnt})
 onto chunks. A chunk of 100{,}000 photons is thus located by the few hundred segments that cover it.
 
-\paragraph{The six collections.} Table~\ref{tab:collections} is the whole of what differs; everything else is
-shared. It is also, almost verbatim, the descriptor of Chapter~\ref{ch:descriptor}.
+\paragraph{One shape, six sources.} Table~\ref{tab:collections} is the whole of what differs in \emph{layout};
+everything else is shared. Read with Tables~\ref{tab:logical} and \ref{tab:physical} it is, almost verbatim, the
+collection descriptor of Chapter~\ref{ch:descriptor}.
 
-\begin{table}[h]
+\begin{table}[tbp]
 \footnotesize
 \wide{\begin{tabular}{@{}lllp{30mm}p{36mm}@{}}
 \toprule
@@ -344,35 +519,618 @@ ICESSN & IceBridge ATM L2 & text lines & per platelet line & none \\
 GPS & Summit traverse & text lines & per fix line & none; sled geometry from a metadata file \\
 \bottomrule
 \end{tabular}}
-\caption{What differs between collections. Each difference is a value or a small function in Part~V.}
+\caption{What differs between collections in layout. Each difference is a value or a small function in Part~\ref{part:framework}.}
 \label{tab:collections}
 \end{table}
 
-\section{Cells}
-\label{ch:cells}
 
-The index must answer ``which chunks hold points inside this area'' without geometry at query time. The standard
-device is a discrete global grid: partition the Earth into cells with integer identifiers at several resolutions,
-assign every point its cell once at build time, and let the query ask for cell identifiers. The current grid is
-H3,\side{H3's hexagons have the pleasant property that a straight track meets a cell in one contiguous stretch,
-which Chapter~\ref{ch:row} exploits. Chapter~\ref{ch:grid} makes the grid a parameter and says exactly which of its
-properties the design relies on.} whose cells are hexagons with 64-bit identifiers; a resolution-5 cell is
-253\,km$^2$ (edge 9.85\,km), resolution 6 is 36\,km$^2$.
+\paragraph{Where the chunks lie.} Nothing requires chunk $k$ of one dataset to sit near chunk $k$ of another, or
+near chunk $k+1$ of itself, and the writers do not try. In the example ATL06 granule the five datasets' chunks for
+one 10\,000-segment stretch of one beam are five ranges of 91 to 2\,866 bytes that happen to lie within 8\,577
+bytes of each other, so one 8.6\,kB request fetches the lot; in an ATL03 granule one chunk's five ranges can be
+3.28\,GB apart. The compressed size of a chunk also varies with content: a quality-flag chunk of 10\,000 one-byte
+values gzips to 91 bytes, a latitude chunk of 10\,000 doubles to 2.7\,kB. The index must therefore record, per
+chunk, per dataset, an exact (offset, size), and the fetcher must be prepared to coalesce neighbours and to leave
+distant ranges as separate requests.
 
-A cell plays three roles, at two resolutions (Figure~\ref{fig:cells}):
+\paragraph{How much there is.} Table~\ref{tab:physical} gives the chunk lengths and granule sizes measured on the
+deployed instance. Three numbers set the scale of everything that follows. An ATL06 granule over Greenland is
+64--104\,MB (quartiles 72 / 88 / 96\,MB from the catalogue's own size field) and holds about five chunks of 10\,000
+segments per beam inside the region; its segments are 20\,m apart, so one chunk is about 200\,km of track. An ATL03
+granule is 0.2--6.7\,GB (quartiles 0.95 / 1.4 / 2.7\,GB over Summit) and holds about a hundred chunks of 100\,000
+photons per beam. A GLAH06 granule is 3--5\,MB and an ILATM2 granule 0.1--0.5\,MB. The regional indexes on the
+deployed machine cover 33\,484 ATL06 granules, 48\,838 ATL03 granules, 4\,799 GLAH06 arcs and 33\,811 ILATM2
+slices.\landed{the chunk map is read by \code{index.\_chunk\_manifest} through h5py's \code{chunk\_iter}; GEDI's
+span cutting is \code{index\_gedi.chunk\_spans}; the line parsers are \code{index\_icessn.\_parse\_fields} and
+\code{index\_gpstruth}; sizes from \code{scripts/measure\_search\_modes.py} and \code{bench\_build\_io.py}.}
 
-\begin{enumerate}
-\item \textbf{Addressing.} Every index row carries the cell of its points at the collection's addressing
-  resolution: 5 for the segment and footprint products, 6 for photons, chosen so that a cell is roughly the
-  footprint of one chunk. A query turns its area into the set of addressing cells it overlaps and asks the index
-  for rows with those cells.
-\item \textbf{Partitioning.} The lake of decoded points is partitioned by the same cell, so a query reads
-  exactly the cells it asked for and eviction has a unit.
-\item \textbf{Claiming.} A build records the ground it covered as a set of finer cells (the \emph{claim}),
-  compacted up the hierarchy where whole parents are covered. A later query over an area checks that every fine
-  cell of the area has an ancestor in the claim; a later build over a larger area finds the fine cells not yet
-  claimed and builds only those.
-\end{enumerate}
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}lllllr@{}}
+\toprule
+collection & format & chunk (elements) & filters & granule size & indexed \\
+\midrule
+ATL03 & HDF5 & 100\,000 photons, shared by the group & gzip (+ shuffle) & 0.2--6.7\,GB; Q 0.95 / 1.4 / 2.7\,GB & 48\,838 \\
+ATL06 & HDF5 & 10\,000 segments, shared by the group & gzip (+ shuffle) & 64--104\,MB; Q 72 / 88 / 96\,MB & 33\,484 \\
+GLAH06 & HDF5 & shared, one group & gzip & 3--5\,MB; Q 3.3 / 3.9 / 4.2\,MB & 4\,799 \\
+GEDI L2A & HDF5 & 2\,608 / 5\,216 / 10\,432 / 100\,000 per dataset & gzip & $\sim$100\,MB & Langtang only \\
+ILATM2 & CSV & lines & none & 0.1--0.5\,MB & 33\,811 \\
+IS2TGPSSS & CSV & lines & none & 0.1--1\,MB & 272 \\
+\bottomrule
+\end{tabular}}
+\caption{The physical facts per collection. ``Q'' are size quartiles from the catalogue's size field over the Summit
+box (Langtang for GEDI). GEDI's four chunk lengths differ by 38$\times$ between datasets, which is why its index rows
+are spans rather than chunks.}
+\label{tab:physical}
+\end{table}
+
+%=====================================================================================================================
+\clearpage
+\part{The problem}
+%=====================================================================================================================
+
+\section{A canonical set of queries}
+\label{ch:queries}
+
+Before designing anything we fix what the system is asked. The questions come from two places: the tools the
+deployed server exposes to an analyst or a language model, and the science questions the project set out to answer
+(the inter-mission elevation-change comparison, its feasibility over a candidate site, the long record at a
+glacier). Reduced to their shape, every one is a conjunction of four kinds of constraint.
+
+\begin{description}\setlength{\itemsep}{2pt}
+\item[Area.] A named region; a rectangle in longitude and latitude; a polygon; a point and a radius; or a grid
+  cell with a resolution. The deployed regions are 0.1--3$^\circ$ across (Table~\ref{tab:regions}, Figure~\ref{fig:areaforms}); a cell at the
+  analysis resolution is about half a kilometre.
+\item[Time.] A window of dates; the whole record; or a mission-specific bucket (a GLAS laser campaign, an ICESat-2
+  cycle, an IceBridge season). Every window is finally compared with a clock encoded five ways
+  (Chapter~\ref{ch:logical}).
+\item[Filters.] Per-mission quality predicates (Table~\ref{tab:logical}); which beams or beam groups (strong only,
+  all six; full-power only); a confidence threshold for photons; a slope ceiling for GEDI.
+\item[Aggregation.] None, the points themselves. Per-cell statistics: counts, passes, days, years, the height
+  median and its spread. Co-located pairs between two sources with a difference and its robust spread. A per-cell
+  time series with window medians and a trend.
+\end{description}
+
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}llp{64mm}@{}}
+\toprule
+region & bbox (W, S, E, N) & role \\
+\midrule
+summit & $-39.5, 72.4, -37.5, 72.8$ & cleanest interior; the ground-truth neighbourhood \\
+summit\_traverse & $-38.586, 72.579, -38.474, 72.648$ & the 15\,km GPS transect itself \\
+egig\_west\_flank & $-45.0, 69.8, -43.0, 70.2$ & default demo region; EGIG line, central-west flank \\
+k\_transect\_upstream & $-48.5, 66.9, -46.5, 67.3$ & upstream of the ablation zone \\
+jakobshavn\_margin & $-51.0, 69.0, -49.0, 69.4$ & fast ice; the long-record showcase \\
+ne\_flank\_upstream\_negis & $-32.0, 75.5, -29.0, 76.0$ & NE interior flank \\
+langtang & $85.35, 28.20, 85.62, 28.38$ & High Mountain Asia; the GEDI site \\
+\bottomrule
+\end{tabular}}
+\caption{The named areas the system is asked about. All but Langtang are on the Greenland ice sheet; the traverse
+box is 0.11$^\circ$ by 0.07$^\circ$, the others 2--3$^\circ$ by 0.4--0.5$^\circ$.}
+\label{tab:regions}
+\end{table}
+
+Six prototypes cover what is asked today (Table~\ref{tab:queries}). They are written as specifications, not as
+procedures, because the design's first move will be to treat a query as a \emph{value} that the system plans
+against rather than a sequence of calls.
+
+\begin{description}\setlength{\itemsep}{2pt}
+\item[Q1 Points.] Every point of the selected sources inside an area over a window, with the per-source quality
+  filter applied and the beam group chosen; returned as a table and drawn. This is the primitive; every other
+  query is Q1 followed by arithmetic.
+\item[Q2 Coverage.] For an area, per source: how many passes, distinct days and distinct years touch each cell at a
+  coarse resolution, and whether a long record exists. Answered before any data are fetched; it decides whether a
+  site is worth the fetch.
+\item[Q3 Elevation change between epochs.] Points of two sources (GLAS and ATL06, say) inside an area, paired within
+  35\,m, differenced after frame and epoch corrections, summarised as a median and a robust spread. Needs Q1 for two
+  sources and a co-location.
+\item[Q4 Per-cell time series.] For each cell at resolution 8 (about 530\,m across) in an area: all points of all
+  sources, binned into windows of a year, a fixed-effects surface removing the within-cell slope, window medians,
+  and a least-squares trend with a confidence that ranks cells. Needs Q1 for every source and a lot of per-cell
+  arithmetic.
+\item[Q5 Profile.] Points along a line (a transect, a flight line, a lake shoreline) at full resolution, per pass,
+  for a water-level or a slope question. A thin polygon in Q1's terms, with the aggregation per pass.
+\item[Q6 Triage.] ``Is site $X$ feasible?'' Q2 for every source plus the declared footprints: a source that never
+  flew there must say so rather than report an empty index.
+\end{description}
+
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}lllll@{}}
+\toprule
+query & area & time & filters & aggregation \\
+\midrule
+Q1 points & region / bbox / polygon & window or all & quality, beam group, confidence & none \\
+Q2 coverage & point + radius, or bbox & all & none & passes, days, years per coarse cell \\
+Q3 change & bbox or polygon & two windows & quality; both sources & co-located pairs, median, MAD \\
+Q4 time series & bbox, then res-8 cells & yearly windows & quality; reference source & plane fit, window medians, trend \\
+Q5 profile & thin polygon / line & window or all & quality, confidence (lower for water) & per pass \\
+Q6 triage & point + radius & all & footprints & Q2 per source, with ``never flew here'' \\
+\bottomrule
+\end{tabular}}
+\caption{The six canonical queries as rows of the constraint algebra. Q1 is the primitive: every other row is Q1
+over one or more sources followed by arithmetic on the points.}
+\label{tab:queries}
+\end{table}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % four area forms over the same patch of res-5 cells (hex grid, r=7mm ~ 10 km edge)
+  \foreach \px/\lab in {0/(a) rectangle, 36/(b) polygon, 72/(c) point + radius, 108/(d) one cell} {
+    \begin{scope}[shift={(\px,0)}]
+      \node[hdr] at (-6,26) {\lab};
+      \foreach \i in {0,2} { \foreach \j in {0,1} { \draw[grid] \hexp{10.5*\i}{12.124*\j}{7}{0}; } }
+      \foreach \i in {1} { \foreach \j in {0,1} { \draw[grid] \hexp{10.5*\i}{12.124*\j+6.062}{7}{0}; } }
+    \end{scope}
+  }
+  % (a) rectangle: touches 4 cells
+  \fill[idxblue!16] \hexp{0}{0}{7}{0}; \fill[idxblue!16] \hexp{10.5}{6.062}{7}{0}; \fill[idxblue!16] \hexp{21}{0}{7}{0}; \fill[idxblue!16] \hexp{0}{12.124}{7}{0};
+  \draw[box] (-3,-2) rectangle (14,12);
+  % (b) polygon
+  \fill[idxblue!16] \hexp{36}{0}{7}{0}; \fill[idxblue!16] \hexp{46.5}{6.062}{7}{0}; \fill[idxblue!16] \hexp{36}{12.124}{7}{0};
+  \draw[box] (33,-3) -- (44,2) -- (40,14) -- (31,10) -- cycle;
+  % (c) disk
+  \fill[idxblue!16] \hexp{72}{0}{7}{0}; \fill[idxblue!16] \hexp{82.5}{6.062}{7}{0}; \fill[idxblue!16] \hexp{72}{12.124}{7}{0}; \fill[idxblue!16] \hexp{93}{0}{7}{0}; \fill[idxblue!16] \hexp{93}{12.124}{7}{0}; \fill[idxblue!16] \hexp{82.5}{18.186}{7}{0};
+  \draw[grid] \hexp{82.5}{18.186}{7}{0};
+  \draw[box] (82.5,6) circle (9.5); \fill[nasared] (82.5,6) circle (0.6);
+  % (d) one cell
+  \fill[idxblue!30] \hexp{118.5}{6.062}{7}{0}; \draw[box] \hexp{118.5}{6.062}{7}{0};
+  \node[note, text width=136mm, anchor=north west] at (-6,-11) {Shaded: the resolution-5 cells each area form
+    implies. The cells over-cover the area by construction; a cell edge is about 10\,km, so a rectangle 2$^\circ$
+    wide at 70$^\circ$N (75\,km) touches two or three cells across and the index answers for all of them.};
+\end{tikzpicture}}
+\caption{Four area forms over the same ground, and the cells each implies. Whatever the form, the system reduces
+it to a set of cells and later re-applies the exact shape to the points.}
+\label{fig:areaforms}
+\end{figure}
+
+Two things about this set matter for the design. First, every query is spatial first: the time window, the
+filters and the aggregation are applied to points that an area selected. A system that can answer ``which bytes
+hold points in this area'' quickly has solved most of every query. Second, the same areas recur with small
+changes. An analyst nudges a box, adds a source, widens a window; a model asks Q2 and then Q4 for the same site.
+The work of fetching and decoding is worth keeping.
+
+\section{Search and retrieval today, and how they fail}
+\label{ch:failures}
+
+\paragraph{The catalogue model.} NASA's Common Metadata Repository (CMR) catalogues every granule with a spatial
+extent and a time range, and answers searches by collection, bounding box or polygon, and temporal
+range~\citep{cmrapi}. The spatial extent is whatever the data provider supplied: a polygon around the swath, a
+bounding rectangle, a line, or, for GLAS, only orbit parameters from which the catalogue back-computes a footprint.
+A client such as earthaccess~\citep{earthaccess} wraps the search and returns the granules' URLs; the data are then
+fetched whole, or opened remotely through a block cache that reads the file's structure on demand. The granule is
+the unit of discovery and the unit of retrieval. For gridded products this is adequate: a tile is where the
+catalogue says it is, and a tile is what you need. For along-track products it fails in seven distinct ways, and we
+measured each on the deployed instance against the index described later in this report
+(Table~\ref{tab:searchmodes}).
+
+\paragraph{(a) The footprint is not the data.} A granule's catalogued extent is a region the track passed through,
+not the set of places it measured. For ATL06 and ATL03 the extent is the polygon of a fourteenth of an orbit:
+7--10 times the area of a 2$^\circ\times$0.4$^\circ$ study box and 850--1\,000 times the area of the GPS transect
+box. A catalogue search for the box returns every granule whose polygon touches it. Of those, 10--14\,\% of ATL06
+granules and up to 32\,\% of GLAS granules have no point inside the box's cells at all. The track clipped a corner
+of the polygon the box was in, or the instrument was off, or cloud took the surface. For IceBridge the earlier
+finding was starker: ATM's catalogued polygons over-claim the swath by up to about 990$\times$, and indexing them as
+if they were data would have produced $\sim$16\,\% phantom cells~\citep{krabill2002}. For GLAS, only 13 of 30
+granules the catalogue placed over one site passed within 2\,km of it.
+
+\paragraph{(b) The granule is far larger than the question.} Even a true positive is almost entirely irrelevant.
+A 30\,km box meets a few seconds of a granule that spans a quarter of the Earth. Downloading the catalogue's
+answer for one of our 2$^\circ$ boxes moves 45--50\,GB of ATL06 and 1.0--1.4\,TB of ATL03; the bytes that hold
+the box's points are 0.63--0.75\,GB and 12--20\,GB respectively, so whole-granule retrieval moves 60--95 times what
+is needed, and 475 times for the traverse box (Table~\ref{tab:searchmodes}). Opening the file remotely instead of
+downloading it does not escape this: the reader must still walk the file's structure (dozens of dependent small
+reads per file) and then read the position arrays to find out which elements are inside the box, which is most of
+the file's bytes for a three-column product.
+
+\paragraph{(c) There is no map from geography to array index.} This is the root of (b). In an along-track product
+the latitude is a dataset like any other, chunked and compressed. To learn which elements of a granule lie inside a
+box one must fetch and decode the latitude and longitude chunks, which is to say most of the granule, and only then
+can one ask for the heights of the elements that qualified: the question ``where is 72.6$^\circ$N in this file''
+can be answered only by reading the file (Figure~\ref{fig:wherelat}). A grid product answers it with arithmetic.
+Nothing in the archive provides the equivalent for along-track data, and nothing in the file format could: the
+positions are measurements, not coordinates of a lattice.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[val] (q) at (0,14) {box};
+  \node[eff, text width=19mm, font=\scriptsize] (walk) at (24,14) {walk the file's structure};
+  \node[eff, text width=19mm, font=\scriptsize] (fetch) at (58,14) {fetch latitude, longitude chunks};
+  \node[pure, text width=17mm, font=\scriptsize] (dec) at (92,14) {decode, test the box};
+  \node[eff, text width=19mm, font=\scriptsize] (fetch2) at (126,14) {fetch height chunks of the survivors};
+  \draw[flow] (q) -- (walk); \draw[flow] (walk) -- (fetch); \draw[flow] (fetch) -- (dec); \draw[flow] (dec) -- (fetch2);
+  \node[lbl] at (41,22) {chunk map}; \node[lbl] at (75,22) {most of the file}; \node[lbl] at (109,22) {element indices};
+  \node[lbl] at (24,4) {$\sim$66 dependent reads}; \node[lbl] at (58,4) {two of five columns}; \node[lbl] at (92,4) {per point}; \node[lbl] at (126,4) {a few chunks};
+  \node[note, text width=136mm, anchor=north west] at (-6,-2) {Every step before the last is spent learning where
+    the data are. The last step is the only one the question needed, and it is the smallest.};
+\end{tikzpicture}}
+\caption{Finding a box's points in one along-track granule without an index. Position is data, so locating the
+data means reading it; the structure walk and the position fetch dominate, and both must be repeated for every
+granule and every query.}
+\label{fig:wherelat}
+\end{figure}
+
+\paragraph{(d) The data are sparse and irregular.} Across track, a site is sampled where tracks happened to cross
+it: for one 530\,m cell the ICESat-2 record gives 855 populated cells where GLAS gives 112 over the same area, and
+IceBridge gives flight lines on 32 days in one cell and nothing in the next. In time, GLAS is 19 campaigns, GEDI
+paused for most of 2023, IceBridge flew in seasons. A coverage question (Q2) is therefore a real question, not a
+lookup, and a system that answers it by searching the catalogue returns the footprint's answer, which (a) showed is
+wrong by a third.
+
+\paragraph{(e) Holes and fills.} Points that exist in the file may carry no information: cloud returns, fill values
+($1.798\times10^{308}$, $3.4\times10^{38}$), saturated or degraded flags. On the deployed instance 4.1\,\% of
+the ATL06 cells a query selected turned out to name a chunk whose every point is fill. A system must keep the fact
+that it looked, or it will look again forever.
+
+\paragraph{(f) The catalogue has its own pitfalls.} Cloud-hosted and on-premises copies of the same granule are both
+listed, so an unfiltered search returns every file twice (2\,898 hits against 1\,449 for one area). A mistyped
+version returns zero granules silently, indistinguishable from an empty region. Polygon edges are great circles, so
+a 1.7$^\circ$ edge at 69$^\circ$N bows 230\,m and silently excluded three of 688 granules until edges were
+densified to 0.25$^\circ$. A polygon of 725 vertices exceeds the request-URI limit. None of these is a defect to fix;
+they are the shape of a catalogue built for granule-level discovery, and a system that depends on it at query time
+inherits all of them.
+
+\paragraph{(g) Time is never a predicate.} With the clock encoded five ways and the granule as the unit, a time
+window can only be a granule-level filter on the catalogue's time range, which is the same over-claim as (a) in
+another dimension. Inside a granule, a window finer than its extent eliminates nothing a spatial predicate has not
+already eliminated: an ATL06 granule inside one res-5 cell is a few seconds long.
+
+\begin{table}[tbp]
+\footnotesize
+\wide{\begin{tabular}{@{}llrrrrrrrr@{}}
+\toprule
+area & source & CMR hits & GB & like-for-like & in cells & false pos. & need (MB) & ratio & footprint$\times$ \\
+\midrule
+summit & ATL06 & 549 & 45.0 & 726 & 656 & 9.6\,\% & 647 & 70 & 8.1 \\
+summit & ATL03 & 602 & 1\,197 & 666 & 664 & 0.3\,\% & 12\,754 & 94 & 9.8 \\
+summit & GLAS & 120 & 0.45 & 156 & 137 & 14.7\,\% & 70 & 6.4 & orbit \\
+summit & ICESSN & 195 & 0.03 & 271 & 251 & 7.4\,\% & 25 & 1.3 & 0.0 \\
+egig\_west\_flank & ATL06 & 553 & 48.6 & 761 & 665 & 12.6\,\% & 655 & 74 & 8.1 \\
+egig\_west\_flank & ATL03 & 560 & 1\,040 & 656 & 600 & 8.5\,\% & 12\,072 & 86 & 8.5 \\
+egig\_west\_flank & GLAS & 139 & 0.52 & 139 & 127 & 8.6\,\% & 65 & 8.0 & orbit \\
+k\_transect & ATL06 & 557 & 49.9 & 649 & 579 & 11.1\,\% & 626 & 80 & 7.2 \\
+k\_transect & GLAS & 108 & 0.40 & 140 & 102 & 27.1\,\% & 49 & 8.2 & orbit \\
+jakobshavn & ATL06 & 571 & 47.1 & 749 & 644 & 14.0\,\% & 752 & 63 & 7.2 \\
+jakobshavn & ATL03 & 576 & 1\,410 & 637 & 608 & 4.6\,\% & 20\,081 & 70 & 8.2 \\
+jakobshavn & ICESSN & 504 & 0.14 & 882 & 775 & 12.1\,\% & 102 & 1.3 & 0.0 \\
+summit\_traverse & ATL06 & 109 & 9.0 & 220 & 150 & 31.8\,\% & 105 & 86 & 852 \\
+summit\_traverse & ATL03 & 116 & 234 & 175 & 144 & 17.7\,\% & 493 & 475 & 1\,009 \\
+summit\_traverse & GLAS & 15 & 0.06 & 31 & 21 & 32.3\,\% & 11 & 5.3 & orbit \\
+\bottomrule
+\end{tabular}}
+\caption{Catalogue search against the sub-granule index, measured 2026-10-19 on the deployed instance
+(\code{scripts/measure\_search\_modes.py}; full table in Appendix~\ref{app:numbers}). \emph{CMR hits} and \emph{GB}
+are the catalogue's answer for the box and its total granule size; \emph{like-for-like} is the catalogue's answer
+for the outline of the box's cells, the same ground the index answers for; \emph{in cells} is the index's count of
+granules with a point in those cells; \emph{false pos.} is the share of like-for-like hits with no such point;
+\emph{need} is the bytes the index would fetch; \emph{ratio} is GB moved per GB needed; \emph{footprint}$\times$ is
+the median catalogued footprint area over the box area (``orbit'': GLAS records carry orbit parameters only, so no polygon exists to measure; IceBridge polygons are the thin swath, so their area is a fraction of the box's).}
+\label{tab:searchmodes}
+\end{table}
+
+\section{Requirements from first principles}
+\label{ch:requirements}
+
+Each failure in Chapter~\ref{ch:failures} says what a better system must record or do. We state the requirements
+once, numbered, and every mechanism in the rest of the report is introduced as the discharge of one of them
+(Figure~\ref{fig:reqmap}).
+
+\begin{description}\setlength{\itemsep}{3pt}
+\item[\req{1} Search by where the points are, not where the track was.] Failure (a). The system must hold, for every
+  granule, a record of where its points fall, at a granularity fine enough to reject a granule that only brushes an
+  area and coarse enough to be stored for fifty thousand granules. Such a record can be made only by reading the
+  positions, so it is made \emph{once}, at build time, never at query time.
+\item[\req{2} Retrieve by the storage unit.] Failures (b) and (c). The smallest thing the archive can serve is a
+  byte range, and the smallest useful byte range is a chunk. The record of \req{1} must therefore be keyed by chunk
+  and carry the chunk's (offset, size) for every dataset the query will want, so that a query goes from area to
+  byte ranges without opening a file. The chunk map is read once, with the positions.
+\item[\req{3} A discrete, hierarchical, integer spatial key.] The record of \req{1} needs a key that a point maps
+  to by arithmetic, that a query area maps to as a finite set, that is an integer (so files, tables and set
+  operations stay cheap), that nests (so coverage can be stated compactly at one resolution and checked at another),
+  and whose cells are of roughly equal area (so a resolution means the same thing everywhere). This is the
+  definition of a discrete global grid system; Part~\ref{part:dggs} chooses one.
+\item[\req{4} Completeness must be provable.] Failures (a), (e) and (f). Silence is indistinguishable from
+  absence: an empty answer may mean no data, a granule not yet indexed, a search that returned zero by mistake, or a
+  cell whose every point was fill. The system must record what ground each build covered, which granules it looked
+  at, and which filter set each granule's record was made against, and a query must refuse an area the record does
+  not provably cover.
+\item[\req{5} A query's cost is bounded by the network.] Failures (b) and (c). Once the index exists, the only
+  irreducible cost of a query is fetching the bytes it names. Everything else (planning, deciding which points
+  belong to which cell, decoding, caching) must cost less than the fetch, which means that work proportional to
+  the number of points must be native and vectorised, or avoided by recording its answer in the index.
+\item[\req{6} Repeated nearby queries reuse decoded points.] Chapter~\ref{ch:queries}. Decoded points must be kept
+  in a local store keyed by the same cells as the index, read before any fetch, and safe to write from several
+  threads at once, so that the second query over a site costs only its arithmetic.
+\item[\req{7} A collection is data.] Tables~\ref{tab:logical}--\ref{tab:collections}. Six sources differ in a
+  dozen named ways and in nothing else. The pipeline must be written once, over a description of the collection,
+  so that a seventh source is a description and not a re-implementation.
+\end{description}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \foreach \y/\r/\t in {40/1/positions, 32/2/chunk map, 24/3/grid key, 16/4/claim \& provenance, 8/5/network-bound, 0/6/memo, -8/7/descriptor} {
+    \node[val, anchor=west, minimum width=26mm] (r\r) at (0,\y) {\req{\r}\ \ \t};
+  }
+  \node[store, minimum width=22mm, minimum height=10mm] (idx) at (58,30) {the index\\(Part~\ref{part:index})};
+  \node[eff, minimum width=22mm] (build) at (58,12) {the builder\\(Part~\ref{part:build})};
+  \node[pure, minimum width=22mm] (grid) at (58,-6) {the grid\\(Part~\ref{part:dggs})};
+  \node[eff, minimum width=22mm] (query) at (104,30) {query $\to$ plan $\to$ execute\\(Part~\ref{part:query})};
+  \node[store, minimum width=22mm, minimum height=10mm] (lake) at (104,8) {the lake\\(Part~\ref{part:lake})};
+  \node[val, minimum width=22mm] (desc) at (104,-10) {the descriptor\\(Part~\ref{part:framework})};
+  \draw[flowsoft] (r1) -- (idx); \draw[flowsoft] (r2) -- (idx); \draw[flowsoft] (r3) -- (grid); \draw[flowsoft] (r3) -- (idx);
+  \draw[flowsoft] (r4) -- (build); \draw[flowsoft] (r4) -- (idx.south west);
+  \draw[flowsoft] (r5) -- (query.south west); \draw[flowsoft] (r6) -- (lake); \draw[flowsoft] (r7) -- (desc);
+  \draw[flow] (idx) -- node[lblw, above] {rows} (query); \draw[flow] (build) -- node[lblw, right] {files} (idx);
+  \draw[flow] (query) -- node[lblw, right] {points} (lake); \draw[flow] (grid) -- node[lblw, below] {cells} (build);
+\end{tikzpicture}}
+\caption{The requirements and the parts of the report that discharge them. The index is the centre: the grid keys
+it, the builder writes it, the query reads it, the lake memoises what the query decoded, and the descriptor is the
+one value that tells all of them which collection they are working on.}
+\label{fig:reqmap}
+\end{figure}
+
+%=====================================================================================================================
+\clearpage
+\part{Discrete global grids}
+\label{part:dggs}
+%=====================================================================================================================
+
+\section{What a discrete global grid system is}
+\label{ch:dggs}
+
+\req{3} asks for a spatial key with five properties: a point maps to it by arithmetic, an area maps to a finite set
+of it, it is an integer, it nests across resolutions, and its cells have roughly equal area. A \emph{discrete
+global grid system} (DGGS) is a family of partitions of the Earth's surface into cells, one partition per
+resolution, with a scheme that assigns every cell an identifier and relates cells across
+resolutions~\citep{sahr2003,ogc2021dggs}. The construction is always the same in outline (Figure~\ref{fig:dggs}):
+choose a polyhedron that approximates the sphere, project its faces onto the surface, tile each face with a
+regular pattern, and refine the pattern by a fixed \emph{aperture} (the number of children per parent) to make the
+next resolution. The variations that matter to us are the polyhedron, the cell shape, the aperture, whether the
+refinement is exact (every child lies inside its parent) and whether the identifier is an integer that encodes the
+hierarchy.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,30) {(a) a parent and its children};
+  \draw[grid, line width=0.8pt] (0,0) rectangle (24,24);
+  \foreach \x in {6,12,18} { \draw[grid] (\x,0) -- (\x,24); \draw[grid] (0,\x) -- (24,\x); }
+  \node[lbl] at (3,21) {00}; \node[lbl] at (9,21) {01}; \node[lbl] at (15,21) {10}; \node[lbl] at (21,21) {11};
+  \node[lbl, anchor=west, text width=46mm, align=left] at (26,18) {aperture 16: id $=$ parent id $\cdot$ child digits};
+  \node[lbl, anchor=west, text width=46mm, align=left] at (26,12) {exact nesting: child $\subset$ parent};
+  \node[hdr] at (80,30) {(b) point $\to$ cell, area $\to$ cells};
+  \foreach \x in {80,86,...,104} { \foreach \y in {0,6,...,18} { \draw[grid] (\x,\y) rectangle (\x+6,\y+6); } }
+  \foreach \x/\y in {80/0, 86/0, 92/0, 80/6, 86/6, 92/6, 98/6, 80/12, 86/12, 92/12, 98/12, 86/18, 92/18} { \fill[idxblue!16] (\x+0.3,\y+0.3) rectangle (\x+5.7,\y+5.7); }
+  \fill[nasared] (95,9) circle (0.7);
+  \draw[box] (82,3) -- (98,2) -- (102,14) -- (88,20) -- cycle;
+  \node[note, text width=28mm, anchor=north west] at (80,-2) {the point maps to one id; the outline to 13};
+  \node[hdr] at (124,30) {(c) compaction};
+  \foreach \x in {124,130,...,142} { \foreach \y in {0,6,...,18} { \draw[grid] (\x,\y) rectangle (\x+6,\y+6); } }
+  \fill[idxblue!30] (124.3,0.3) rectangle (135.7,11.7); \draw[draw=idxblue, line width=0.8pt] (124,0) rectangle (136,12);
+  \foreach \x/\y in {136/0, 142/0, 136/6, 124/12, 130/12} { \fill[idxblue!16] (\x+0.3,\y+0.3) rectangle (\x+5.7,\y+5.7); }
+  \node[note, text width=26mm, anchor=north west] at (124,-2) {four covered children become their parent; a set
+    of 9 becomes 6 ids};
+\end{tikzpicture}}
+\caption{The three operations the index needs from a grid, shown on a square aperture-16 grid: the hierarchy
+encoded in the identifier, point and area assignment, and compaction of a set up the hierarchy. Each real system
+below realises them differently.}
+\label{fig:dggs}
+\end{figure}
+
+What the index asks of these operations is specific, and worth stating as the tests a candidate grid must pass:
+
+\begin{itemize}
+\item \textbf{Point assignment} runs once per point at build time, for $10^{9}$ photons and $10^{8}$ segments. It
+  must exist as a vectorised native kernel callable from Python over arrays; a scalar call per point is two orders of
+  magnitude too slow.
+\item \textbf{Area to cells} (``polyfill'') runs once per query and per build; it may be slow and must be exact
+  in the sense of covering every cell the area overlaps, with a mode that excludes cells that merely share an edge.
+\item \textbf{Identifiers} are stored once per index row and once per lake file name, and compared in set
+  operations by the million. They must be 64-bit integers, or packable to them.
+\item \textbf{Hierarchy} is used to compact a coverage claim and to test membership by walking ancestors. The
+  identifier must yield the parent by arithmetic. Exact nesting of \emph{area} is a convenience the design must not
+  rely on (Chapter~\ref{ch:gridhere}).
+\item \textbf{Equal area} makes a resolution a statement about ground: ``resolution 5'' must mean about the same
+  footprint at 60$^\circ$N and at 80$^\circ$N, or the chunk-to-cell ratio the index is tuned for drifts with
+  latitude.
+\item \textbf{Convex cells} along a straight track make the run of a cell's points inside a chunk contiguous
+  (Chapter~\ref{ch:row}); a grid with concave cells forfeits that shortcut.
+\end{itemize}
+
+\section{Four systems}
+\label{ch:foursystems}
+
+\paragraph{H3.} Uber's H3 projects an icosahedron onto the sphere and tiles each face with hexagons; the twelve
+icosahedron vertices carry pentagons~\citep{h3docs}. Resolution 0 has 122 base cells; each finer resolution has
+aperture 7, so a cell has one seventh the area of its parent and the finest resolution, 15, is under a square metre.
+Identifiers are 64-bit integers that encode the base cell and the sequence of child digits, so parent and children
+are bit operations. Because an aperture-7 hexagon tiling cannot be made of hexagons that tile their parent exactly,
+children are rotated by about 19.1$^\circ$ and straddle the parent's boundary: the hierarchy is exact in the
+identifier and approximate in area. Cells are convex, neighbours are uniform (six, except at pentagons), and area
+varies by about a factor of two across the globe at a given resolution. Vectorised kernels exist in Python through
+h3ronpy. H3 is what the system uses today (Figure~\ref{fig:h3}).
+
+\paragraph{S2.} Google's S2 projects a cube onto the sphere and tiles each face with a quadtree~\citep{s2docs}. A
+cell at level $k$ is identified by a 3-bit face and $k$ two-bit child digits packed into a 64-bit integer whose
+lowest set bit marks the level; the identifiers order cells along a Hilbert curve on each face, so consecutive
+identifiers are spatially close, and a parent's identifier is the midpoint of its children's range. Nesting is
+exact: a child lies inside its parent. Cells are quadrilaterals whose area varies by about a factor of two across
+a face because the gnomonic projection stretches the edges. Polyfill is a covering by a bounded number of cells of
+mixed level. Python bindings exist; a vectorised point kernel over arrays does not come with them
+(Figure~\ref{fig:s2}).
+
+\paragraph{HEALPix.} The Hierarchical Equal Area isoLatitude Pixelisation divides the sphere into twelve base
+pixels of equal area, each refined by aperture 4 into pixels that remain exactly equal in area and whose centres lie
+on rings of constant latitude~\citep{gorski2005}. The equal-area and iso-latitude properties exist for spherical
+harmonic analysis of all-sky maps, which is its home. Nesting is exact and the ``nested'' numbering is hierarchical;
+identifiers are integers (64 bits suffice to resolution 29). Pixels are curvilinear quadrilaterals, not convex in
+the projected sense near the base-pixel corners. Vectorised kernels exist (healpy); polygon-to-pixel queries exist
+but are coarse (Figure~\ref{fig:healpix}).
+
+\paragraph{rHEALPix.} Gibb's rHEALPix rearranges the HEALPix projection so that the whole sphere maps onto a plane
+of square cells with exact aperture-9 (or 4) nesting and exact equal area, and extends it to an ellipsoid of
+revolution~\citep{gibb2016}. Cells are squares in the projection and quadrilaterals on the ground, with the polar
+caps' squares distorted into triangles on the sphere. Identifiers are strings (a base cell letter and child
+digits); they can be packed into integers but no standard library does so. It is an OGC-conformant DGGS and its
+reference implementation is pure Python without a vectorised kernel (Figure~\ref{fig:rhealpix}).
+
+\paragraph{The non-equal-area baseline.} Geohash and the web-map quadkey partition the latitude--longitude
+rectangle, not the sphere, so a cell at 80$^\circ$N is a sixth the ground area of a cell at the equator. They are
+cheap, hierarchical by string prefix, and everywhere. They fail the equal-area test badly enough for polar work
+that we do not consider them further.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,34) {(a) icosahedron face, hexagons};
+  \draw[grid, line width=0.8pt] (0,0) -- (40,0) -- (20,34.6) -- cycle;
+  \foreach \i in {0,...,8} { \foreach \j in {0,...,7} {
+    \pgfmathsetmacro{\cx}{2.5 + \i*5.02 + mod(\j,2)*2.51} \pgfmathsetmacro{\cy}{2.6 + \j*4.35}
+    \pgfmathparse{(abs(\cx-20) < 20 - \cy/1.732 - 2.4) ? 1 : 0}
+    \ifnum\pgfmathresult=1 \draw[grid] \hexp{\cx}{\cy}{2.9}{30}; \fi } }
+  \fill[nasared!50] (20,34.6) circle (1.1); \node[lbl, anchor=north] at (20,-1.5) {a pentagon sits at each icosahedron vertex};
+  \node[hdr] at (58,34) {(b) aperture 7: children straddle the parent};
+  \draw[draw=ink, line width=1pt] \hexp{80}{15}{14}{0};
+  \foreach \m in {0,...,5} {
+    \pgfmathsetmacro{\px}{80 + 9.17*cos(49.1+60*\m)} \pgfmathsetmacro{\py}{15 + 9.17*sin(49.1+60*\m)}
+    \fill[idxblue!16] \hexp{\px}{\py}{5.29}{19.1}; \draw[draw=idxblue!70, line width=0.5pt] \hexp{\px}{\py}{5.29}{19.1}; }
+  \fill[idxblue!30] \hexp{80}{15}{5.29}{19.1}; \draw[draw=idxblue!70, line width=0.5pt] \hexp{80}{15}{5.29}{19.1};
+  \node[note, text width=38mm, anchor=north west] at (100,30) {seven children, rotated 19.1$^\circ$; six of them
+    cross the parent's edge. The id nests exactly; the area does not.};
+  \node[note, text width=38mm, anchor=north west] at (100,14) {res 5: 253\,km$^2$, edge 9.85\,km\\res 6:
+    36\,km$^2$, edge 3.73\,km\\res 9: edge $\sim$200\,m};
+\end{tikzpicture}}
+\caption{H3: hexagons on an icosahedron with aperture-7 refinement. Convex cells and uniform neighbours, 64-bit
+identifiers with the hierarchy in the bits, and a refinement that is exact in identifiers but not in area.}
+\label{fig:h3}
+\end{figure}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,34) {(a) cube face, quadtree};
+  \draw[grid, line width=0.8pt] (0,0) rectangle (32,32);
+  \foreach \x in {8,16,24} { \draw[grid] (\x,0) -- (\x,32); \draw[grid] (0,\x) -- (32,\x); }
+  \foreach \x in {16,20,24,28} { \foreach \y in {16,20,24,28} { \draw[grid] (\x,\y) rectangle (\x+4,\y+4); } }
+  \fill[idxblue!30] (16,16) rectangle (32,32); \draw[draw=idxblue, line width=0.8pt] (16,16) rectangle (32,32);
+  \node[lbl] at (24,12) {level 1}; \node[lbl, text=idxblue!85!black, anchor=north] at (16,-1) {level 2 inside the shaded level-1 cell};
+  \node[hdr] at (46,34) {(b) the Hilbert curve orders the ids};
+  \foreach \x in {46,54,62,70} { \foreach \y in {0,8,16,24} { \draw[grid] (\x,\y) rectangle (\x+8,\y+8); } }
+  \draw[track] (50,4) -- (50,12) -- (58,12) -- (58,4) -- (66,4) -- (74,4) -- (74,12) -- (66,12) -- (66,20) -- (74,20) -- (74,28) -- (66,28) -- (58,28) -- (58,20) -- (50,20) -- (50,28);
+  \node[hdr] at (90,34) {(c) a 64-bit id};
+  \draw[draw=ink, line width=0.5pt] (90,20) rectangle (140,26);
+  \fill[idxblue!30] (90,20) rectangle (96,26); \node[lbl] at (93,23) {face}; \node[lbl] at (93,17) {3 bits};
+  \foreach \x in {96,100,...,124} { \draw[grid] (\x,20) -- (\x,26); }
+  \node[lbl] at (112,23) {child digits, 2 bits per level}; \node[lbl] at (112,17) {level $k$ uses $2k$ bits};
+  \fill[nasared!30] (128,20) rectangle (130,26); \node[lbl] at (134,23) {1 then 0s};
+  \node[lbl, text width=48mm, anchor=north] at (115,12) {the lowest set bit marks the level, so a parent's id is the midpoint of
+    its children's range and nesting is exact in area and in bits};
+\end{tikzpicture}}
+\caption{S2: a quadtree on each face of a cube, identifiers along a Hilbert curve. Exact nesting and spatial
+locality of identifiers; cells are quadrilaterals whose area varies across a face.}
+\label{fig:s2}
+\end{figure}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,34) {(a) twelve equal-area base pixels};
+  \draw[grid, line width=0.8pt] (0,0) rectangle (64,32);
+  % HEALPix projection: 4 polar diamonds top, 4 equatorial, 4 polar bottom (schematic)
+  \foreach \k in {0,...,3} { \draw[grid] (8+16*\k,32) -- (16*\k,24) -- (8+16*\k,16) -- (16+16*\k,24) -- cycle; }
+  \foreach \k in {0,...,3} { \draw[grid] (8+16*\k,0) -- (16*\k,8) -- (8+16*\k,16) -- (16+16*\k,8) -- cycle; }
+  \foreach \k in {0,...,3} { \draw[grid] (16*\k,8) -- (8+16*\k,16) -- (16*\k,24) ; \draw[grid] (16+16*\k,8) -- (8+16*\k,16) -- (16+16*\k,24); }
+  \fill[idxblue!30] (24,32) -- (16,24) -- (24,16) -- (32,24) -- cycle;
+  \node[lbl] at (24,8) {equatorial}; \node[lbl, anchor=west] at (34,24) {polar: 4 + 4};
+  \node[hdr] at (76,34) {(b) aperture 4, exact, equal area};
+  \draw[draw=ink, line width=1pt] (84,0) -- (76,8) -- (84,16) -- (92,8) -- cycle;
+  \draw[grid] (80,4) -- (88,12); \draw[grid] (80,12) -- (88,4);
+  \draw[grid] (82,2) -- (78,6) -- (82,10) -- (86,6) -- cycle;
+  \fill[idxblue!30] (84,8) -- (80,12) -- (84,16) -- (88,12) -- cycle;
+  \node[note, text width=40mm, anchor=north west] at (98,30) {pixel centres lie on rings of constant latitude;
+    every pixel at a resolution has the same area to the digit. Made for all-sky spherical harmonics; nesting is
+    exact, cells are not convex near base-pixel corners.};
+\end{tikzpicture}}
+\caption{HEALPix: twelve base pixels refined by aperture 4 into exactly equal-area pixels on iso-latitude rings.
+Exact nesting, integer nested identifiers, vectorised kernels; cell shape is a curvilinear quadrilateral.}
+\label{fig:healpix}
+\end{figure}
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[hdr] at (0,34) {(a) the sphere as six squares};
+  \draw[grid, line width=0.8pt] (0,8) rectangle (64,24);
+  \foreach \x in {16,32,48} { \draw[grid] (\x,8) -- (\x,24); }
+  \draw[grid, line width=0.8pt] (0,24) rectangle (16,40); \draw[grid, line width=0.8pt] (0,-8) rectangle (16,8);
+  \node[lbl] at (8,32) {N}; \node[lbl] at (8,0) {S}; \foreach \x/\l in {8/O, 24/P, 40/Q, 56/R} { \node[lbl] at (\x,16) {\l}; }
+  \node[hdr] at (76,34) {(b) aperture 9, exact squares};
+  \draw[draw=ink, line width=1pt] (76,0) rectangle (100,24);
+  \foreach \x in {84,92} { \draw[grid] (\x,0) -- (\x,24); \draw[grid] (76,\x-76) -- (100,\x-76); }
+  \fill[idxblue!30] (84,8) rectangle (92,16); \node[lbl] at (88,12) {P4};
+  \node[lbl] at (80,20) {P0}; \node[lbl] at (88,20) {P1}; \node[lbl] at (96,20) {P2};
+  \node[note, text width=38mm, anchor=north west] at (104,30) {ids are strings: a cap or equatorial letter then
+    one digit per level. Equal area and exact nesting on the ellipsoid; the polar squares are triangles on the
+    ground. Pure-Python reference implementation.};
+\end{tikzpicture}}
+\caption{rHEALPix: HEALPix rearranged onto a plane of squares with aperture-9 refinement. Exact equal area and
+exact nesting; string identifiers; no vectorised kernel in the reference library.}
+\label{fig:rhealpix}
+\end{figure}
+
+\begin{table}[tbp]
+\scriptsize
+\wide{\begin{tabular}{@{}p{30mm}p{30mm}p{30mm}p{30mm}p{28mm}@{}}
+\toprule
+property (test) & H3 & S2 & HEALPix & rHEALPix \\
+\midrule
+polyhedron, cell shape & icosahedron, hexagon (12 pentagons) & cube, quadrilateral & 12 base pixels, curvilinear quad & 6 squares (plane), quad / triangle \\
+aperture & 7 & 4 & 4 & 9 (or 4) \\
+identifier & 64-bit int, hierarchy in bits & 64-bit int, Hilbert order & int, nested or ring & string; packable \\
+nesting in area & approximate (19.1$^\circ$ twist) & exact & exact & exact \\
+equal area & $\sim$2$\times$ variation & $\sim$2$\times$ per face & exact & exact \\
+convex cells & yes & yes & not at corners & yes (projected) \\
+neighbours & 6 (5 at pentagons) & 4 edge + corners, mixed level & 8, irregular at corners & 8 \\
+polyfill with overlap mode & yes & covering, mixed level & coarse & yes \\
+compaction & yes & yes (cell union) & by numbering & yes \\
+vectorised point kernel (Python) & h3ronpy & no & healpy & no \\
+\bottomrule
+\end{tabular}}
+\caption{The four systems against the tests of Chapter~\ref{ch:dggs}. No system passes all of them; the deciding
+rows for a build over $10^{9}$ points are the kernel and the identifier, and only H3 and HEALPix pass both.}
+\label{tab:grids}
+\end{table}
+
+\section{The grid in this system}
+\label{ch:gridhere}\label{ch:cells}
+
+The system uses H3. The decision rests on three rows of Table~\ref{tab:grids}: integer identifiers with the
+hierarchy in the bits (set operations, parent walks and compaction are arithmetic), a vectorised assignment kernel
+(the build's per-point cost), and convex cells (the contiguous-run shortcut of Chapter~\ref{ch:row}). HEALPix passes
+the first two and loses on the third and on tooling for polygon queries; S2 and rHEALPix lose on the kernel. What
+H3 gives up, exact nesting of area, the design is written not to need. Chapter~\ref{ch:grid} returns to the
+question as a parameter: the properties relied on are few enough to be named, and a grid that supplies them can
+replace H3 behind one value.
+
+\paragraph{Resolutions.} A resolution is chosen per collection so that a cell is roughly the ground footprint of
+one chunk: resolution 5 (253\,km$^2$, edge 9.85\,km) for ATL06, GLAS and IceBridge, whose chunks or arcs are
+hundreds of kilometres long; resolution 6 (36\,km$^2$, edge 3.73\,km) for ATL03, whose 100\,000-photon chunks are
+about 70\,km. Finer buys nothing on a scene-sized query and multiplies the index: the 2\,016\,842 resolution-5
+cells of the globe become 14\,117\,882 at resolution 6. Analysis uses resolution 8 (about 530\,m) for per-cell time
+series, and coverage claims are stated at resolution 9 (edge about 200\,m) so that a claim follows a drawn shape
+closely; a claim is held under 60\,000 cells by backing off one resolution at a time.
+
+\paragraph{Three roles.} A cell plays three roles, at two resolutions (Figure~\ref{fig:cells}). \emph{Addressing}:
+every index row carries the cell of its points at the collection's addressing resolution, and a query turns its
+area into the set of addressing cells it overlaps and asks the index for rows with those cells.
+\emph{Partitioning}: the lake of decoded points is partitioned by the same cell, so a query reads exactly the cells
+it asked for and eviction has a unit. \emph{Claiming}: a build records the ground it covered as a set of finer
+cells, compacted up the hierarchy; a later query checks that every fine cell of its area has an ancestor in the
+claim, and a later build over a larger area builds only the fine cells not yet claimed.
 
 \begin{figure}[tbp]
 \wide{%
@@ -405,7 +1163,7 @@ A cell plays three roles, at two resolutions (Figure~\ref{fig:cells}):
       exactly without being expanded.};
   \end{scope}
 \end{tikzpicture}}
-\caption{Cells in their two roles. Left, addressing: rows and lake files are keyed by (chunk, cell). Right,
+\caption{Cells in two of their three roles. Left, addressing: index rows and lake files are keyed by (chunk, cell). Right,
 claiming: the ground a build covered, stored compactly, consulted by every query and every enlarging build.}
 \label{fig:cells}
 \end{figure}
@@ -414,19 +1172,37 @@ Two consequences shape everything downstream. First, a cell is coarse relative t
 by design and the query re-applies the exact box predicate to decoded points; the index is for finding bytes, never
 for answering the box. Second, the per-point assignment of a cell is the one operation the system performs
 \emph{per point} on both sides, build and query, and it is the first thing to remove from the query side
-(Chapter~\ref{ch:row}).\landed{\code{planner.cells\_for\_bbox}, \code{coverage\_cells}, \code{addressing\_cells};
-the claim in \code{index.write\_build\_manifest} and \code{unclaimed\_cells}; the hot kernel is
-\code{planner.\_cells\_vectorized} over h3ronpy.}
+(Chapter~\ref{ch:row}).\landed{\code{planner.cells\_for\_bbox}, \code{coverage\_cells}, \code{addressing\_cells},
+\code{search\_polygon}; the claim in \code{index.write\_build\_manifest} and \code{unclaimed\_cells}; the hot kernel
+is \code{planner.\_cells\_vectorized} over h3ronpy.}
 
-%=====================================================================================================================
+\paragraph{Area to cells.} A rectangle or polygon becomes its set of overlapping cells with the library's
+``overlap'' containment, after the shape is shrunk by $2\times10^{-6}$ degrees so that a cell which only shares an
+edge with the shape is not included. The cells over-cover the shape by up to one cell edge (10\,km at resolution 5,
+3.7\,km at 6), so every query re-applies the exact shape to the points it decodes; the index finds bytes, it never
+answers the box. The cells also decide what the catalogue is asked at build time: their convex hull, densified to
+0.25$^\circ$ edges so that great-circle bowing stays under five metres, is the search polygon, and it returns 688
+granules where the exact outline would return 595.
+
+\paragraph{Compaction and membership.} A claim of 3\,930 resolution-9 cells over a corridor compacts to 1\,188
+identifiers by replacing every complete set of seven children with their parent, recursively. Whether a fine cell
+is covered is then an ancestor walk, one parent operation per resolution step, with no expansion of the compacted
+set. Because H3's children straddle their parent, a compacted claim is a statement about \emph{identifiers}, not
+about ground: it means ``every one of these cells' descendants at the claim resolution was built'', which is exactly
+what the query asks, and nothing about the parent hexagon's outline is assumed.
+
 \clearpage
-\part{The index as data}
+\part{The index}
+\label{part:index}
 %=====================================================================================================================
 
-\section{The index row}
+\section{The index as a relation}
 \label{ch:row}
 
-Everything so far can be assembled into the row the build writes. Take one granule, one group, one chunk $k$.
+This chapter discharges \req{1} and \req{2}: a record, per granule, of where its points are, keyed by the storage
+unit and carrying the byte ranges that unit occupies. Logically the index is one relation, (granule, group, chunk,
+cell) $\to$ (byte range per dataset, chunk bounding box, run), and we derive it here; its physical form is the next
+chapter. Everything in Parts~I--III can be assembled into the row the build writes. Take one granule, one group, one chunk $k$.
 The build has the positions of the chunk's elements (read once, from the position datasets or the segment table),
 assigns each its addressing cell, and so knows the set of cells the chunk touches. For each such cell it writes one
 row. The row has four parts:
@@ -452,7 +1228,7 @@ run, the query would pay it again on every fetched chunk, because after decoding
 100{,}000 photons and must know which of them belong to the cells it asked for. On the deployed machine that
 re-assignment was 59 million lookups and 24 to 31 thread-seconds of an 8-cell query.
 
-The run records what the build learned. For a (chunk, cell) row:
+The run records what the build learned (Figure~\ref{fig:runs}). For a (chunk, cell) row:
 \begin{align*}
 [\code{run\_lo},\ \code{run\_hi}) &= \bigl[\min i,\ \max i + 1\bigr) \quad\text{over this cell's elements } i,\\
 \code{run\_exact} &= \bigl(\#\{i \in [\code{lo},\code{hi}) \text{ positioned}\} = \#\{i \text{ in this cell}\}\bigr).
@@ -558,8 +1334,12 @@ outside wanted runs are assigned individually, so the result equals assigning ev
 \label{fig:photonruns}
 \end{figure}
 
-\section{Files, provenance and the claim}
+\section{The index as files}
 \label{ch:claim}
+
+This chapter discharges \req{4}: the index must prove what it covers. Physically the relation of
+Chapter~\ref{ch:row} is a set of Parquet files~\citep{parquetformat} plus three small side structures (Figure~\ref{fig:stores}), and the
+proof lives in how they are named, stamped and folded.
 
 The rows of one granule are one Parquet file, named after the granule, under the collection's index directory.
 Writes are to a temporary name followed by a rename, so a reader never sees a torn file and an interrupted build
@@ -634,12 +1414,17 @@ function of them.
 
 %=====================================================================================================================
 \clearpage
-\part{The build pipeline}
+
+\clearpage
+\part{A functional design for the index builder}
+\label{part:build}
 %=====================================================================================================================
 
 \section{Build as a pipeline of values}
 \label{ch:buildvalues}
 
+The builder is the effectful half of \req{1} and \req{2}: it reads every granule once, assigns its points to
+cells, records the chunk map, and writes the files of Chapter~\ref{ch:claim}, proving (\req{4}) what it covered.
 A build is one sequence, whatever the collection: decide the ground, find the granules, decide which still need
 building, build each, record what was built. Written as stages over values, with the effects named
 (Figure~\ref{fig:buildstages}):
@@ -743,6 +1528,10 @@ over \code{pool.run\_pool}. Still proposed: \code{SearchRecord} stored, content-
 
 \section{Reading one granule}
 \label{ch:readgranule}
+
+Failure (c) of Chapter~\ref{ch:failures} does not disappear because the read happens once: the build still has to
+find the chunk map and the positions inside a file whose structure is a tree of dependent reads. This chapter is
+about paying that cost once as cheaply as possible.
 
 The build's cost is in \code{build\_job}, and inside it almost entirely in reading the file's structure. Before
 any position is read, the HDF5 library walks the superblock, the group tree and the chunk B-trees: for an ATL06
@@ -934,10 +1723,26 @@ per-granule timeout is 600\,s because a granule is a quarter orbit.}
 
 %=====================================================================================================================
 \clearpage
-\part{The query pipeline}
+
+\part{From query specification to plan to execution}
+\label{part:query}
 %=====================================================================================================================
 
-\section{Query as a plan}
+\section{The query specification}
+\label{ch:queryspec}
+
+Part~\ref{part:query} discharges \req{5}. Chapter~\ref{ch:queries} wrote the canonical queries as conjunctions of
+area, time, filters and aggregation; the design's first move is to make that conjunction a value. A \code{Query}
+names the collection, the area (a rectangle and, optionally, the polygon inside it), the window, the beam group
+policy, and two flags (force a re-fetch; clip to cells rather than to the rectangle). It carries no derived state:
+its cells, its catalogue of index rows and its split into what the lake has and what must be fetched are all
+functions of it and of the stores, computed by the planner of the next chapter. Normalisation happens at the door:
+a region name becomes its rectangle, a point and radius become a cell or a rectangle, a window becomes two
+\code{YYYY-MM-DD} strings compared against the file-name clock. The per-mission filters of Table~\ref{tab:logical}
+are not part of the query at all; they are the collection's, applied to decoded points, and the query can only
+choose among the few policies the collection offers (which beam group; a confidence threshold for photons).
+
+\section{The plan}
 \label{ch:plan}
 
 A query begins as a value: the area (a box, or a polygon inside it), the time window, the collection, and a few
@@ -1098,8 +1903,16 @@ with its inner \code{\_ingest\_granule} and \code{\_keep}; \code{access.coalesce
 \code{map\_as\_completed}; the ATL03 path in \code{planner.\_process\_group}, \code{\_decode\_photons},
 \code{\_materialize}. Five copies of the loop remain (ATL06, GLAS, GEDI, ICESSN, GPS) plus the ATL03 variant.}
 
+%=====================================================================================================================
+\clearpage
+\part{The retrieval engine and the lake}
+\label{part:lake}
+%=====================================================================================================================
+
 \section{The lake as a memo}
 \label{ch:lake}
+
+This part discharges \req{6}.
 
 The lake is a cache of decoded points, partitioned by cell, read before any fetch and written after. Losing it costs
 time, never truth: anything missing is re-fetched. Its design is dominated by one requirement, idempotence under
@@ -1208,6 +2021,43 @@ updates.\landed{\code{lake.write\_cell\_file}, \code{write\_chunk\_group} (retur
 \code{ingested\_chunk\_cells}; \code{meta.duckdb} beside the index. ATL03 photons still write inline from their
 worker processes via \code{write\_photons}.}
 
+\section{What reads the lake}
+\label{ch:lakereaders}
+
+The lake is the system's contract with analysis (Figure~\ref{fig:lakereaders}). Every query of
+Chapter~\ref{ch:queries} beyond Q1 is arithmetic over lake files: the coverage survey (Q2) counts passes, days and
+years per cell from the lake's key table and the index manifest without touching the archive; co-registration (Q3)
+reads two sources' cells, converts each to a common frame and epoch with the conversions of
+Chapter~\ref{ch:logical}, and pairs points within 35\,m; the per-cell time series (Q4) reads every source's cells at
+resolution 8, fits its fixed-effects surface and reports window medians and a trend; the lake-level and profile
+tools (Q5) read a thin polygon's cells per pass. None of them knows a byte range, a chunk or a granule; they know a
+table of positions, heights, times and a cell column, per source, with the source's native height and the
+quality filter already applied. That is why the index and the lake share one resolution: the cell a row was
+addressed by is the cell its points are filed under, and an analysis that asks for a cell gets exactly the points
+the index promised.
+
+\begin{figure}[tbp]
+\wide{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[remote, minimum width=20mm, minimum height=12mm] (s3) at (0,10) {archive};
+  \node[eff, minimum width=22mm] (eng) at (34,10) {execute\\(Chapter~\ref{ch:execute})};
+  \node[store, minimum width=24mm, minimum height=14mm, acc] (lake) at (70,10) {lake\\\footnotesize cell-partitioned Parquet};
+  \node[pure] (q2) at (108,24) {survey (Q2)};
+  \node[pure] (q3) at (108,15) {co-register (Q3)};
+  \node[pure] (q4) at (108,6) {time series (Q4)};
+  \node[pure] (q5) at (108,-3) {profile, lake level (Q5)};
+  \node[val] (ui) at (140,10) {tables, maps};
+  \draw[flow, draw=nasared] (s3) -- node[lblw, above] {byte ranges} (eng);
+  \draw[flow] (eng) -- node[lblw, above] {points + cell} (lake);
+  \foreach \q in {q2,q3,q4,q5} { \draw[flow] (lake.east) -- (\q.west); \draw[flowsoft] (\q.east) -- (ui.west); }
+  \node[note, text width=60mm, anchor=north west] at (0,-2) {Left of the lake: bytes, chunks, granules, runs.
+    Right of it: positions, heights, times and a cell column. The analyses never cross the line.};
+\end{tikzpicture}}
+\caption{The lake between the retrieval engine and the analyses. Everything to its right is pure arithmetic over
+cell files; everything to its left is the machinery of Parts~IV--VI.}
+\label{fig:lakereaders}
+\end{figure}
+
 \section{The query at runtime}
 \label{ch:queryruntime}
 
@@ -1275,13 +2125,16 @@ accident.\landed{\code{access.map\_as\_completed} (completion-order streaming), 
 
 %=====================================================================================================================
 \clearpage
+
+\clearpage
 \part{The framework}
+\label{part:framework}
 %=====================================================================================================================
 
 \section{The collection descriptor}
 \label{ch:descriptor}
 
-Parts III and IV described one build and one query. Today there are six of each, and they differ in exactly the
+Parts~\ref{part:build}--\ref{part:lake} described one build and one query, and this chapter discharges \req{7}. Today there are six of each, and they differ in exactly the
 ways Table~\ref{tab:collections} listed: how a file's structure maps to element intervals, where positions come
 from, how a chunk is decoded into points, what quality means, which group a beam belongs to. Everything else (the
 driver, the pool, the resume set, the claim, the plan, the executor's loop, the keep predicate, the writer) is the
@@ -1493,7 +2346,7 @@ and which an AST test forbids in the new packages.
 \section{The grid as a parameter}
 \label{ch:grid}
 
-Chapter~\ref{ch:cells} introduced cells through H3 and promised to say what the design needs from a grid. The
+Part~\ref{part:dggs} compared four grids and chose H3 on three properties; this chapter says exactly what the design needs from a grid. The
 honest list is short, and the performance contract decides what may be abstracted at all.
 
 \begin{lstlisting}
@@ -1556,7 +2409,7 @@ this structure makes a 200-line package rather than a change to the framework.}
 \section{Replay}
 \label{ch:replay}
 
-Three values make the system replayable, and each pays for itself in a different place.
+Three values make the system replayable, and each pays for itself in a different place (Figure~\ref{fig:replay}).
 
 \begin{figure}[h]
 \wide{%
@@ -1592,7 +2445,7 @@ Three values make the system replayable, and each pays for itself in a different
 The code today is one package of 13{,}000 lines whose index, lake, planner, coverage and collection modules form a
 single strongly connected import component of thirteen modules. The design splits it along the two seams the
 application crosses without the framework (grid geometry and the point cache) and keeps the rest as layers inside
-one framework package, separated by import contracts rather than by packaging (Figure~\ref{fig:dag}).
+one framework package, separated by import contracts rather than by packaging (Figure~\ref{fig:dag}, Table~\ref{tab:packages}).
 
 \begin{table}[h]
 \footnotesize
@@ -1690,6 +2543,7 @@ And the list of things the design deliberately does not do, each of which was co
 
 \appendix
 \clearpage
+
 \part*{Appendices}
 \addcontentsline{toc}{part}{Appendices}
 
@@ -1697,7 +2551,7 @@ And the list of things the design deliberately does not do, each of which was co
 \label{app:migration}
 
 Each step lands on the main branch, passes the full suite and the golden suite, and deploys. Steps are ordered so
-that each removes a hazard on its own.
+that each removes a hazard on its own (Table~\ref{tab:migration}).
 
 \begin{center}
 \footnotesize
@@ -1722,6 +2576,8 @@ H & application split: scenes, analysis, admin; presentation registry; TUI over 
 \section{Test strategy}
 \label{app:tests}
 
+Table~\ref{tab:tests} gives the shape of the tests per package and the coverage floor each must hold.
+
 \begin{center}
 \footnotesize
 \wide{\begin{tabular}{@{}lp{44mm}p{44mm}p{36mm}c@{}}
@@ -1743,6 +2599,8 @@ their modules, about 1\,200 retire with what they tested, and the rest stay in t
 \section{Measurements the design leans on}
 \label{app:numbers}
 
+Table~\ref{tab:numbers} collects every number the text relies on, with the instrument that produced it.
+
 \begin{center}
 \footnotesize
 \wide{\begin{tabular}{@{}p{66mm}rrp{44mm}@{}}
@@ -1755,7 +2613,6 @@ ATL06 per granule, serial reads through the block cache & \multicolumn{2}{c}{66 
 ATL06 full regional rebuild, 33\,484 granules & 3.9\,h & 62\,min & staging rebuild \\
 GLAS full rebuild, 4\,799 granules & 10\,min & 3.5\,min & staging rebuild \\
 ATL03 structure reads per granule at 1 / 4 / 16\,MiB blocks & \multicolumn{2}{c}{114 / 7 / 4} & \code{bench\_build\_io.py} \\
-ATL03 full regional rebuild, 48\,838 granules, 16 workers & 12\,h & $\approx$7.3\,h & staging rebuild \\
 16 spawned workers, peak memory & & 3.4\,GB & \code{free -m} \\
 8-cell ATL06 ingest, wall & 25.4\,s & 16.6\,s & \code{bench\_ingest\_fresh.py} \\
 same, CPU-seconds & 40.7 & 32.4 & idem \\
@@ -1767,9 +2624,18 @@ ATL03 plan for a 0.3$^\circ$ box & 36\,s & 0.66\,s & query trace \\
 index store with sidecar provenance & 7.5\,GB & 4.7\,GB & \code{migrate\_index\_footers.py} \\
 in-region fetch throughput, CRT client & 300--400 & 670--840\,MB/s & \code{bench\_coalesce.py} \\
 precache-adjacent, first box / neighbour (on vs off) & 16.8 / 13.9\,s & 31.9 / 21.7\,s & \code{bench\_ingest\_fresh.py} \\
+\midrule
+catalogue hits for a 2$^\circ$ box, ATL06 / ATL03 / GLAS & \multicolumn{2}{c}{549--571 / 560--602 / 93--139} & \code{measure\_search\_modes.py} \\
+bytes moved by whole-granule retrieval vs needed, ATL06 / ATL03 & \multicolumn{2}{c}{63--80$\times$ / 70--94$\times$} & idem \\
+same, the 15\,km transect box, ATL06 / ATL03 & \multicolumn{2}{c}{86$\times$ / 475$\times$} & idem \\
+catalogue hits with no point in the box's cells, ATL06 / GLAS & \multicolumn{2}{c}{9.6--31.8\,\% / 8.6--32.3\,\%} & idem \\
+granule footprint area over box area, ICESat-2, 2$^\circ$ box / transect & \multicolumn{2}{c}{7.2--9.8$\times$ / 852--1\,009$\times$} & idem \\
+ATL06 granule size over Greenland, quartiles & \multicolumn{2}{c}{72 / 88 / 96\,MB} & idem \\
+ATL03 granule size over Summit, quartiles & \multicolumn{2}{c}{0.95 / 1.4 / 2.7\,GB} & idem \\
+ATL03 staging rebuild, 48\,838 granules, 16 workers, 4\,MiB blocks & 12\,h & 7.4\,h & staging rebuild, 2026-10-18 \\
 \bottomrule
 \end{tabular}}
-\captionof{table}{Measurements on the deployed instance (m6i.xlarge, 4 vCPU, 15\,GB, us-west-2), 2026-10-16 and 17.}
+\captionof{table}{Measurements on the deployed instance (m6i.xlarge, 4 vCPU, 15\,GB, us-west-2), 2026-10-16 to 19. The search-mode rows are the full table of \code{docs/notes/search-modes-2026-10.md}.}
 \label{tab:numbers}
 \end{center}
 
@@ -1777,7 +2643,17 @@ precache-adjacent, first box / neighbour (on vs off) & 16.8 / 13.9\,s & 31.9 / 2
 \label{app:glossary}
 
 \begin{description}\setlength{\itemsep}{1pt}
-\item[granule] one archive file: an orbit segment, a flight, a survey.
+\item[along-track] data ordered by time along a ground track, with position stored per measurement.
+\item[footprint] (of a measurement) the ground patch one laser pulse illuminates; (of a granule) the catalogued extent.
+\item[granule] one archive file: an orbit region, an orbit arc, minutes of a flight, a survey.
+\item[RGT, cycle, region] ICESat-2's reference ground track (1 of 1\,387), its 91-day repeat count, and one of the 14 latitude cuts of an orbit.
+\item[campaign] a GLAS laser operating period (19, L1A--L2F) or an IceBridge season.
+\item[platelet] one ILATM2 record: a plane fitted to a block of ATM points, 80\,m across at nadir.
+\item[DGGS] discrete global grid system: nested partitions of the Earth with an identifier scheme.
+\item[aperture] the number of children a grid cell has at the next resolution (H3: 7).
+\item[polyfill] the set of cells an area overlaps.
+\item[compaction] replacing every complete set of children in a cell set by their parent, recursively.
+\item[over-claim] a catalogued footprint larger than the ground the granule measured; a false positive is a search hit with no point in the area.
 \item[chunk] a fixed-size, separately compressed piece of an HDF5 dataset; the unit of a byte range.
 \item[chunk map] (offset, size, filters) for every chunk of a dataset, read from the file's B-tree once at build.
 \item[span] GEDI's row unit: an element interval inside one chunk of every dataset.
@@ -1789,12 +2665,17 @@ precache-adjacent, first box / neighbour (on vs off) & 16.8 / 13.9\,s & 31.9 / 2
 \item[provenance] the filter set a granule's file was built against, recorded in its footer by hash.
 \item[lake] the cell-partitioned Parquet memo of decoded points, read before and written after a fetch.
 \item[beam group] the set of beams the planner requests together and the lake files together.
-\item[have, todo] the chunks a plan serves from the lake and the chunks it fetches.
+\item[have, todo] the chunks a plan serves from the lake, and those it fetches.
 \item[door] a process entry point where configuration is built once: a script's main, the server, the TUI, a
   pool initializer, a test fixture.
 \item[slot] a function-valued field of a collection descriptor that a pipeline stage calls.
 \item[value] immutable data; a frozen dataclass here.
 \item[effect] a function that touches the network, the disk, a clock or a pool.
 \end{description}
+
+\clearpage
+\bibliographystyle{unsrt}
+\bibliography{functional-design}
+\addcontentsline{toc}{section}{References}
 
 \end{document}
