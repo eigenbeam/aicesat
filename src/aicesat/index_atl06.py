@@ -28,7 +28,7 @@ from .index import BEAMS, _chunk_manifest, _filters, strong_beams   # reuse the 
 log = logging.getLogger(__name__)
 
 H3_RES = 6
-ATL06_RES = 5   # per-collection choice: ATL06's 400 km chunks make res 5 the sweet spot (finer buys ~nothing on
+ATL06_RES = 5   # per-collection choice: ATL06's ~200 km chunks (10 000 segments at 20 m) make res 5 the sweet spot (finer buys ~nothing on
                 # scene-sized queries but multiplies index/scan cost) — see the resolution analysis.
 ATL06_INDEX_VERSION = "3"   # v3: run_lo/run_hi/run_exact per (chunk, cell) row (index.cell_runs); v2: rows filtered to the build's cells
 ATL06_DATASETS = ("latitude", "longitude", "h_li", "delta_time", "atl06_quality_summary")
