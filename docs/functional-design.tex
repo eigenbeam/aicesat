@@ -719,7 +719,7 @@ granules the catalogue placed over one site passed within 2\,km of it.
 \paragraph{(b) The granule is far larger than the question.} Even a true positive is almost entirely irrelevant.
 A 30\,km box meets a few seconds of a granule that spans a quarter of the Earth. Downloading the catalogue's
 answer for one of our 2$^\circ$ boxes moves 45--50\,GB of ATL06 and 1.0--1.4\,TB of ATL03; the bytes that hold
-the box's points are 0.63--0.75\,GB and 12--20\,GB respectively, so whole-granule retrieval moves 60--95 times what
+the box's points are 0.63--0.75\,GB and 12--25\,GB respectively, so whole-granule retrieval moves 55--95 times what
 is needed, and 475 times for the traverse box (Table~\ref{tab:searchmodes}). Opening the file remotely instead of
 downloading it does not escape this: the reader must still walk the file's structure (dozens of dependent small
 reads per file) and then read the position arrays to find out which elements are inside the box, which is most of
@@ -792,9 +792,10 @@ egig\_west\_flank & ATL06 & 553 & 48.6 & 761 & 665 & 12.6\,\% & 655 & 74 & 8.1 \
 egig\_west\_flank & ATL03 & 560 & 1\,040 & 656 & 600 & 8.5\,\% & 12\,072 & 86 & 8.5 \\
 egig\_west\_flank & GLAS & 139 & 0.52 & 139 & 127 & 8.6\,\% & 65 & 8.0 & orbit \\
 k\_transect & ATL06 & 557 & 49.9 & 649 & 579 & 11.1\,\% & 626 & 80 & 7.2 \\
+k\_transect & ATL03 & 567 & 1\,102 & 598 & 597 & 0.2\,\% & 12\,358 & 89 & 7.5 \\
 k\_transect & GLAS & 108 & 0.40 & 140 & 102 & 27.1\,\% & 49 & 8.2 & orbit \\
 jakobshavn & ATL06 & 571 & 47.1 & 749 & 644 & 14.0\,\% & 752 & 63 & 7.2 \\
-jakobshavn & ATL03 & 576 & 1\,410 & 637 & 608 & 4.6\,\% & 20\,081 & 70 & 8.2 \\
+jakobshavn & ATL03 & 576 & 1\,410 & 637 & 608 & 4.6\,\% & 24\,776 & 57 & 8.2 \\
 jakobshavn & ICESSN & 504 & 0.14 & 882 & 775 & 12.1\,\% & 102 & 1.3 & 0.0 \\
 summit\_traverse & ATL06 & 109 & 9.0 & 220 & 150 & 31.8\,\% & 105 & 86 & 852 \\
 summit\_traverse & ATL03 & 116 & 234 & 175 & 144 & 17.7\,\% & 493 & 475 & 1\,009 \\
@@ -2626,7 +2627,7 @@ in-region fetch throughput, CRT client & 300--400 & 670--840\,MB/s & \code{bench
 precache-adjacent, first box / neighbour (on vs off) & 16.8 / 13.9\,s & 31.9 / 21.7\,s & \code{bench\_ingest\_fresh.py} \\
 \midrule
 catalogue hits for a 2$^\circ$ box, ATL06 / ATL03 / GLAS & \multicolumn{2}{c}{549--571 / 560--602 / 93--139} & \code{measure\_search\_modes.py} \\
-bytes moved by whole-granule retrieval vs needed, ATL06 / ATL03 & \multicolumn{2}{c}{63--80$\times$ / 70--94$\times$} & idem \\
+bytes moved by whole-granule retrieval vs needed, ATL06 / ATL03 & \multicolumn{2}{c}{63--80$\times$ / 57--94$\times$} & idem \\
 same, the 15\,km transect box, ATL06 / ATL03 & \multicolumn{2}{c}{86$\times$ / 475$\times$} & idem \\
 catalogue hits with no point in the box's cells, ATL06 / GLAS & \multicolumn{2}{c}{9.6--31.8\,\% / 8.6--32.3\,\%} & idem \\
 granule footprint area over box area, ICESat-2, 2$^\circ$ box / transect & \multicolumn{2}{c}{7.2--9.8$\times$ / 852--1\,009$\times$} & idem \\

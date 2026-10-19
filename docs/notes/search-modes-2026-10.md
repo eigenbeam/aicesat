@@ -1,7 +1,9 @@
 # Catalogue search vs the sub-granule index, measured 2026-10-19
 
-Produced by `uv run python scripts/measure_search_modes.py --out /tmp/search-modes.md` on the deployed box (m6i.xlarge, us-west-2), 2026-10-19 02:50 UTC, against the indexes listed below (ATL03 is the pre-cutover v6-less index; the staged v6 index has the same granules). Langtang rows are absent because no index claim covers it; GEDI has no index on the box.
+Produced by `uv run python scripts/measure_search_modes.py --out /tmp/search-modes-post.md` on the deployed box (m6i.xlarge, us-west-2), 2026-10-19 04:22 UTC, after the ATL03 v6 cutover (the index built 2026-10-18, 48,838 granules). Langtang rows are absent because no index claim covers it; GEDI has no index on the box.
 Column meanings are in the script's docstring. `gran_mb_quartiles` are Q1/median/Q3 of the CMR granule size.
+
+Compared with the first run (02:50 UTC the same day, against the pre-cutover ATL03 index), only two rows changed, both ATL03: k_transect_upstream (in cells 543 -> 597, false positives 9.2 % -> 0.2 %, need 11,738 -> 12,358 MB, ratio 93.9 -> 89.2) and jakobshavn_margin (need 20,081 -> 24,776 MB, ratio 70.2 -> 56.9). The old index held partial files for those granules (e.g. 30 rows over 8 cells where the rebuild wrote 3,347 rows over 824 cells): a builder writes only the cells requested, and a later build over a wider box skips any granule whose file already exists, so an index grown over successive request boxes under-covers the newer ground without any error. The full rebuild removed the holes; the builder's skip-if-exists rule still allows them. ATL06, GLAS and ICESSN rows are identical in both runs (their indexes did not change).
 
 Index builds measured against:
 
@@ -22,11 +24,11 @@ Index builds measured against:
 | egig_west_flank | GLAS | 139 | 0.52 | 139 | 127 | 127 | 0.086 | 0 | 64.8 | 8 | – | orbit | 1 | 3.4/3.7/4.2 |
 | egig_west_flank | ICESSN | 89 | 0.02 | 233 | 208 | 93 | 0.107 | 0 | 13.2 | 1.7 | 0 | polygon | – | 0.1/0.1/0.5 |
 | k_transect_upstream | ATL06 | 557 | 49.9 | 649 | 579 | 566 | 0.111 | 2 | 625.5 | 79.7 | 7.2 | polygon | 5 | 80.0/96.0/104.0 |
-| k_transect_upstream | ATL03 | 567 | 1,102.5 | 598 | 543 | 517 | 0.092 | 0 | 11,737.7 | 93.9 | 7.5 | polygon | 115 | 1,024.0/1,472.0/2,680.0 |
+| k_transect_upstream | ATL03 | 567 | 1,102.5 | 598 | 597 | 556 | 0.002 | 0 | 12,358.3 | 89.2 | 7.5 | polygon | 111 | 1,024.0/1,472.0/2,680.0 |
 | k_transect_upstream | GLAS | 108 | 0.4 | 140 | 102 | 102 | 0.271 | 0 | 49.1 | 8.2 | – | orbit | 1 | 3.4/3.8/4.2 |
 | k_transect_upstream | ICESSN | 321 | 0.08 | 556 | 513 | 311 | 0.077 | 0 | 56.7 | 1.4 | 0 | polygon | – | 0.1/0.1/0.5 |
 | jakobshavn_margin | ATL06 | 571 | 47.1 | 749 | 644 | 626 | 0.14 | 0 | 751.7 | 62.6 | 7.2 | polygon | 5 | 64.0/88.0/96.0 |
-| jakobshavn_margin | ATL03 | 576 | 1,410.4 | 637 | 608 | 574 | 0.046 | 0 | 20,080.6 | 70.2 | 8.2 | polygon | 109.0 | 954.0/1,400.0/3,518.0 |
+| jakobshavn_margin | ATL03 | 576 | 1,410.4 | 637 | 608 | 574 | 0.046 | 0 | 24,776.1 | 56.9 | 8.2 | polygon | 110.0 | 954.0/1,400.0/3,518.0 |
 | jakobshavn_margin | GLAS | 93 | 0.35 | 138 | 113 | 113 | 0.181 | 0 | 55.7 | 6.3 | – | orbit | 1 | 3.3/3.9/4.3 |
 | jakobshavn_margin | ICESSN | 504 | 0.14 | 882 | 775 | 492 | 0.121 | 0 | 101.9 | 1.3 | 0 | polygon | – | 0.1/0.1/0.5 |
 | summit_traverse | ATL06 | 109 | 9.02 | 220 | 150 | 140 | 0.318 | 0 | 104.9 | 85.9 | 852.3 | polygon | 4 | 72.0/88.0/96.0 |
@@ -350,21 +352,21 @@ Index builds measured against:
   "cmr_hits": 567,
   "cmr_gb": 1102.51,
   "cmr_hull": 598,
-  "idx_cells": 543,
-  "idx_box": 517,
-  "false_pos": 0.092,
+  "idx_cells": 597,
+  "idx_box": 556,
+  "false_pos": 0.002,
   "missed": 0,
-  "need_mb": 11737.723,
-  "bytes_ratio": 93.9,
+  "need_mb": 12358.322,
+  "bytes_ratio": 89.2,
   "fp_area": 7.5,
   "fp_kind": "polygon",
-  "chunks_per_gran": 115,
+  "chunks_per_gran": 111,
   "gran_mb_quartiles": [
    1024.0,
    1472.0,
    2680.0
   ],
-  "index_rows": 36050
+  "index_rows": 38088
  },
  {
   "area": "k_transect_upstream",
@@ -486,17 +488,17 @@ Index builds measured against:
   "idx_box": 574,
   "false_pos": 0.046,
   "missed": 0,
-  "need_mb": 20080.562,
-  "bytes_ratio": 70.2,
+  "need_mb": 24776.065,
+  "bytes_ratio": 56.9,
   "fp_area": 8.2,
   "fp_kind": "polygon",
-  "chunks_per_gran": 109.0,
+  "chunks_per_gran": 110.0,
   "gran_mb_quartiles": [
    954.0,
    1400.0,
    3518.0
   ],
-  "index_rows": 36308
+  "index_rows": 49276
  },
  {
   "area": "jakobshavn_margin",
